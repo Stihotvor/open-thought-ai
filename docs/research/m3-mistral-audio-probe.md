@@ -14,14 +14,19 @@ Test: TTS makes a WAV, then STT reads it back.
 | Model | Free tier | EN | PL | UK |
 |---|---|---|---|---|
 | `voxtral-mini-latest` (resolves to `voxtral-mini-transcribe-2602`) | yes, ~0.4 s | exact | garbled, Cyrillic output | partly right, mixed scripts |
-| `voxtral-mini-transcribe-3-0` | no (429 on every call) | – | – | – |
+| `voxtral-mini-transcribe-3-0` | probably no (429 on all 6 calls, also with 30 s pauses) | – | – | – |
 | `voxtral-small-transcribe-3-0` | no (429 on every call) | – | – | – |
+| `voxtral-small-latest` via `/v1/chat/completions` with `input_audio` | yes, strict pace limit | exact, 0.7 s | 429 | exact, but 121 s |
 
+- The free tier has a strict pace limit. `voxtral-small-latest` gave a 429 three seconds after a good call,
+  and one call took 121 s (queued). A server-side rate limiter is required (see the delivery plan, M3).
 - `voxtral-mini-transcribe-2602` rejects `language=pl` and `language=uk`.
   Its list: ar, en, de, es, fr, hi, it, nl, pt, zh, ru, ko, ja.
 - The PL and UK input came from an English voice, so part of the error can be the TTS accent.
 
 ## Result
 - EN: Mistral STT and TTS meet the need on the free tier.
-- PL and UK: Mistral STT on the free tier does not support them. This blocks requirement C7 with Mistral only.
+- PL and UK: the transcription endpoint on the free tier does not support them.
+  The chat model `voxtral-small-latest` with audio input transcribed UK exactly (PL hit the limit),
+  but free-tier pacing and the 121 s delay break the ≤ 5 s latency goal. It may work on a paid plan.
 - Next: test a local STT for PL and UK (faster-whisper on the t630), and a human check of the PL/UK TTS audio.
