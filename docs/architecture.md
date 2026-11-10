@@ -55,7 +55,7 @@ flowchart LR
 |---|---|
 | `gateway` | WebSocket endpoint, auth, one session (a new connection replaces the old one), frame and time limits. |
 | `pipeline` | One turn: VAD → STT → agent (streamed) → per-sentence moderation → TTS → resample to 16 kHz → paced stream. Cancel on abort. |
-| `providers` | Thin OpenAI-client wrappers for STT, LLM, TTS, moderation, embeddings (base URL per role). TTS output is decoded and resampled to PCM 16 kHz s16le. |
+| `providers` | Thin OpenAI-client wrappers for STT, LLM, TTS, moderation, embeddings (base URL per role). TTS output is decoded and resampled to PCM 16 kHz s16le. A token bucket per endpoint limits the call rate; a 429 gets a short backoff, then the turn ends with `rate_limited`. |
 | `agent` | Prompt, history, tool loop, 60 s speech cap, "continue". |
 | `mcp_hub` | MCP client sessions; fixed device tools + external tools, namespaced; enforces `confirm`, schema hash, SSRF checks, 4 calls/turn. |
 | `store` | Postgres repositories (history, settings, MCP servers, tools). Qdrant memory. |

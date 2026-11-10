@@ -47,6 +47,9 @@ Total M0–M6: 54–101 h.
 ### M3 Voice pipeline
 - Probe: Mistral STT and TTS with one EN, PL and UK phrase each. Record language support and output format.
 - `providers`: STT, chat (stream), TTS against an OpenAI-compatible endpoint per role.
+- Rate limiter per endpoint: token bucket (rate and burst in `.env`), retry on 429 with `Retry-After`
+  or 0.5/1/2 s backoff (2 retries, within the turn budget), then `error {code: rate_limited}`. Log each 429.
+  Merge short sentences into one TTS call.
 - Docs example: optional external LiteLLM config with Mistral → Gemini → Ollama/LM Studio fallback.
 - Pipeline: VAD, STT, agent, sentence-split TTS streaming, 60 s cap, "continue".
 - Per-sentence moderation (fail closed) and family-safe prompt.
