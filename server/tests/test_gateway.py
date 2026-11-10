@@ -86,10 +86,11 @@ def test_oversized_text_frame_closes_4400(client):
 def test_echo_round_trip_with_credit(client):
     ws = connect(client)
     turn = speak(ws, 0.5)
+    # Credit sent before reply.start must count. The start credit alone is too small.
+    ws.send_json({"type": "audio.credit", "bytes": 16000})
     assert ws.receive_json() == {"type": "state", "turn": turn, "state": "thinking"}
     assert ws.receive_json() == {"type": "reply.start", "turn": turn}
     received = b""
-    ws.send_json({"type": "audio.credit", "bytes": 16000})  # more than start credit allows
     while True:
         msg = ws.receive()
         if msg.get("bytes"):

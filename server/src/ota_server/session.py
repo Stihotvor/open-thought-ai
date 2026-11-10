@@ -47,6 +47,7 @@ class DeviceSession:
                 self.turn = (self.turn + 1) % 256
                 self.audio.clear()
                 self.listening = True
+                self.credit = START_CREDIT  # credit counts per turn and adds up from here
                 await self.ws.send_json({"type": "turn.start", "turn": self.turn})
             case "listen.stop":
                 if msg.get("turn") == self.turn and self.listening:
@@ -89,7 +90,6 @@ class DeviceSession:
 
     async def stream(self, turn: int, pcm: bytes) -> None:
         """Send PCM at real time, at most MAX_LEAD_SECONDS ahead, within the granted credit."""
-        self.credit = START_CREDIT
         started = time.monotonic()
         for offset in range(0, len(pcm), AUDIO_CHUNK):
             chunk = pcm[offset : offset + AUDIO_CHUNK]
