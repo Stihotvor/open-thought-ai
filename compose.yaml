@@ -1,0 +1,11 @@
+# One server container serves one device. Copy .env.example to .env first.
+services:
+  server:
+    build: ./server
+    env_file: .env
+    ports:
+      - "${OTA_PORT:-8000}:8000"
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
