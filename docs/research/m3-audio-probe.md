@@ -57,12 +57,32 @@ Input: Piper clips (EN lessac, PL gosia, UK ukrainian_tts), resampled to 16 kHz.
   while the next is made). Output is 22,050 Hz, so it needs a resample to 16 kHz.
 - The UK voice `ukrainian_tts-medium` misses phonemes. Test `uk_UA-lada-x_low` (16 kHz) or other UK voices.
 
+## Local models on the laptop (8 CPU threads, GTX 1050 4 GB, CUDA int8)
+Input: fresh Piper clips. Two UK voices: `lada-x_low` and `ukrainian_tts-medium`. Model warmed up first.
+
+| Model | Device | Load | Time per 3 s clip | EN | PL | UK (lada) | UK (ukrainian_tts) |
+|---|---|---|---|---|---|---|---|
+| Piper TTS | CPU | – | 0.11–0.18 s | ok | ok | ok (one diacritic missing) | drops Д and С |
+| `parakeet-tdt-0.6b-v3` int8 | CPU | 2.5 s | 0.27–0.29 s | exact | exact | exact | wrong |
+| `parakeet-tdt-0.6b-v3` int8 | "GPU" | 22.6 s | 0.23–0.28 s | exact | exact | exact | wrong |
+| `faster-whisper small` | GPU | 17.7 s | 0.5 s (EN 1.7 s) | exact | exact | 1 word wrong | wrong |
+| `faster-whisper medium` | GPU | 301 s (first download) | 1.2 s | exact | exact | 1 word wrong | wrong |
+| `faster-whisper large-v3-turbo` | GPU | 40 s | 1.5 s | exact | exact | exact | wrong |
+
+- "exact" ignores case and punctuation.
+- Parakeet on the laptop CPU is the winner: exact EN, PL and UK in under 0.3 s, no GPU needed.
+  The "GPU" run gives the same speed, so onnxruntime probably fell back to the CPU. Not checked.
+- With Piper (about 0.15 s) the whole local speech path takes under 0.5 s per 3 s phrase on this laptop.
+- `ukrainian_tts-medium` is not usable: every STT model fails on it. Use `lada-x_low` (16 kHz) for UK.
+- On homeserv the same Parakeet model needed about 8 s. The 1.2 CPU limit explains part of it.
+  Thread oversubscription inside the CPU quota may explain the rest. Open: test with 1–2 threads.
+
 ## Result
 - EN: Mistral STT and TTS meet the need on the free tier.
 - PL and UK: the transcription endpoint on the free tier does not support them.
   The chat model `voxtral-small-latest` with audio input transcribed UK exactly (PL hit the limit),
   but free-tier pacing and the 121 s delay break the ≤ 5 s latency goal. It may work on a paid plan.
-- STT: Gemini Flash audio input (about 2 s, EN and UK exact) is the best free option. Local STT is the
-  offline fallback only, unless it gets more CPU.
-- TTS for PL and UK: local Piper is the only free option found. Mistral TTS stays for EN.
-- Open: a real-voice PL clip for the cloud STT test, and a better Piper UK voice.
+- STT: local Parakeet TDT 0.6B v3 on a laptop CPU is the best option: exact EN, PL and UK in under 0.3 s,
+  offline, free. Gemini Flash audio input (about 2 s) is the cloud fallback.
+- TTS: local Piper for EN, PL and UK (`lada-x_low` for UK), about 0.15 s per phrase on the laptop CPU.
+- Open: test with a real human voice, an OpenAI-compatible server for Parakeet and Piper, and the homeserv thread count.
