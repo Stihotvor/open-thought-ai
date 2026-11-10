@@ -47,7 +47,7 @@ Self-hosted pocket voice assistant: own ESP32-C3 firmware and own Python server.
 - OPEN: TLS (`wss://`) on the C3 may not fit in RAM next to the audio buffers. Accepted risk for the MVP (LAN only). Measure before the public milestone.
 - OPEN: Exact Postgres and Qdrant versions on the home stack. Assumed Postgres ≥ 15, Qdrant 1.x.
 - OPEN: Flash encryption and USB-JTAG disable on the C3. Decide before public release.
-- RISK (M3 probe, see ../../research/m3-mistral-audio-probe.md): Mistral free-tier STT does not support Polish or Ukrainian. TTS works on the free tier with English voices only; PL/UK quality is not judged yet. Fallback: a local Piper TTS endpoint.
+- RISK (M3 probe, see ../../research/m3-audio-probe.md): Mistral free-tier STT does not support Polish or Ukrainian. TTS works on the free tier with English voices only; PL/UK quality is not judged yet. Fallback: a local Piper TTS endpoint.
 
 ## Success Metrics
 - M1 Latency: button release to first reply sound, p50 ≤ 5 s and p95 ≤ 8 s, over 50 turns on LAN.

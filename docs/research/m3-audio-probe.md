@@ -1,4 +1,4 @@
-# M3 probe: Mistral STT and TTS (2026-11-10)
+# M3 probe: STT and TTS providers (2026-11-10)
 
 Free tier key, direct Mistral API, one phrase per language.
 Test: TTS makes a WAV, then STT reads it back.
@@ -39,9 +39,30 @@ Test: TTS makes a WAV, then STT reads it back.
 - Cloudflare Workers AI (docs only, not probed): Whisper large-v3-turbo for STT at about 47 neurons per
   audio minute, 10,000 free neurons per day. TTS has no confirmed PL or UK voice.
 
+## Local models on homeserv (t630, container limit 1.2 CPU, 1.8 GB)
+Input: Piper clips (EN lessac, PL gosia, UK ukrainian_tts), resampled to 16 kHz. Model loaded and warmed up first.
+
+| Model | Load | Time per 3 s clip | EN | PL | UK |
+|---|---|---|---|---|---|
+| Piper TTS (warm), medium voices | – | 1.8–3.1 s for 2.5–3.1 s audio | ok | ok | voice drops Д and С |
+| `parakeet-tdt-0.6b-v3` int8 (onnx-asr) | 33 s | 7.5–8.0 s | exact | right, comma only | 2 words wrong |
+| `faster-whisper small` int8 | 13 s | 18 s | right, comma only | exact | 2 words wrong |
+| `faster-whisper large-v3-turbo` int8 | 56 s | 93–96 s | exact | right, comma only | 2 words wrong |
+
+- Accuracy is good for PL. The UK errors match the letters that the Piper UK voice drops
+  ("Missing phoneme from id map: Д, С"), so the clip is at fault, not only the STT.
+- Speed is the blocker. With 1.2 CPU, local STT is 2.5× to 30× slower than real time. The best one,
+  Parakeet, needs about 8 s for a 3 s clip. That breaks the ≤ 5 s turn goal on its own.
+- Piper runs at about real time on 1.2 CPU. Sentence streaming hides part of it (the first sentence plays
+  while the next is made). Output is 22,050 Hz, so it needs a resample to 16 kHz.
+- The UK voice `ukrainian_tts-medium` misses phonemes. Test `uk_UA-lada-x_low` (16 kHz) or other UK voices.
+
 ## Result
 - EN: Mistral STT and TTS meet the need on the free tier.
 - PL and UK: the transcription endpoint on the free tier does not support them.
   The chat model `voxtral-small-latest` with audio input transcribed UK exactly (PL hit the limit),
   but free-tier pacing and the 121 s delay break the ≤ 5 s latency goal. It may work on a paid plan.
-- Next: test a local STT for PL and UK (faster-whisper on the t630), and a human check of the PL/UK TTS audio.
+- STT: Gemini Flash audio input (about 2 s, EN and UK exact) is the best free option. Local STT is the
+  offline fallback only, unless it gets more CPU.
+- TTS for PL and UK: local Piper is the only free option found. Mistral TTS stays for EN.
+- Open: a real-voice PL clip for the cloud STT test, and a better Piper UK voice.
