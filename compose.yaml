@@ -1,11 +1,23 @@
 # One server container serves one device. Copy .env.example to .env first.
+# Compose reads .env for the ${...} values below. Shell variables override it.
+#
+# Resource budget: the whole stack gets about 30% of the t630 (4 cores, 6 GB RAM),
+# so the host keeps room for Postgres, Redis, n8n, Qdrant and OpenWebUI.
+# Stack total: 1.2 CPU, 1800 MB. Later services (LiteLLM in M3) share this budget.
 services:
   server:
     build: ./server
-    env_file: .env
+    environment:
+      OTA_DEVICE_ID: ${OTA_DEVICE_ID:?set OTA_DEVICE_ID in .env}
+      OTA_DEVICE_TOKEN_SHA256: ${OTA_DEVICE_TOKEN_SHA256:?set OTA_DEVICE_TOKEN_SHA256 in .env}
+      OTA_LANGUAGE: ${OTA_LANGUAGE:-en}
+      OTA_VOLUME: ${OTA_VOLUME:-60}
     ports:
       - "${OTA_PORT:-8000}:8000"
     restart: unless-stopped
     read_only: true
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
+    cpus: ${OTA_SERVER_CPUS:-0.5}
+    mem_limit: ${OTA_SERVER_MEM:-256m}
+    pids_limit: 128
