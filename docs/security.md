@@ -36,7 +36,8 @@ Threat model: a home LAN with guests and IoT devices, family members including c
 - Raw error bodies from MCP servers are not shown in the UI.
 
 ## Models and data
-- LiteLLM is on an internal compose network, not published. `LITELLM_MASTER_KEY` is set. The server uses a virtual key with a rate limit.
+- Model keys are in `.env` only, never in logs or the UI. Use a key per role with the least scope the provider allows.
+- With the optional external LiteLLM: the server uses a virtual key with a rate limit, limited to the model routes it needs. Never give it the master key.
 - Moderation fails closed: any error → neutral refusal. Moderation runs per sentence before TTS, and on tool args and results.
 - Memory is written only from user turns.
 - Logs never contain the token, `Authorization`, or secret header values. Transcripts are logged only at DEBUG.

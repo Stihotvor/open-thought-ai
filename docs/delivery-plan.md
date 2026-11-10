@@ -9,7 +9,7 @@ Hours are human hours with AI help (estimates).
 | M0.5 | Hardware review (EDA agent) | `docs/hardware.md` approved, pins fixed | 3–6 |
 | M1 | Firmware bring-up | Wi-Fi via SoftAP, tone plays, face shows, mic level logged | 8–15 |
 | M2 | Link + echo | Speech goes to server and plays back | 6–10 |
-| M3 | Voice pipeline via LiteLLM | EN/PL/UK round trip, latency p50 ≤ 5 s measured | 10–20 |
+| M3 | Voice pipeline | EN/PL/UK round trip, latency p50 ≤ 5 s measured | 10–20 |
 | M4 | MCP hub | Device tool + one n8n MCP tool work, risky tool asks to confirm | 10–18 |
 | M5 | Web UI + Postgres | Settings, MCP servers, tools, history, retention in UI | 6–12 |
 | M6 | Hardening | Abort ≤ 300 ms, 24 h soak, CI green, heap ≥ 40 KB | 8–15 |
@@ -42,11 +42,12 @@ Total M0–M6: 54–101 h.
 - Measure free heap with WS + audio buffers (target ≥ 40 KB).
 - Spike: `wss://` with mbedTLS, measure heap. Record result in an ADR.
 - Abort flush on the device: measure button → silence.
-- Compose file with `server` and `litellm`.
+- Compose file with `server`.
 
 ### M3 Voice pipeline
-- `providers`: STT, chat (stream), TTS via LiteLLM.
-- LiteLLM config: Mistral → Gemini → Ollama/LM Studio; local STT/TTS fallback.
+- Probe: Mistral STT and TTS with one EN, PL and UK phrase each. Record language support and output format.
+- `providers`: STT, chat (stream), TTS against an OpenAI-compatible endpoint per role.
+- Docs example: optional external LiteLLM config with Mistral → Gemini → Ollama/LM Studio fallback.
 - Pipeline: VAD, STT, agent, sentence-split TTS streaming, 60 s cap, "continue".
 - Per-sentence moderation (fail closed) and family-safe prompt.
 - TTS decode + resample to 16 kHz.

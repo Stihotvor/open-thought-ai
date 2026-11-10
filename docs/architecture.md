@@ -21,10 +21,11 @@ flowchart LR
     UI[web UI] --> CFG[settings + MCP config]
   end
   LINK <-- protocol v1 --> GW
-  TURN -- STT / LLM / TTS --> LLMP[LiteLLM proxy]
-  LLMP --> P1[Mistral / Gemini]
-  LLMP --> P2[Ollama / LM Studio]
-  LLMP --> P3[local STT/TTS]
+  TURN -- STT / LLM / TTS --> EP{{OpenAI-compatible endpoint per role}}
+  EP --> P1[Mistral API]
+  EP --> P2[Ollama / LM Studio]
+  EP -. optional, external .-> LLMP[LiteLLM proxy]
+  LLMP --> P3[Mistral / Gemini / local STT/TTS]
   EXT --> N8N[n8n MCP Server Trigger]
   AG --> PG[(Postgres)]
   AG --> QD[(Qdrant)]
@@ -32,7 +33,8 @@ flowchart LR
 
 ## Principles
 - One server instance = one device. No tenant logic. Scale by running more instances.
-- The server knows one model endpoint: LiteLLM (OpenAI-compatible). Provider choice and fallback live in LiteLLM config.
+- The server talks only to OpenAI-compatible endpoints. Each role (chat, STT, TTS, moderation, embeddings) has its own base URL, key and model in `.env`. Unset roles use the default endpoint.
+- LiteLLM is optional and runs outside this stack. Point a role at it to get provider fallback. Without it there is no fallback: a failed call ends the turn with an error code.
 - The device is thin: capture audio, play audio, show a face, run hardware tools. All logic is on the server.
 - No remote code update path on the device.
 
@@ -53,7 +55,7 @@ flowchart LR
 |---|---|
 | `gateway` | WebSocket endpoint, auth, one session (a new connection replaces the old one), frame and time limits. |
 | `pipeline` | One turn: VAD → STT → agent (streamed) → per-sentence moderation → TTS → resample to 16 kHz → paced stream. Cancel on abort. |
-| `providers` | Thin OpenAI-client wrappers for STT, LLM, TTS, moderation, embeddings (base URL = LiteLLM). TTS output is decoded and resampled to PCM 16 kHz s16le. |
+| `providers` | Thin OpenAI-client wrappers for STT, LLM, TTS, moderation, embeddings (base URL per role). TTS output is decoded and resampled to PCM 16 kHz s16le. |
 | `agent` | Prompt, history, tool loop, 60 s speech cap, "continue". |
 | `mcp_hub` | MCP client sessions; fixed device tools + external tools, namespaced; enforces `confirm`, schema hash, SSRF checks, 4 calls/turn. |
 | `store` | Postgres repositories (history, settings, MCP servers, tools). Qdrant memory. |
@@ -66,7 +68,7 @@ Design patterns: Adapter (`providers`, device tool proxy as an MCP tool source),
 sequenceDiagram
   participant D as Device
   participant S as Server
-  participant L as LiteLLM
+  participant L as Model endpoint
   D->>S: listen.start
   D->>S: PCM frames
   D->>S: listen.stop
@@ -87,7 +89,7 @@ sequenceDiagram
 ```
 
 ## Deployment
-- `compose.yaml`: `migrate` (one-shot), `server`, `litellm` (internal network only). Postgres, Qdrant and n8n are external, set by URL in `.env`. Redis is not used in the MVP.
+- `compose.yaml`: `migrate` (one-shot) and `server`. Postgres, Qdrant and n8n are external, set by URL in `.env`. Redis is not used in the MVP. LiteLLM, if used, is also external.
 - More devices: copy the `server` service with its own port, `.env` and `DEVICE_ID`.
 - MVP network: LAN only, `ws://` and `http://`. Public access is a later milestone (`wss://`, reverse proxy).
 
@@ -119,5 +121,5 @@ TLS (`wss://`) adds about 35–45 KB: spike-tested in M2.
 See [security.md](security.md). Summary:
 - Device auth: bearer token in the WebSocket upgrade header. Constant-time compare.
 - Web UI: one admin password from `.env`, session cookie. LAN only in the MVP.
-- Secrets only in `.env` (git-ignored). API keys live in LiteLLM config, not in the server.
+- Secrets only in `.env` (git-ignored). Model API keys are in `.env`, one per role. With LiteLLM, the server holds only a LiteLLM virtual key.
 - No raw audio is stored.
