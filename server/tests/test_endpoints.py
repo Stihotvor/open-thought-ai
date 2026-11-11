@@ -98,5 +98,11 @@ def test_bad_port_is_rejected(port):
         load_roles(env(OTA_MODEL_BASE_URL=f"https://api.example.test:{port}/v1"))
 
 
+@pytest.mark.parametrize("key", ["klucz-ł", "a b", "a\nb"])
+def test_bad_key_characters_are_rejected(key):
+    with pytest.raises(ConfigError, match="ASCII"):
+        load_roles(env(OTA_MODEL_KEY=key))
+
+
 def test_key_not_in_repr():
     assert "default-key" not in repr(load_roles(BASE))

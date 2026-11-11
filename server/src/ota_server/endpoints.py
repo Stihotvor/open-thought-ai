@@ -132,6 +132,8 @@ def load_roles(env: Mapping[str, str]) -> dict[str, RoleConfig]:
         if not url:
             raise ConfigError(f"{role}: no base URL")
         _check_url(role, url, allow_insecure)
+        if not key.isascii() or not key.isprintable() or " " in key:
+            raise ConfigError(f"{role}: key must be printable ASCII without spaces")
         if not key and not _is_loopback(_host(url)):
             raise ConfigError(f"{role}: no key for a non-loopback endpoint")
         burst = _number(role, "burst", env.get(prefix + "BURST", DEFAULT_BURST), int)

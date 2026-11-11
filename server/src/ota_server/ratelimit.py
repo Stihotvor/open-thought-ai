@@ -47,7 +47,7 @@ class Retryable429(Exception):
 
 @dataclass
 class TurnBudget:
-    """Time and call limits for one turn. A kind without a cap is not counted."""
+    """Time and call limits for one turn. A kind without a cap is counted but never limited."""
 
     max_calls: Mapping[str, int] = field(default_factory=dict)
     clock: Clock = time.monotonic
