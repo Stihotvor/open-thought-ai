@@ -79,9 +79,24 @@ def test_burst_has_upper_bound():
         load_roles(env(OTA_CHAT_BURST="1000", OTA_STT_BURST="1000", OTA_TTS_BURST="1000"))
 
 
-def test_shared_endpoint_needs_same_limits():
-    with pytest.raises(ConfigError, match="same rate"):
-        load_roles(env(OTA_STT_RATE="5"))
+@pytest.mark.parametrize("host", ["[::ffff:8.8.8.8]", "169.254.169.254", "0.0.0.0"])
+def test_http_flag_allows_only_lan_ranges(host):
+    bad = env(
+        OTA_STT_BASE_URL=f"http://{host}/v1", OTA_STT_KEY="k", OTA_ALLOW_INSECURE_MODEL_ENDPOINT="1"
+    )
+    with pytest.raises(ConfigError, match="http://"):
+        load_roles(bad)
+
+
+def test_missing_key_for_remote_endpoint_fails():
+    with pytest.raises(ConfigError, match="no key"):
+        load_roles({k: v for k, v in BASE.items() if k != "OTA_MODEL_KEY"})
+
+
+def test_no_key_is_fine_on_loopback():
+    local = {k: v for k, v in BASE.items() if k != "OTA_MODEL_KEY"}
+    local["OTA_MODEL_BASE_URL"] = "http://127.0.0.1:11434/v1"
+    assert load_roles(local)["chat"].key == ""
 
 
 def test_key_not_in_repr():

@@ -61,6 +61,10 @@ class TurnBudget:
     def remaining(self) -> float:
         return self.end - self.clock()
 
+    def left(self) -> float:
+        """Remaining time, never below zero. Use it as a timeout value."""
+        return max(self.remaining(), 0.0)
+
     def count_call(self, kind: str) -> None:
         self.calls[kind] = self.calls.get(kind, 0) + 1
         cap = self.max_calls.get(kind)
@@ -96,7 +100,7 @@ class TokenBucket:
 
     def cancel(self) -> None:
         """Give back a reserved token that will not be used."""
-        self.tokens += 1
+        self.tokens = min(self.burst, self.tokens + 1)
 
 
 async def _wait(seconds: float, budget: TurnBudget, sleep: Sleep) -> None:
@@ -119,10 +123,11 @@ async def limited_call[T](
         if budget.remaining() <= 0:
             raise DeadlineExceeded()
         wait = bucket.reserve()
-        if wait > budget.remaining():
+        try:
+            await _wait(wait, budget, sleep)
+        except BaseException:  # no fit, or abort: the token was not used
             bucket.cancel()
-            raise RateLimited(f"token wait {wait:.2f} s does not fit the turn deadline")
-        await _wait(wait, budget, sleep)
+            raise
         try:
             return await call()
         except Retryable429 as exc:

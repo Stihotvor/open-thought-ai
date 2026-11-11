@@ -1,12 +1,13 @@
 import asyncio
 import contextlib
+import inspect
 import json
 import logging
 
 import httpx
 import pytest
 
-from ota_server.endpoints import load_roles
+from ota_server.endpoints import ConfigError, load_roles
 from ota_server.providers import (
     MAX_CHAT_TEXT,
     ModelClient,
@@ -31,8 +32,24 @@ BASE = {
 }
 
 
+def as_network(resp: httpx.Response) -> httpx.Response:
+    """MockTransport hands back a response that is already read. A real one is not, and
+    the client reads raw bytes, so rebuild it with an unread stream."""
+    if not isinstance(resp.stream, httpx.ByteStream):
+        return resp  # a custom test stream, already unread
+    return httpx.Response(
+        resp.status_code, headers=resp.headers, stream=httpx.ByteStream(resp.content)
+    )
+
+
 def client_with(handler, env=BASE, **http_kw):
-    http = httpx.AsyncClient(transport=httpx.MockTransport(handler), **http_kw)
+    async def network(req):
+        resp = handler(req)
+        if inspect.isawaitable(resp):
+            resp = await resp
+        return as_network(resp)
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(network), **http_kw)
     return ModelClient(load_roles(env), http)
 
 
@@ -63,6 +80,43 @@ def test_moderation_gets_own_bucket():
     buckets = make_buckets(load_roles(BASE))
     assert buckets["chat"] is buckets["stt"]
     assert buckets["moderation"] is not buckets["chat"]
+
+
+def test_shared_endpoint_needs_same_limits():
+    with pytest.raises(ConfigError, match="same rate"):
+        make_buckets(load_roles({**BASE, "OTA_STT_RATE": "5"}))
+
+
+def test_unconfigured_role_is_provider_error():
+    env = {k: v for k, v in BASE.items() if not k.startswith("OTA_TTS")}
+    client = client_with(lambda req: httpx.Response(200), env)
+    with pytest.raises(ProviderError) as err:
+        asyncio.run(client.speak("hi", "v", new_turn_budget()))
+    assert err.value.role == "tts"
+
+
+def test_requests_ask_for_identity_encoding():
+    seen = []
+
+    def handler(req):
+        seen.append(req.headers["accept-encoding"])
+        return httpx.Response(200, content=b"WAV")
+
+    asyncio.run(client_with(handler).speak("hi", "v", new_turn_budget()))
+    assert seen == ["identity"]
+
+
+def test_compressed_body_is_refused():
+    gz = httpx.Response(200, headers={"content-encoding": "gzip"}, content=b"x")
+    with pytest.raises(ProviderError):
+        asyncio.run(client_with(lambda req: gz).speak("hi", "v", new_turn_budget()))
+
+
+@pytest.mark.parametrize("payload", [{"text": 5}, {"text": "x" * 5000}])
+def test_bad_transcript_is_refused(payload):
+    client = client_with(lambda req: httpx.Response(200, json=payload))
+    with pytest.raises(ProviderError):
+        asyncio.run(client.transcribe(b"x", "en", new_turn_budget()))
 
 
 def test_shared_client_is_safe():
@@ -215,6 +269,12 @@ def test_chat_bad_chunk_becomes_provider_error():
 
 def test_chat_too_long_reply_is_cut():
     client = client_with(lambda req: httpx.Response(200, text=sse("x" * (MAX_CHAT_TEXT + 1))))
+    with pytest.raises(ProviderError):
+        asyncio.run(collect(client))
+
+
+def test_chat_line_without_newline_is_cut():
+    client = client_with(lambda req: httpx.Response(200, content=b"data: " + b"x" * 70000))
     with pytest.raises(ProviderError):
         asyncio.run(collect(client))
 

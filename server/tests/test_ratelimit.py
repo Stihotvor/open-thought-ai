@@ -165,6 +165,29 @@ def test_abort_cancels_backoff():
     assert len(run(scenario())) == 1
 
 
+def test_abort_during_token_wait_gives_token_back():
+    async def scenario():
+        bucket = TokenBucket(1.0, 1)
+        bucket.reserve()  # next token in 1 s
+        call, calls = answers("ok")
+        task = asyncio.create_task(limited_call(call, bucket, TurnBudget()))
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        return bucket, calls
+
+    bucket, calls = run(scenario())
+    assert calls == []
+    assert bucket.tokens > -0.5  # the reserved token came back
+
+
+def test_cancel_never_exceeds_burst():
+    _, bucket, _ = make(burst=2)
+    bucket.cancel()
+    assert bucket.tokens == 2
+
+
 def test_call_caps_per_turn():
     budget = TurnBudget(max_calls={"a": 2})
     budget.count_call("a")

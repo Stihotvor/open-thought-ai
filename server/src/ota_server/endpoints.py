@@ -43,11 +43,24 @@ class RoleConfig:
         return urlsplit(self.base_url).hostname or ""
 
 
+LAN_NETWORKS = tuple(
+    ipaddress.ip_network(n) for n in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7")
+)
+
+
 def _ip(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    """The IP of a literal host, with IPv4-mapped IPv6 unwrapped. None for a name."""
     try:
-        return ipaddress.ip_address(host)
+        ip = ipaddress.ip_address(host)
     except ValueError:
         return None
+    mapped = getattr(ip, "ipv4_mapped", None)
+    return mapped or ip
+
+
+def _is_lan(ip: ipaddress.IPv4Address | ipaddress.IPv6Address | None) -> bool:
+    """RFC 1918 or unique-local only. No link-local (metadata), no unspecified."""
+    return ip is not None and any(ip in net for net in LAN_NETWORKS)
 
 
 def _is_loopback(host: str) -> bool:
@@ -65,13 +78,12 @@ def _check_url(role: str, url: str, allow_insecure: bool) -> None:
         raise ConfigError(f"{role}: base URL must not contain a query or fragment")
     if parts.scheme == "https" or _is_loopback(parts.hostname):
         return
-    ip = _ip(parts.hostname)
-    if not allow_insecure or ip is None or not (ip.is_private or ip.is_link_local):
+    if not allow_insecure or not _is_lan(_ip(parts.hostname)):
         raise ConfigError(f"{role}: http:// needs loopback, or a private IP and {INSECURE_FLAG}")
     log.warning("role %s uses http:// on host %s", role, parts.hostname)
 
 
-def _number(role: str, name: str, raw: str, kind: type[float] | type[int]) -> float:
+def _number[N: (int, float)](role: str, name: str, raw: str, kind: type[N]) -> N:
     try:
         value = kind(raw)
     except ValueError:
@@ -102,7 +114,9 @@ def load_roles(env: Mapping[str, str]) -> dict[str, RoleConfig]:
         if not url:
             raise ConfigError(f"{role}: no base URL")
         _check_url(role, url, allow_insecure)
-        burst = int(_number(role, "burst", env.get(prefix + "BURST", "1"), int))
+        if not key and not _is_loopback(urlsplit(url).hostname or ""):
+            raise ConfigError(f"{role}: no key for a non-loopback endpoint")
+        burst = _number(role, "burst", env.get(prefix + "BURST", "1"), int)
         if burst > MAX_BURST:
             raise ConfigError(f"{role}: burst must be <= {MAX_BURST}")
         roles[role] = RoleConfig(
@@ -113,26 +127,4 @@ def load_roles(env: Mapping[str, str]) -> dict[str, RoleConfig]:
             rate=_number(role, "rate", env.get(prefix + "RATE", "1"), float),
             burst=burst,
         )
-    _check_shared_limits(roles)
     return roles
-
-
-def bucket_id(cfg: RoleConfig) -> tuple[str, str]:
-    """Roles with the same endpoint and key share one provider quota, so one bucket.
-
-    Moderation always gets its own reserved bucket, so a TTS burst cannot starve it.
-    """
-    if cfg.role == MODERATION:
-        return (MODERATION, "")
-    return (cfg.base_url, cfg.key)
-
-
-def _check_shared_limits(roles: Mapping[str, RoleConfig]) -> None:
-    seen: dict[tuple[str, str], RoleConfig] = {}
-    for cfg in roles.values():
-        first = seen.setdefault(bucket_id(cfg), cfg)
-        if (first.rate, first.burst) != (cfg.rate, cfg.burst):
-            raise ConfigError(
-                f"{cfg.role} and {first.role} share an endpoint and key, "
-                "so they need the same rate and burst"
-            )
