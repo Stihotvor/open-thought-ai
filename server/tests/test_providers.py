@@ -1,12 +1,21 @@
 import asyncio
+import contextlib
 import json
 import logging
 
 import httpx
 import pytest
 
-from ota_server.providers import ConfigError, ModelClient, ProviderError, load_roles, make_buckets
-from ota_server.ratelimit import RateLimited, TurnBudget
+from ota_server.endpoints import load_roles
+from ota_server.providers import (
+    MAX_CHAT_TEXT,
+    ModelClient,
+    ProviderError,
+    make_buckets,
+    make_http_client,
+    new_turn_budget,
+)
+from ota_server.ratelimit import CallCapExceeded, DeadlineExceeded, RateLimited, TurnBudget
 
 BASE = {
     "OTA_MODEL_BASE_URL": "https://api.example.test/v1",
@@ -14,146 +23,210 @@ BASE = {
     "OTA_CHAT_MODEL": "chat-m",
     "OTA_STT_MODEL": "stt-m",
     "OTA_TTS_MODEL": "tts-m",
+    "OTA_MODERATION_MODEL": "mod-m",
     "OTA_CHAT_RATE": "100",
     "OTA_STT_RATE": "100",
     "OTA_TTS_RATE": "100",
+    "OTA_MODERATION_RATE": "100",
 }
 
 
-def env(**extra):
-    return {**BASE, **extra}
+def client_with(handler, env=BASE, **http_kw):
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler), **http_kw)
+    return ModelClient(load_roles(env), http)
 
 
-# --- config rules ---
+def sse(*deltas):
+    lines = ["data: " + json.dumps({"choices": [{"delta": {"content": d}}]}) for d in deltas]
+    return "\n\n".join([*lines, "data: [DONE]"]) + "\n\n"
 
 
-def test_unset_role_is_skipped_and_default_endpoint_used():
-    roles = load_roles(BASE)
-    assert set(roles) == {"chat", "stt", "tts"}
-    assert roles["stt"].base_url == "https://api.example.test/v1"
-    assert roles["stt"].key == "default-key"
+async def collect(client, budget=None):
+    stream = client.chat([{"role": "user", "content": "hi"}], budget or new_turn_budget())
+    async with contextlib.aclosing(stream) as deltas:
+        return [d async for d in deltas]
 
 
-def test_own_base_url_without_own_key_fails():
-    with pytest.raises(ConfigError, match="own key"):
-        load_roles(env(OTA_STT_BASE_URL="https://stt.example.test/v1"))
+def replies(*items):
+    queue = list(items)
+    return lambda req: queue.pop(0)
 
 
-def test_own_base_url_with_own_key():
-    roles = load_roles(env(OTA_STT_BASE_URL="https://stt.example.test/v1", OTA_STT_KEY="k2"))
-    assert roles["stt"].key == "k2"
-    assert roles["chat"].key == "default-key"
+def rate_limit_reply():
+    return httpx.Response(429, headers={"retry-after": "0"})
 
 
-def test_http_on_lan_needs_flag():
-    lan = env(OTA_STT_BASE_URL="http://192.168.1.5:8000/v1", OTA_STT_KEY="k")
-    with pytest.raises(ConfigError, match="http://"):
-        load_roles(lan)
-    assert load_roles({**lan, "OTA_ALLOW_INSECURE_MODEL_ENDPOINT": "1"})["stt"]
-
-
-def test_http_on_loopback_is_allowed():
-    roles = load_roles(env(OTA_TTS_BASE_URL="http://127.0.0.1:5000/v1", OTA_TTS_KEY="k"))
-    assert roles["tts"].host == "127.0.0.1"
-
-
-def test_credentials_in_url_are_rejected():
-    with pytest.raises(ConfigError, match="credentials"):
-        load_roles(env(OTA_MODEL_BASE_URL="https://user:pw@api.example.test/v1"))
+# --- wiring ---
 
 
 def test_moderation_gets_own_bucket():
-    roles = load_roles(env(OTA_MODERATION_MODEL="mod-m"))
-    buckets = make_buckets(roles)
-    assert buckets["chat"] is buckets["stt"]  # same endpoint and key share one bucket
+    buckets = make_buckets(load_roles(BASE))
+    assert buckets["chat"] is buckets["stt"]
     assert buckets["moderation"] is not buckets["chat"]
 
 
-# --- calls against a fake endpoint ---
+def test_shared_client_is_safe():
+    http = make_http_client()
+    assert not http.follow_redirects
+    asyncio.run(http.aclose())
 
 
-def client_with(handler):
-    roles = load_roles(BASE)
-    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    return ModelClient(roles, http)
+def test_client_refuses_redirect_following():
+    with pytest.raises(ValueError, match="redirects"):
+        client_with(lambda req: httpx.Response(200), follow_redirects=True)
+
+
+# --- calls ---
 
 
 def test_transcribe_sends_key_only_to_its_endpoint():
     seen = []
 
-    def handler(req: httpx.Request) -> httpx.Response:
-        seen.append((req.url.host, req.headers["authorization"]))
+    def handler(req):
+        seen.append((req.url.host, req.headers.get("authorization")))
         return httpx.Response(200, json={"text": "dzień dobry"})
 
-    text = asyncio.run(client_with(handler).transcribe(b"RIFF", "pl", TurnBudget()))
+    env = {**BASE, "OTA_STT_BASE_URL": "https://stt.example.test/v1", "OTA_STT_KEY": "stt-key"}
+    text = asyncio.run(client_with(handler, env).transcribe(b"RIFF", "pl", new_turn_budget()))
     assert text == "dzień dobry"
-    assert seen == [("api.example.test", "Bearer default-key")]
+    assert seen == [("stt.example.test", "Bearer stt-key")]
 
 
 def test_speak_returns_audio():
-    def handler(req):
-        return httpx.Response(200, content=b"WAVDATA")
+    client = client_with(lambda req: httpx.Response(200, content=b"WAVDATA"))
+    assert asyncio.run(client.speak("hi", "v", new_turn_budget())) == b"WAVDATA"
 
-    assert asyncio.run(client_with(handler).speak("hi", "v", TurnBudget())) == b"WAVDATA"
+
+def test_too_long_tts_text_is_refused():
+    client = client_with(lambda req: httpx.Response(200))
+    with pytest.raises(ProviderError):
+        asyncio.run(client.speak("x" * 2000, "v", new_turn_budget()))
 
 
 def test_429_is_retried_then_succeeds(caplog):
-    replies = [
-        httpx.Response(429, headers={"retry-after": "0"}),
-        httpx.Response(200, json={"text": "ok"}),
-    ]
-
-    def handler(req):
-        return replies.pop(0)
-
+    client = client_with(replies(rate_limit_reply(), httpx.Response(200, json={"text": "ok"})))
     with caplog.at_level(logging.WARNING):
-        text = asyncio.run(client_with(handler).transcribe(b"x", "en", TurnBudget()))
+        text = asyncio.run(client.transcribe(b"x", "en", new_turn_budget()))
     assert text == "ok"
     assert "default-key" not in caplog.text
-    assert "429 role=stt retry=0 host=api.example.test" in caplog.text
+    assert "429 role=stt status=429 retry=0 host=api.example.test" in caplog.text
+
+
+@pytest.mark.parametrize("value", ["-5", "nan", "abc"])
+def test_bad_retry_after_falls_back_to_backoff(value):
+    client = client_with(
+        replies(
+            httpx.Response(429, headers={"retry-after": value}),
+            httpx.Response(200, json={"text": "ok"}),
+        )
+    )
+    assert asyncio.run(client.transcribe(b"x", "en", new_turn_budget())) == "ok"
 
 
 def test_persistent_429_ends_with_rate_limited():
-    def handler(req):
-        return httpx.Response(429, headers={"retry-after": "0"})
-
+    client = client_with(lambda req: rate_limit_reply())
     with pytest.raises(RateLimited):
-        asyncio.run(client_with(handler).transcribe(b"x", "en", TurnBudget()))
+        asyncio.run(client.transcribe(b"x", "en", new_turn_budget()))
 
 
-def test_server_error_is_not_retried_and_body_not_logged(caplog):
+def test_retry_after_past_deadline_ends_turn_at_once():
     calls = []
 
     def handler(req):
         calls.append(1)
-        return httpx.Response(500, text="secret echo default-key")
+        return httpx.Response(429, headers={"retry-after": "30"})
 
-    with caplog.at_level(logging.WARNING), pytest.raises(ProviderError):
-        asyncio.run(client_with(handler).transcribe(b"x", "en", TurnBudget()))
+    with pytest.raises(RateLimited):
+        asyncio.run(client_with(handler).transcribe(b"x", "en", new_turn_budget()))
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("status", [302, 500])
+def test_non_429_errors_are_not_retried_and_body_not_logged(caplog, status):
+    calls = []
+
+    def handler(req):
+        calls.append(1)
+        return httpx.Response(status, text="secret echo default-key")
+
+    with caplog.at_level(logging.WARNING), pytest.raises(ProviderError) as err:
+        asyncio.run(client_with(handler).transcribe(b"x", "en", new_turn_budget()))
+    assert (err.value.role, err.value.status) == ("stt", status)
     assert len(calls) == 1
     assert "secret echo" not in caplog.text
 
 
-def sse(*deltas):
-    lines = ["data: " + json.dumps({"choices": [{"delta": {"content": d}}]}) for d in deltas] + [
-        "data: [DONE]"
-    ]
-    return "\n\n".join(lines) + "\n\n"
+def test_network_error_becomes_provider_error():
+    def handler(req):
+        raise httpx.ConnectError("down")
+
+    with pytest.raises(ProviderError) as err:
+        asyncio.run(client_with(handler).transcribe(b"x", "en", new_turn_budget()))
+    assert err.value.role == "stt"
 
 
-async def collect(gen):
-    return [x async for x in gen]
+def test_bad_json_becomes_provider_error():
+    client = client_with(lambda req: httpx.Response(200, text="not json"))
+    with pytest.raises(ProviderError):
+        asyncio.run(client.transcribe(b"x", "en", new_turn_budget()))
+
+
+def test_oversized_body_is_refused():
+    big = httpx.Response(200, headers={"content-length": str(10**9)}, content=b"x")
+    with pytest.raises(ProviderError):
+        asyncio.run(client_with(lambda req: big).speak("hi", "v", new_turn_budget()))
+
+
+def test_call_cap_applies():
+    client = client_with(lambda req: httpx.Response(200, json={"text": "ok"}))
+    budget = TurnBudget(max_calls={"stt": 1})
+    asyncio.run(client.transcribe(b"x", "en", budget))
+    with pytest.raises(CallCapExceeded):
+        asyncio.run(client.transcribe(b"x", "en", budget))
+
+
+def test_slow_call_hits_deadline():
+    async def handler(req):
+        await asyncio.sleep(1)
+        return httpx.Response(200, json={"text": "late"})
+
+    with pytest.raises(DeadlineExceeded):
+        asyncio.run(client_with(handler).transcribe(b"x", "en", TurnBudget(deadline_s=0.1)))
+
+
+# --- chat stream ---
 
 
 def test_chat_streams_deltas_after_429():
-    replies = [
-        httpx.Response(429, headers={"retry-after": "0"}),
-        httpx.Response(200, text=sse("Hel", "lo")),
-    ]
+    client = client_with(replies(rate_limit_reply(), httpx.Response(200, text=sse("Hel", "lo"))))
+    assert asyncio.run(collect(client)) == ["Hel", "lo"]
 
-    def handler(req):
-        return replies.pop(0)
 
-    client = client_with(handler)
-    out = asyncio.run(collect(client.chat([{"role": "user", "content": "hi"}], TurnBudget())))
-    assert out == ["Hel", "lo"]
+def test_chat_skips_empty_choices():
+    text = 'data: {"choices": []}\n\n' + sse("ok")
+    assert asyncio.run(collect(client_with(lambda req: httpx.Response(200, text=text)))) == ["ok"]
+
+
+def test_chat_bad_chunk_becomes_provider_error():
+    client = client_with(lambda req: httpx.Response(200, text="data: {broken\n\n"))
+    with pytest.raises(ProviderError):
+        asyncio.run(collect(client))
+
+
+def test_chat_too_long_reply_is_cut():
+    client = client_with(lambda req: httpx.Response(200, text=sse("x" * (MAX_CHAT_TEXT + 1))))
+    with pytest.raises(ProviderError):
+        asyncio.run(collect(client))
+
+
+class SlowStream(httpx.AsyncByteStream):
+    async def __aiter__(self):
+        yield ("data: " + json.dumps({"choices": [{"delta": {"content": "a"}}]}) + "\n\n").encode()
+        await asyncio.sleep(1)
+        yield b"data: [DONE]\n\n"
+
+
+def test_chat_stream_hits_deadline():
+    client = client_with(lambda req: httpx.Response(200, stream=SlowStream()))
+    with pytest.raises(DeadlineExceeded):
+        asyncio.run(collect(client, TurnBudget(deadline_s=0.2)))

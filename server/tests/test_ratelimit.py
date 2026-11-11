@@ -4,6 +4,7 @@ import pytest
 
 from ota_server.ratelimit import (
     CallCapExceeded,
+    DeadlineExceeded,
     RateLimited,
     Retryable429,
     TokenBucket,
@@ -47,13 +48,36 @@ def answers(*results):
     return call, calls
 
 
-def test_bucket_waits_for_refill():
+def test_bucket_reserve_returns_wait():
     clock, bucket, _ = make(rate=2.0, burst=1)
-    assert bucket.wait_time() == 0
-    bucket.take()
-    assert bucket.wait_time() == pytest.approx(0.5)
-    clock.now += 0.5
-    assert bucket.wait_time() == 0
+    assert bucket.reserve() == 0
+    assert bucket.reserve() == pytest.approx(0.5)
+    clock.now += 1.0
+    assert bucket.reserve() == 0
+
+
+@pytest.mark.parametrize("rate", [0, -1, float("nan"), float("inf")])
+def test_bucket_rejects_bad_rate(rate):
+    with pytest.raises(ValueError):
+        TokenBucket(rate, 1)
+
+
+def test_concurrent_callers_do_not_overdraw():
+    clock, bucket, budget = make(rate=1.0, burst=1)
+    starts = []
+
+    async def call():
+        starts.append(clock.now)
+        return "ok"
+
+    async def scenario():
+        await asyncio.gather(
+            *(limited_call(call, bucket, budget, sleep=clock.sleep) for _ in range(3))
+        )
+
+    run(scenario())
+    assert len(starts) == 3
+    assert starts[0] == 0 and starts[1] > 0 and starts[2] > starts[1]  # spaced, not a burst
 
 
 def test_success_without_retry():
@@ -72,12 +96,12 @@ def test_429_backoff_then_success():
     assert clock.now == pytest.approx(0.5)  # first backoff, no jitter at rand=0.5
 
 
-def test_jitter_stays_within_25_percent():
-    for r, expected in ((0.0, 0.375), (1.0, 0.625)):
-        clock, bucket, budget = make(rate=10.0)
-        call, _ = answers(Retryable429(), "ok")
-        run(limited_call(call, bucket, budget, sleep=clock.sleep, rand=lambda r=r: r))
-        assert clock.now == pytest.approx(expected)
+@pytest.mark.parametrize(("r", "expected"), [(0.0, 0.375), (1.0, 0.625)])
+def test_jitter_stays_within_25_percent(r, expected):
+    clock, bucket, budget = make(rate=10.0)
+    call, _ = answers(Retryable429(), "ok")
+    run(limited_call(call, bucket, budget, sleep=clock.sleep, rand=lambda: r))
+    assert clock.now == pytest.approx(expected)
 
 
 def test_two_retries_then_rate_limited():
@@ -99,11 +123,21 @@ def test_retry_after_longer_than_deadline_fails_at_once():
     assert clock.now == 0
 
 
-def test_token_wait_counts_against_deadline():
+def test_token_wait_longer_than_deadline_fails_and_gives_token_back():
     clock, bucket, budget = make(rate=0.1, burst=1, deadline=8.0)
-    bucket.take()  # next token in 10 s, more than the deadline
+    bucket.reserve()  # next token in 10 s, more than the deadline
     call, calls = answers("ok")
     with pytest.raises(RateLimited):
+        run(limited_call(call, bucket, budget, sleep=clock.sleep))
+    assert calls == []
+    assert bucket.tokens == pytest.approx(0)
+
+
+def test_expired_budget_raises_deadline():
+    clock, bucket, budget = make(deadline=1.0)
+    clock.now = 2.0
+    call, calls = answers("ok")
+    with pytest.raises(DeadlineExceeded):
         run(limited_call(call, bucket, budget, sleep=clock.sleep))
     assert calls == []
 
@@ -132,9 +166,9 @@ def test_abort_cancels_backoff():
 
 
 def test_call_caps_per_turn():
-    budget = TurnBudget(max_calls={"chat": 2})
-    budget.count_call("chat")
-    budget.count_call("chat")
+    budget = TurnBudget(max_calls={"a": 2})
+    budget.count_call("a")
+    budget.count_call("a")
     with pytest.raises(CallCapExceeded):
-        budget.count_call("chat")
-    budget.count_call("stt")  # no cap for this role
+        budget.count_call("a")
+    budget.count_call("b")  # no cap for this kind

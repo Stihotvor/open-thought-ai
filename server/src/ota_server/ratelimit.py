@@ -1,24 +1,25 @@
-"""Call limits for model endpoints: token bucket, turn deadline and 429 retry.
+"""Call limits for model endpoints: token bucket, turn budget and 429 retry.
 
 Rules (docs/delivery-plan.md, M3):
 - Every wait (token, backoff, Retry-After) counts against the turn deadline.
-- Retry a 429 at most twice, with 0.5/1/2 s backoff and +-25% jitter, or Retry-After.
+- Retry a 429 at most twice, with 0.5/1 s backoff and +-25% jitter, or Retry-After.
 - A wait that does not fit in the time left ends the turn at once with RateLimited.
 - Cancellation (abort) stops any wait, because all waits are asyncio sleeps.
+
+This module knows nothing about roles. The caller passes the call caps.
 """
 
 import asyncio
+import math
 import random
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 
-BACKOFF = (0.5, 1.0, 2.0)
-MAX_RETRIES = 2
+BACKOFF = (0.5, 1.0)  # one entry per retry
+MAX_RETRIES = len(BACKOFF)
 JITTER = 0.25
 TURN_DEADLINE = 8.0  # seconds, the p95 latency goal
-MAX_LLM_CALLS = 4  # per turn (tool loop)
-MAX_TTS_CALLS = 20  # per turn
 
 Clock = Callable[[], float]
 Sleep = Callable[[float], Awaitable[None]]
@@ -46,14 +47,13 @@ class Retryable429(Exception):
 
 @dataclass
 class TurnBudget:
-    """Time and call limits for one turn."""
+    """Time and call limits for one turn. A kind without a cap is not counted."""
 
+    max_calls: Mapping[str, int] = field(default_factory=dict)
     clock: Clock = time.monotonic
     deadline_s: float = TURN_DEADLINE
-    max_calls: dict[str, int] = field(
-        default_factory=lambda: {"chat": MAX_LLM_CALLS, "tts": MAX_TTS_CALLS}
-    )
     calls: dict[str, int] = field(default_factory=dict)
+    end: float = field(init=False)
 
     def __post_init__(self) -> None:
         self.end = self.clock() + self.deadline_s
@@ -61,19 +61,23 @@ class TurnBudget:
     def remaining(self) -> float:
         return self.end - self.clock()
 
-    def count_call(self, role: str) -> None:
-        self.calls[role] = self.calls.get(role, 0) + 1
-        cap = self.max_calls.get(role)
-        if cap is not None and self.calls[role] > cap:
-            raise CallCapExceeded(role)
+    def count_call(self, kind: str) -> None:
+        self.calls[kind] = self.calls.get(kind, 0) + 1
+        cap = self.max_calls.get(kind)
+        if cap is not None and self.calls[kind] > cap:
+            raise CallCapExceeded(kind)
 
 
 class TokenBucket:
-    """Classic token bucket. `rate` tokens per second, at most `burst` tokens."""
+    """Token bucket: `rate` tokens per second, at most `burst` tokens.
+
+    `reserve()` takes a token at once and returns how long the caller must wait for it.
+    There is no await between the check and the take, so concurrent tasks cannot overdraw.
+    """
 
     def __init__(self, rate: float, burst: int, clock: Clock = time.monotonic) -> None:
-        if rate <= 0 or burst < 1:
-            raise ValueError("rate must be > 0 and burst >= 1")
+        if not (math.isfinite(rate) and rate > 0) or burst < 1:
+            raise ValueError("rate must be finite and > 0, burst >= 1")
         self.rate = rate
         self.burst = burst
         self.clock = clock
@@ -85,14 +89,14 @@ class TokenBucket:
         self.tokens = min(self.burst, self.tokens + (now - self.stamp) * self.rate)
         self.stamp = now
 
-    def wait_time(self) -> float:
-        """Seconds until one token is free. Zero if a token is free now."""
-        self._refill()
-        return 0.0 if self.tokens >= 1 else (1 - self.tokens) / self.rate
-
-    def take(self) -> None:
+    def reserve(self) -> float:
         self._refill()
         self.tokens -= 1
+        return max(0.0, -self.tokens / self.rate)
+
+    def cancel(self) -> None:
+        """Give back a reserved token that will not be used."""
+        self.tokens += 1
 
 
 async def _wait(seconds: float, budget: TurnBudget, sleep: Sleep) -> None:
@@ -114,17 +118,20 @@ async def limited_call[T](
     for attempt in range(MAX_RETRIES + 1):
         if budget.remaining() <= 0:
             raise DeadlineExceeded()
-        await _wait(bucket.wait_time(), budget, sleep)
-        bucket.take()
+        wait = bucket.reserve()
+        if wait > budget.remaining():
+            bucket.cancel()
+            raise RateLimited(f"token wait {wait:.2f} s does not fit the turn deadline")
+        await _wait(wait, budget, sleep)
         try:
             return await call()
         except Retryable429 as exc:
             on_429(attempt)
             if attempt == MAX_RETRIES:
-                break
+                raise RateLimited("429 after retries") from None
             if exc.retry_after is not None:
                 delay = exc.retry_after
             else:
                 delay = BACKOFF[attempt] * (1 + JITTER * (2 * rand() - 1))
             await _wait(delay, budget, sleep)
-    raise RateLimited("429 after retries")
+    raise AssertionError("unreachable")
