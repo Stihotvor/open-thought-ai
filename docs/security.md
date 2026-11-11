@@ -36,10 +36,12 @@ Threat model: a home LAN with guests and IoT devices, family members including c
 - Raw error bodies from MCP servers are not shown in the UI.
 
 ## Models and data
-- Model keys are in `.env` only, never in logs or the UI. Use a key per role with the least scope the provider allows.
+- Model keys and base URLs are in `.env` only, never in logs or the UI. Use a key per role with the least scope the provider allows.
+- A key is bound to the base URL of its role. A role with its own base URL needs its own key, or the server does not start. Base URLs with embedded credentials are rejected.
+- A model endpoint that carries a key must use `https://`, unless it is on loopback. `ALLOW_INSECURE_MODEL_ENDPOINT=1` allows `http://` on the LAN. The server then logs a warning at startup.
 - With the optional external LiteLLM: the server uses a virtual key with a rate limit, limited to the model routes it needs. Never give it the master key.
-- Moderation fails closed: any error → neutral refusal. Moderation runs per sentence before TTS, and on tool args and results.
+- Moderation fails closed: any error, timeout or `rate_limited` → neutral refusal. Moderation runs per sentence before TTS, and on tool args and results.
 - Memory is written only from user turns.
-- Logs never contain the token, `Authorization`, or secret header values. Transcripts are logged only at DEBUG.
+- Logs never contain the token, `Authorization`, secret header values, model keys, or provider error bodies. Transcripts are logged only at DEBUG.
 - `.env` is mode 600 and git-ignored. CI runs a secret scan. `.env.example` has placeholders only.
 - Security events are logged: auth failures, session replacements, admin changes, tool calls, confirmations.

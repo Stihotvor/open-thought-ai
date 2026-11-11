@@ -34,7 +34,7 @@ Test: TTS makes a WAV, then STT reads it back.
 
 - Every model that reads UK exactly fails on PL. So the PL test clip itself is the likely problem
   (English voice reading Polish). A real human PL recording is needed before judging PL STT.
-- Mistral `voxtral-mini-transcribe-3` and `voxtral-small-transcribe-3`: 429 on all 6 calls with
+- Mistral `voxtral-mini-transcribe-3-0` and `voxtral-small-transcribe-3-0`: 429 on all 6 calls with
   30 s pauses, although the console shows a free-tier quota of 50k tokens/min and 1 req/s.
 - Cloudflare Workers AI (docs only, not probed): Whisper large-v3-turbo for STT at about 47 neurons per
   audio minute, 10,000 free neurons per day. TTS has no confirmed PL or UK voice.
@@ -51,7 +51,7 @@ Input: Piper clips (EN lessac, PL gosia, UK ukrainian_tts), resampled to 16 kHz.
 
 - Accuracy is good for PL. The UK errors match the letters that the Piper UK voice drops
   ("Missing phoneme from id map: Д, С"), so the clip is at fault, not only the STT.
-- Speed is the blocker. With 1.2 CPU, local STT is 2.5× to 30× slower than real time. The best one,
+- Speed is the blocker. With 1.2 CPU, local STT is 2.5× to 32× slower than real time. The best one,
   Parakeet, needs about 8 s for a 3 s clip. That breaks the ≤ 5 s turn goal on its own.
 - Piper runs at about real time on 1.2 CPU. Sentence streaming hides part of it (the first sentence plays
   while the next is made). Output is 22,050 Hz, so it needs a resample to 16 kHz.

@@ -1,6 +1,6 @@
 # ADR 0001: Key decisions for the MVP
 
-Status: accepted (2026-11-09)
+Status: accepted (2026-11-09). Decision 5 is superseded by [ADR 0002](0002-litellm-optional.md).
 
 | # | Decision | Reason | Cost |
 |---|---|---|---|

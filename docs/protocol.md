@@ -55,7 +55,7 @@ One WebSocket connection between the device and the server.
 | `error` | S→D | `turn`, `code` | Turn failed. Device plays a **local** beep and shows a face per code. |
 
 ### Error codes
-`no_speech` (< 300 ms speech), `stt_failed`, `llm_failed` (all providers failed), `rate_limited` (provider limit still hit after retries), `tts_failed`, `tool_timeout`, `moderated`, `confirm_timeout`, `internal`.
+`no_speech` (< 300 ms speech), `stt_failed`, `llm_failed` (chat call failed, not a 429), `rate_limited` (provider limit still hit after retries), `tts_failed`, `tool_timeout`, `moderated`, `confirm_timeout`, `internal`.
 Errors are never sent as audio, so they work even when TTS is down.
 
 ## Abort and barge-in

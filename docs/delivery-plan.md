@@ -47,9 +47,18 @@ Total M0–M6: 54–101 h.
 ### M3 Voice pipeline
 - Probe: Mistral STT and TTS with one EN, PL and UK phrase each. Record language support and output format.
 - `providers`: STT, chat (stream), TTS against an OpenAI-compatible endpoint per role.
-- Rate limiter per endpoint: token bucket (rate and burst in `.env`), retry on 429 with `Retry-After`
-  or 0.5/1/2 s backoff (2 retries, within the turn budget), then `error {code: rate_limited}`. Log each 429.
-  Merge short sentences into one TTS call.
+- Rate limiter per endpoint: token bucket (rate and burst in `.env`). The rate is per API key: divide it by
+  the number of server copies that share the key. Moderation has its own reserved bucket.
+- Time limits: connect and read timeout per call, and a hard turn deadline (8 s, the p95 goal). The wait for
+  a token, each retry and each `Retry-After` wait count against the deadline. A `Retry-After` longer than
+  the time left ends the turn at once.
+- Retry on 429 with `Retry-After` or 0.5/1/2 s backoff (±25% jitter, at most 2 retries), then
+  `error {code: rate_limited}`. Retry only before the first token or byte arrives. Never retry a tool call.
+  An abort cancels the call and any backoff wait.
+- Caps per turn: 4 LLM calls (tool loop) and 20 TTS calls. Log each 429 with role, status, retry count and
+  host only: no headers, no error bodies.
+- TTS merge: send the first sentence alone, then merge short sentences into one call. Merge only sentences
+  that passed moderation.
 - Docs example: optional external LiteLLM config with Mistral → Gemini → Ollama/LM Studio fallback.
 - Pipeline: VAD, STT, agent, sentence-split TTS streaming, 60 s cap, "continue".
 - Per-sentence moderation (fail closed) and family-safe prompt.

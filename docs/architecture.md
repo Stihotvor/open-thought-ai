@@ -33,7 +33,7 @@ flowchart LR
 
 ## Principles
 - One server instance = one device. No tenant logic. Scale by running more instances.
-- The server talks only to OpenAI-compatible endpoints. Each role (chat, STT, TTS, moderation, embeddings) has its own base URL, key and model in `.env`. Unset roles use the default endpoint.
+- The server talks only to OpenAI-compatible endpoints. Each role (chat, STT, TTS, moderation, embeddings) has its own base URL, key and model in `.env`. A role with no base URL uses the default endpoint and key. A role with its own base URL needs its own key.
 - LiteLLM is optional and runs outside this stack. Point a role at it to get provider fallback. Without it there is no fallback: a failed call ends the turn with an error code.
 - The device is thin: capture audio, play audio, show a face, run hardware tools. All logic is on the server.
 - No remote code update path on the device.
@@ -55,7 +55,7 @@ flowchart LR
 |---|---|
 | `gateway` | WebSocket endpoint, auth, one session (a new connection replaces the old one), frame and time limits. |
 | `pipeline` | One turn: VAD → STT → agent (streamed) → per-sentence moderation → TTS → resample to 16 kHz → paced stream. Cancel on abort. |
-| `providers` | Thin OpenAI-client wrappers for STT, LLM, TTS, moderation, embeddings (base URL per role). TTS output is decoded and resampled to PCM 16 kHz s16le. A token bucket per endpoint limits the call rate; a 429 gets a short backoff, then the turn ends with `rate_limited`. |
+| `providers` | Thin OpenAI-client wrappers for STT, LLM, TTS, moderation, embeddings (base URL per role). TTS output is decoded and resampled to PCM 16 kHz s16le. A token bucket per endpoint limits the call rate. Each call has a timeout, and each turn has a hard deadline. A 429 gets a short backoff, then the turn ends with `rate_limited`. |
 | `agent` | Prompt, history, tool loop, 60 s speech cap, "continue". |
 | `mcp_hub` | MCP client sessions; fixed device tools + external tools, namespaced; enforces `confirm`, schema hash, SSRF checks, 4 calls/turn. |
 | `store` | Postgres repositories (history, settings, MCP servers, tools). Qdrant memory. |
