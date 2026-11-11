@@ -86,7 +86,7 @@ erDiagram
 
 ## Memory (Qdrant)
 - Facts only from **user** turns, never from tool output.
-- One pinned embedding model, no fallback in LiteLLM. Collection name carries the model tag. Startup checks `dim` and model against a `memory_meta` row; mismatch → memory disabled, UI warning. Reindex script for a model change.
+- One pinned embedding model, no provider fallback for embeddings. Collection name carries the model tag. Startup checks `dim` and model against a `memory_meta` row; mismatch → memory disabled, UI warning. Reindex script for a model change.
 
 ## Redis
 Not used in the MVP. Pending "continue" text and confirm state live in server memory (one device per instance). Removed from required services.

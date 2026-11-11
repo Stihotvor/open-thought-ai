@@ -3,7 +3,7 @@
 #
 # Resource budget: the whole stack gets about 30% of the t630 (4 cores, 6 GB RAM),
 # so the host keeps room for Postgres, Redis, n8n, Qdrant and OpenWebUI.
-# Stack total: 1.2 CPU, 1800 MB. Later services (LiteLLM in M3) share this budget.
+# Stack total: 1.2 CPU, 1800 MB. LiteLLM is external and optional (ADR 0002).
 services:
   server:
     build: ./server

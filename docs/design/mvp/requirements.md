@@ -17,8 +17,8 @@ Self-hosted pocket voice assistant: own ESP32-C3 firmware and own Python server.
 - C4 One server instance serves exactly one device. More devices run more server instances.
 - C5 Transport: own WebSocket protocol v1, raw PCM 16 kHz/16-bit mono. MVP is LAN only with `ws://`.
   The firmware accepts any server URL (LAN or public). Public `wss://` is a later milestone.
-- C6 Models: the server calls one OpenAI-compatible endpoint, a LiteLLM proxy, for LLM, STT and TTS.
-  LiteLLM owns the provider fallback (Mistral, Gemini, Ollama, LM Studio, local STT/TTS).
+- C6 Models: the server calls OpenAI-compatible endpoints for LLM, STT and TTS, one per role (Mistral, Ollama, LM Studio).
+  An external LiteLLM proxy is optional. It adds provider fallback. It is not part of this stack.
 - C7 Languages: English, Polish, Ukrainian. One language per device, set in the web UI.
 - C8 Budget: 0 € per month. Free tiers only.
 - C9 Storage: reuse the existing Postgres (≥ 15) and Qdrant. One schema, role and collection per instance. Redis is not used in the MVP.
@@ -36,7 +36,7 @@ Self-hosted pocket voice assistant: own ESP32-C3 firmware and own Python server.
 
 ## Failure Modes
 - F1 Server or Wi-Fi down: the OLED shows an offline face. The device reconnects with backoff from 1 s to 60 s. A button press gives an error beep.
-- F2 All providers fail or hit limits: LiteLLM returns an error. The server sends `error {code: llm_failed}`; the device plays a local error sound and ends the turn.
+- F2 The provider (or LiteLLM, if used) fails or hits limits. The server sends `error {code: llm_failed}`; the device plays a local error sound and ends the turn.
 - F2b Moderation error: fail closed, neutral refusal.
 - F3 Server restart: conversation history, settings, MCP config and long-term memory survive (Postgres + Qdrant).
   Raw audio is never stored.
@@ -47,7 +47,7 @@ Self-hosted pocket voice assistant: own ESP32-C3 firmware and own Python server.
 - OPEN: TLS (`wss://`) on the C3 may not fit in RAM next to the audio buffers. Accepted risk for the MVP (LAN only). Measure before the public milestone.
 - OPEN: Exact Postgres and Qdrant versions on the home stack. Assumed Postgres ≥ 15, Qdrant 1.x.
 - OPEN: Flash encryption and USB-JTAG disable on the C3. Decide before public release.
-- OPEN: The Mistral TTS free tier and Polish/Ukrainian TTS voice quality are not verified. Measure in M3. Fallback: Piper voices via LiteLLM.
+- RISK (M3 probe, see ../../research/m3-audio-probe.md): Mistral `voxtral-mini-transcribe-2602` rejects the `language` parameter for Polish and Ukrainian. The clips were synthetic, so a test with a human recording is still needed. TTS works on the free tier with English voices only. Fallback: local Parakeet STT and Piper TTS endpoints (both tested on the laptop CPU).
 
 ## Success Metrics
 - M1 Latency: button release to first reply sound, p50 ≤ 5 s and p95 ≤ 8 s, over 50 turns on LAN.
@@ -56,4 +56,4 @@ Self-hosted pocket voice assistant: own ESP32-C3 firmware and own Python server.
 - M4 Firmware RAM: minimum free heap ≥ 40 KB during a full round trip.
 - M5 Abort: device audio silent ≤ 300 ms after the button press (measured on the device), 10 of 10 tries.
 - M6 Tools: the LLM calls a device tool and one n8n MCP tool correctly in ≥ 9 of 10 tries.
-- M7 Cost: 0 € API spend per month (LiteLLM spend log).
+- M7 Cost: 0 € API spend per month (provider usage page, or the LiteLLM spend log if used).

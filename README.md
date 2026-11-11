@@ -5,8 +5,8 @@ A pocket device (ESP32-C3) records your voice. Your own server answers.
 
 - Own firmware (C, ESP-IDF). No OTA. No cloud vendor server. Update only by USB.
 - Own Python server in Docker Compose. One server instance per device.
-- Models through one OpenAI-compatible endpoint ([LiteLLM](https://github.com/BerriAI/litellm)):
-  Mistral, Gemini, Ollama, LM Studio, or local STT/TTS.
+- Models through OpenAI-compatible endpoints: Mistral directly, Ollama, LM Studio,
+  or your own [LiteLLM](https://github.com/BerriAI/litellm) proxy (optional) for fallback across providers.
 - Tools through MCP: device tools (volume, face, LED) and your own MCP servers (for example n8n workflows).
 - English, Polish, Ukrainian.
 

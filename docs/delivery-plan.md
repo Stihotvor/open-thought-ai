@@ -9,7 +9,7 @@ Hours are human hours with AI help (estimates).
 | M0.5 | Hardware review (EDA agent) | `docs/hardware.md` approved, pins fixed | 3–6 |
 | M1 | Firmware bring-up | Wi-Fi via SoftAP, tone plays, face shows, mic level logged | 8–15 |
 | M2 | Link + echo | Speech goes to server and plays back | 6–10 |
-| M3 | Voice pipeline via LiteLLM | EN/PL/UK round trip, latency p50 ≤ 5 s measured | 10–20 |
+| M3 | Voice pipeline | EN/PL/UK round trip, latency p50 ≤ 5 s measured | 10–20 |
 | M4 | MCP hub | Device tool + one n8n MCP tool work, risky tool asks to confirm | 10–18 |
 | M5 | Web UI + Postgres | Settings, MCP servers, tools, history, retention in UI | 6–12 |
 | M6 | Hardening | Abort ≤ 300 ms, 24 h soak, CI green, heap ≥ 40 KB | 8–15 |
@@ -42,11 +42,24 @@ Total M0–M6: 54–101 h.
 - Measure free heap with WS + audio buffers (target ≥ 40 KB).
 - Spike: `wss://` with mbedTLS, measure heap. Record result in an ADR.
 - Abort flush on the device: measure button → silence.
-- Compose file with `server` and `litellm`.
+- Compose file with `server`.
 
 ### M3 Voice pipeline
-- `providers`: STT, chat (stream), TTS via LiteLLM.
-- LiteLLM config: Mistral → Gemini → Ollama/LM Studio; local STT/TTS fallback.
+- Probe: Mistral STT and TTS with one EN, PL and UK phrase each. Record language support and output format.
+- `providers`: STT, chat (stream), TTS against an OpenAI-compatible endpoint per role.
+- Rate limiter per endpoint: token bucket (rate and burst in `.env`). The rate is per API key: divide it by
+  the number of server copies that share the key. Moderation has its own reserved bucket.
+- Time limits: connect and read timeout per call, and a hard turn deadline (8 s, the p95 goal). The wait for
+  a token, each retry and each `Retry-After` wait count against the deadline. A `Retry-After` longer than
+  the time left ends the turn at once.
+- Retry on 429 with `Retry-After` or 0.5/1/2 s backoff (±25% jitter, at most 2 retries), then
+  `error {code: rate_limited}`. Retry only before the first token or byte arrives. Never retry a tool call.
+  An abort cancels the call and any backoff wait.
+- Caps per turn: 4 LLM calls (tool loop) and 20 TTS calls. Log each 429 with role, status, retry count and
+  host only: no headers, no error bodies.
+- TTS merge: send the first sentence alone, then merge short sentences into one call. Merge only sentences
+  that passed moderation.
+- Docs example: optional external LiteLLM config with Mistral → Gemini → Ollama/LM Studio fallback.
 - Pipeline: VAD, STT, agent, sentence-split TTS streaming, 60 s cap, "continue".
 - Per-sentence moderation (fail closed) and family-safe prompt.
 - TTS decode + resample to 16 kHz.
