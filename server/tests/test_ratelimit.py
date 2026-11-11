@@ -109,7 +109,11 @@ def test_two_retries_then_rate_limited():
     call, calls = answers(Retryable429(), Retryable429(), Retryable429())
     seen = []
     with pytest.raises(RateLimited):
-        run(limited_call(call, bucket, budget, seen.append, clock.sleep, lambda: 0.5))
+        run(
+            limited_call(
+                call, bucket, budget, on_429=seen.append, sleep=clock.sleep, rand=lambda: 0.5
+            )
+        )
     assert len(calls) == 3
     assert seen == [0, 1, 2]
 
@@ -179,7 +183,8 @@ def test_abort_during_token_wait_gives_token_back():
 
     bucket, calls = run(scenario())
     assert calls == []
-    assert bucket.tokens > -0.5  # the reserved token came back
+    # full bucket (1) - first reserve (1) - aborted reserve (1) + give back (1) + 0.05 s refill
+    assert bucket.tokens == pytest.approx(0.05, abs=0.05)
 
 
 def test_cancel_never_exceeds_burst():

@@ -16,6 +16,7 @@ import json
 import logging
 import math
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from typing import Any
 
 import httpx
 
@@ -58,10 +59,14 @@ def make_http_client() -> httpx.AsyncClient:
     return httpx.AsyncClient(follow_redirects=False, trust_env=False)
 
 
+# A base URL always has a scheme, so it never equals a bare role name: no collision.
+MODERATION_BUCKET_ID = (MODERATION, "")
+
+
 def bucket_id(cfg: RoleConfig) -> tuple[str, str]:
     """Roles with the same endpoint and key share one provider quota, so one bucket.
     Moderation always gets its own reserved bucket, so a TTS burst cannot starve it."""
-    return (MODERATION, "") if cfg.role == MODERATION else (cfg.base_url, cfg.key)
+    return MODERATION_BUCKET_ID if cfg.role == MODERATION else (cfg.base_url, cfg.key)
 
 
 def make_buckets(roles: Mapping[str, RoleConfig]) -> dict[str, TokenBucket]:
@@ -118,9 +123,14 @@ def _sse_delta(line: str) -> str | None:
         choices = json.loads(data).get("choices")
         if not choices:
             return None
-        return (choices[0].get("delta") or {}).get("content") or None
-    except (ValueError, AttributeError, TypeError, IndexError):
+        if not isinstance(choices, list):
+            raise ProviderError(CHAT)
+        content = (choices[0].get("delta") or {}).get("content")
+    except (ValueError, AttributeError, TypeError, LookupError, RecursionError):
         raise ProviderError(CHAT) from None
+    if content and not isinstance(content, str):
+        raise ProviderError(CHAT)
+    return content or None
 
 
 class ModelClient:
@@ -172,7 +182,7 @@ class ModelClient:
             log.warning("error role=%s status=none host=%s", role, cfg.host)
             raise ProviderError(role) from None
 
-    def _request(self, cfg: RoleConfig, path: str, budget: TurnBudget, **kw) -> httpx.Request:
+    def _request(self, cfg: RoleConfig, path: str, budget: TurnBudget, **kw: Any) -> httpx.Request:
         left = max(budget.left(), 0.01)  # httpx needs a positive timeout
         return self.http.build_request(
             "POST",
@@ -185,7 +195,9 @@ class ModelClient:
         )
 
     async def _open(self, cfg: RoleConfig, req: httpx.Request) -> httpx.Response:
-        """Send and check the status. The caller must close the response."""
+        """Send and check the status. The caller must close the response.
+
+        `_request` and `_post` pass `json`, `files` or `data` through to httpx."""
         resp = await self.http.send(req, stream=True)
         try:
             if resp.status_code == 429:
@@ -200,7 +212,7 @@ class ModelClient:
             raise
         return resp
 
-    async def _post(self, role: str, path: str, budget: TurnBudget, **kw) -> bytes:
+    async def _post(self, role: str, path: str, budget: TurnBudget, **kw: Any) -> bytes:
         async def call(cfg: RoleConfig) -> bytes:
             resp = await self._open(cfg, self._request(cfg, path, budget, **kw))
             body = bytearray()
@@ -227,7 +239,7 @@ class ModelClient:
         )
         try:
             text = json.loads(body)["text"]
-        except (ValueError, KeyError, TypeError):
+        except (ValueError, LookupError, TypeError, RecursionError):
             raise ProviderError(STT) from None
         if not isinstance(text, str) or len(text) > MAX_TRANSCRIPT:
             raise ProviderError(STT)
@@ -272,6 +284,10 @@ class ModelClient:
                 if total > MAX_CHAT_TEXT:
                     raise ProviderError(CHAT)
                 yield delta
+        except httpx.TimeoutException:
+            if budget.left() <= 0:
+                raise DeadlineExceeded() from None
+            raise ProviderError(CHAT) from None
         except httpx.HTTPError:
             raise ProviderError(CHAT) from None
         finally:

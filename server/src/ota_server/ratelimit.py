@@ -59,6 +59,7 @@ class TurnBudget:
         self.end = self.clock() + self.deadline_s
 
     def remaining(self) -> float:
+        """Signed time to the deadline. Negative once the turn is over."""
         return self.end - self.clock()
 
     def left(self) -> float:

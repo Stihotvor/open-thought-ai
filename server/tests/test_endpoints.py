@@ -1,14 +1,7 @@
 import pytest
+from model_env import ENDPOINTS as BASE
 
 from ota_server.endpoints import ConfigError, load_roles
-
-BASE = {
-    "OTA_MODEL_BASE_URL": "https://api.example.test/v1",
-    "OTA_MODEL_KEY": "default-key",
-    "OTA_CHAT_MODEL": "chat-m",
-    "OTA_STT_MODEL": "stt-m",
-    "OTA_TTS_MODEL": "tts-m",
-}
 
 
 def env(**extra):
@@ -97,6 +90,12 @@ def test_no_key_is_fine_on_loopback():
     local = {k: v for k, v in BASE.items() if k != "OTA_MODEL_KEY"}
     local["OTA_MODEL_BASE_URL"] = "http://127.0.0.1:11434/v1"
     assert load_roles(local)["chat"].key == ""
+
+
+@pytest.mark.parametrize("port", ["99999", "0", "abc"])
+def test_bad_port_is_rejected(port):
+    with pytest.raises(ConfigError, match="port"):
+        load_roles(env(OTA_MODEL_BASE_URL=f"https://api.example.test:{port}/v1"))
 
 
 def test_key_not_in_repr():

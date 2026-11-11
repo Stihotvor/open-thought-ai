@@ -6,6 +6,7 @@ import logging
 
 import httpx
 import pytest
+from model_env import ENDPOINTS
 
 from ota_server.endpoints import ConfigError, load_roles
 from ota_server.providers import (
@@ -19,11 +20,7 @@ from ota_server.providers import (
 from ota_server.ratelimit import CallCapExceeded, DeadlineExceeded, RateLimited, TurnBudget
 
 BASE = {
-    "OTA_MODEL_BASE_URL": "https://api.example.test/v1",
-    "OTA_MODEL_KEY": "default-key",
-    "OTA_CHAT_MODEL": "chat-m",
-    "OTA_STT_MODEL": "stt-m",
-    "OTA_TTS_MODEL": "tts-m",
+    **ENDPOINTS,
     "OTA_MODERATION_MODEL": "mod-m",
     "OTA_CHAT_RATE": "100",
     "OTA_STT_RATE": "100",
@@ -119,9 +116,10 @@ def test_bad_transcript_is_refused(payload):
         asyncio.run(client.transcribe(b"x", "en", new_turn_budget()))
 
 
-def test_shared_client_is_safe():
+def test_make_http_client_disables_redirects_and_env_proxies():
     http = make_http_client()
     assert not http.follow_redirects
+    assert not http.trust_env
     asyncio.run(http.aclose())
 
 
@@ -219,6 +217,13 @@ def test_network_error_becomes_provider_error():
     assert err.value.role == "stt"
 
 
+def test_deeply_nested_json_becomes_provider_error():
+    deep = "[" * 100000 + "]" * 100000
+    client = client_with(lambda req: httpx.Response(200, text=deep))
+    with pytest.raises(ProviderError):
+        asyncio.run(client.transcribe(b"x", "en", new_turn_budget()))
+
+
 def test_bad_json_becomes_provider_error():
     client = client_with(lambda req: httpx.Response(200, text="not json"))
     with pytest.raises(ProviderError):
@@ -269,6 +274,22 @@ def test_chat_bad_chunk_becomes_provider_error():
 
 def test_chat_too_long_reply_is_cut():
     client = client_with(lambda req: httpx.Response(200, text=sse("x" * (MAX_CHAT_TEXT + 1))))
+    with pytest.raises(ProviderError):
+        asyncio.run(collect(client))
+
+
+@pytest.mark.parametrize(
+    "chunk",
+    [
+        {"choices": [{"delta": {"content": 5}}]},
+        {"choices": {"a": 1}},
+        {"choices": [{"delta": {"content": ["x"]}}]},
+        {"choices": [{"delta": "text"}]},
+    ],
+)
+def test_chat_odd_chunk_shape_becomes_provider_error(chunk):
+    text = "data: " + json.dumps(chunk) + "\n\n"
+    client = client_with(lambda req: httpx.Response(200, text=text))
     with pytest.raises(ProviderError):
         asyncio.run(collect(client))
 

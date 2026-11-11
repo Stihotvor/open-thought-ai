@@ -74,6 +74,12 @@ def _check_url(role: str, url: str, allow_insecure: bool) -> None:
         raise ConfigError(f"{role}: base URL must be http(s)://host")
     if parts.username or parts.password:
         raise ConfigError(f"{role}: base URL must not contain credentials")
+    try:
+        port = parts.port
+    except ValueError:
+        raise ConfigError(f"{role}: base URL has a bad port") from None
+    if port == 0:
+        raise ConfigError(f"{role}: base URL has a bad port")
     if parts.query or parts.fragment:
         raise ConfigError(f"{role}: base URL must not contain a query or fragment")
     if parts.scheme == "https" or _is_loopback(parts.hostname):
@@ -93,10 +99,14 @@ def _number[N: (int, float)](role: str, name: str, raw: str, kind: type[N]) -> N
     return value
 
 
+def _base_url(env: Mapping[str, str], name: str) -> str:
+    return env.get(name, "").rstrip("/")
+
+
 def load_roles(env: Mapping[str, str]) -> dict[str, RoleConfig]:
     """Build the role configs. Raise ConfigError on any unsafe or missing value."""
     allow_insecure = env.get(INSECURE_FLAG) == "1"
-    default_url = env.get("OTA_MODEL_BASE_URL", "").rstrip("/")
+    default_url = _base_url(env, "OTA_MODEL_BASE_URL")
     default_key = env.get("OTA_MODEL_KEY", "")
     roles = {}
     for role in ROLES:
@@ -104,13 +114,14 @@ def load_roles(env: Mapping[str, str]) -> dict[str, RoleConfig]:
         model = env.get(prefix + "MODEL", "")
         if not model:
             continue
-        own_url = env.get(prefix + "BASE_URL", "").rstrip("/")
+        own_url = _base_url(env, prefix + "BASE_URL")
+        own_key = env.get(prefix + "KEY", "")
         if own_url:
-            url, key = own_url, env.get(prefix + "KEY", "")
+            url, key = own_url, own_key
             if not key:
                 raise ConfigError(f"{role}: own base URL needs its own key")
         else:
-            url, key = default_url, env.get(prefix + "KEY", "") or default_key
+            url, key = default_url, own_key or default_key
         if not url:
             raise ConfigError(f"{role}: no base URL")
         _check_url(role, url, allow_insecure)
