@@ -26,6 +26,7 @@ from .ratelimit import DeadlineExceeded, Retryable429, TokenBucket, TurnBudget, 
 log = logging.getLogger(__name__)
 
 CONNECT_TIMEOUT = 3.0
+MIN_TIMEOUT = 0.01  # seconds; httpx needs a positive timeout
 CALL_CAPS = {CHAT: 4, STT: 2, TTS: 20}  # per turn; add a cap with each new client method
 MAX_BODY = 8 * 1024 * 1024  # bytes, any response
 MAX_UPLOAD = 4 * 1024 * 1024  # bytes, STT input
@@ -33,7 +34,7 @@ MAX_TTS_TEXT = 1000  # characters per TTS call
 MAX_TRANSCRIPT = 4000  # characters, about 2 min of speech
 MAX_SSE_LINE = 64 * 1024  # bytes
 MAX_CHAT_TEXT = 16 * 1024  # characters per chat reply
-SSE_PREFIX = "data: "
+SSE_PREFIX = "data:"
 SSE_DONE = "[DONE]"
 WAV_FILENAME = "turn.wav"
 WAV_MIME = "audio/wav"
@@ -112,15 +113,20 @@ async def _lines(resp: httpx.Response) -> AsyncIterator[str]:
         yield pending.decode("utf-8", "replace")
 
 
-def _sse_delta(line: str) -> str | None:
-    """Text of one SSE chunk, or None for comments, empty chunks and the end marker."""
+def _sse_data(line: str) -> str | None:
+    """The data of one SSE line (`data:` with an optional space), or None for other lines."""
     if not line.startswith(SSE_PREFIX):
         return None
-    data = line.removeprefix(SSE_PREFIX)
-    if data == SSE_DONE:
-        return None
+    return line.removeprefix(SSE_PREFIX).removeprefix(" ")
+
+
+def _sse_delta(data: str) -> str | None:
+    """Text of one SSE chunk, or None for an empty chunk. An error chunk is a failure."""
     try:
-        choices = json.loads(data).get("choices")
+        chunk = json.loads(data)
+        if "error" in chunk:
+            raise ProviderError(CHAT)
+        choices = chunk.get("choices")
         if not choices:
             return None
         if not isinstance(choices, list):
@@ -140,11 +146,13 @@ class ModelClient:
         http: httpx.AsyncClient,
         buckets: Mapping[str, TokenBucket] | None = None,
     ) -> None:
-        if http.follow_redirects:
-            raise ValueError("the HTTP client must not follow redirects")
+        if http.follow_redirects or http.trust_env:
+            raise ValueError("the HTTP client must not follow redirects or use env proxies")
         self.roles = roles
         self.http = http
         self.buckets = buckets if buckets is not None else make_buckets(roles)
+        if set(roles) - set(self.buckets):
+            raise ValueError("every role needs a bucket")
 
     def _role(self, role: str) -> RoleConfig:
         cfg = self.roles.get(role)
@@ -183,7 +191,7 @@ class ModelClient:
             raise ProviderError(role) from None
 
     def _request(self, cfg: RoleConfig, path: str, budget: TurnBudget, **kw: Any) -> httpx.Request:
-        left = max(budget.left(), 0.01)  # httpx needs a positive timeout
+        left = max(budget.left(), MIN_TIMEOUT)
         return self.http.build_request(
             "POST",
             cfg.base_url + path,
@@ -195,9 +203,7 @@ class ModelClient:
         )
 
     async def _open(self, cfg: RoleConfig, req: httpx.Request) -> httpx.Response:
-        """Send and check the status. The caller must close the response.
-
-        `_request` and `_post` pass `json`, `files` or `data` through to httpx."""
+        """Send and check the status. The caller must close the response."""
         resp = await self.http.send(req, stream=True)
         try:
             if resp.status_code == 429:
@@ -274,10 +280,15 @@ class ModelClient:
                 try:
                     line = await asyncio.wait_for(anext(lines), budget.left())
                 except StopAsyncIteration:
-                    return
+                    raise ProviderError(CHAT) from None  # closed before the end marker
                 except TimeoutError:
                     raise DeadlineExceeded() from None
-                delta = _sse_delta(line)
+                data = _sse_data(line)
+                if data is None:
+                    continue
+                if data == SSE_DONE:
+                    return
+                delta = _sse_delta(data)
                 if delta is None:
                     continue
                 total += len(delta)

@@ -23,6 +23,9 @@ CHAT, STT, TTS, MODERATION, EMBEDDINGS = "chat", "stt", "tts", "moderation", "em
 ROLES = (CHAT, STT, TTS, MODERATION, EMBEDDINGS)
 INSECURE_FLAG = "OTA_ALLOW_INSECURE_MODEL_ENDPOINT"
 MAX_BURST = 100
+DEFAULT_RATE = "1"  # calls per second
+DEFAULT_BURST = "1"
+FLAG_ON = "1"
 
 
 class ConfigError(Exception):
@@ -32,7 +35,7 @@ class ConfigError(Exception):
 @dataclass(frozen=True)
 class RoleConfig:
     role: str
-    base_url: str
+    base_url: str = field(repr=False)  # logs and reprs never show endpoints
     key: str = field(repr=False)
     model: str
     rate: float
@@ -40,12 +43,16 @@ class RoleConfig:
 
     @property
     def host(self) -> str:
-        return urlsplit(self.base_url).hostname or ""
+        return _host(self.base_url)
 
 
 LAN_NETWORKS = tuple(
     ipaddress.ip_network(n) for n in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7")
 )
+
+
+def _host(url: str) -> str:
+    return urlsplit(url).hostname or ""
 
 
 def _ip(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
@@ -105,7 +112,7 @@ def _base_url(env: Mapping[str, str], name: str) -> str:
 
 def load_roles(env: Mapping[str, str]) -> dict[str, RoleConfig]:
     """Build the role configs. Raise ConfigError on any unsafe or missing value."""
-    allow_insecure = env.get(INSECURE_FLAG) == "1"
+    allow_insecure = env.get(INSECURE_FLAG) == FLAG_ON
     default_url = _base_url(env, "OTA_MODEL_BASE_URL")
     default_key = env.get("OTA_MODEL_KEY", "")
     roles = {}
@@ -125,9 +132,9 @@ def load_roles(env: Mapping[str, str]) -> dict[str, RoleConfig]:
         if not url:
             raise ConfigError(f"{role}: no base URL")
         _check_url(role, url, allow_insecure)
-        if not key and not _is_loopback(urlsplit(url).hostname or ""):
+        if not key and not _is_loopback(_host(url)):
             raise ConfigError(f"{role}: no key for a non-loopback endpoint")
-        burst = _number(role, "burst", env.get(prefix + "BURST", "1"), int)
+        burst = _number(role, "burst", env.get(prefix + "BURST", DEFAULT_BURST), int)
         if burst > MAX_BURST:
             raise ConfigError(f"{role}: burst must be <= {MAX_BURST}")
         roles[role] = RoleConfig(
@@ -135,7 +142,7 @@ def load_roles(env: Mapping[str, str]) -> dict[str, RoleConfig]:
             base_url=url,
             key=key,
             model=model,
-            rate=_number(role, "rate", env.get(prefix + "RATE", "1"), float),
+            rate=_number(role, "rate", env.get(prefix + "RATE", DEFAULT_RATE), float),
             burst=burst,
         )
     return roles

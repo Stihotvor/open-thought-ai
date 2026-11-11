@@ -39,14 +39,14 @@ def as_network(resp: httpx.Response) -> httpx.Response:
     )
 
 
-def client_with(handler, env=BASE, **http_kw):
+def client_with(handler, env=BASE, trust_env=False, **http_kw):
     async def network(req):
         resp = handler(req)
         if inspect.isawaitable(resp):
             resp = await resp
         return as_network(resp)
 
-    http = httpx.AsyncClient(transport=httpx.MockTransport(network), **http_kw)
+    http = httpx.AsyncClient(transport=httpx.MockTransport(network), trust_env=trust_env, **http_kw)
     return ModelClient(load_roles(env), http)
 
 
@@ -121,6 +121,17 @@ def test_make_http_client_disables_redirects_and_env_proxies():
     assert not http.follow_redirects
     assert not http.trust_env
     asyncio.run(http.aclose())
+
+
+def test_client_refuses_env_proxies():
+    with pytest.raises(ValueError, match="proxies"):
+        client_with(lambda req: httpx.Response(200), trust_env=True)
+
+
+def test_client_refuses_missing_bucket():
+    http = httpx.AsyncClient(trust_env=False)
+    with pytest.raises(ValueError, match="bucket"):
+        ModelClient(load_roles(BASE), http, buckets={})
 
 
 def test_client_refuses_redirect_following():
@@ -289,6 +300,24 @@ def test_chat_too_long_reply_is_cut():
 )
 def test_chat_odd_chunk_shape_becomes_provider_error(chunk):
     text = "data: " + json.dumps(chunk) + "\n\n"
+    client = client_with(lambda req: httpx.Response(200, text=text))
+    with pytest.raises(ProviderError):
+        asyncio.run(collect(client))
+
+
+def test_chat_accepts_data_without_space():
+    text = 'data:{"choices":[{"delta":{"content":"ok"}}]}\n\ndata:[DONE]\n\n'
+    assert asyncio.run(collect(client_with(lambda req: httpx.Response(200, text=text)))) == ["ok"]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        sse("cut").removesuffix("data: [DONE]\n\n"),  # closed before the end marker
+        'data: {"error": {"message": "x"}}\n\n',
+    ],
+)
+def test_chat_truncated_or_error_stream_fails(text):
     client = client_with(lambda req: httpx.Response(200, text=text))
     with pytest.raises(ProviderError):
         asyncio.run(collect(client))

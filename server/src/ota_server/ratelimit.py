@@ -105,6 +105,7 @@ class TokenBucket:
 
 
 async def _wait(seconds: float, budget: TurnBudget, sleep: Sleep) -> None:
+    """Sleep, or raise RateLimited at once if the wait does not fit the deadline."""
     if seconds > budget.remaining():
         raise RateLimited(f"wait {seconds:.2f} s does not fit the turn deadline")
     if seconds > 0:
