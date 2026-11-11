@@ -34,6 +34,7 @@ flowchart LR
 ## Principles
 - One server instance = one device. No tenant logic. Scale by running more instances.
 - The server talks only to OpenAI-compatible endpoints. Each role (chat, STT, TTS, moderation, embeddings) has its own base URL, key and model in `.env`. A role with no base URL uses the default endpoint and key. A role with its own base URL needs its own key.
+- Terms: an "endpoint" is the OpenAI-compatible base URL of one role. A "provider" is the vendor or local service behind it (Mistral, Gemini, Ollama, LM Studio).
 - LiteLLM is optional and runs outside this stack. Point a role at it to get provider fallback. Without it there is no fallback: a failed call ends the turn with an error code.
 - The device is thin: capture audio, play audio, show a face, run hardware tools. All logic is on the server.
 - No remote code update path on the device.

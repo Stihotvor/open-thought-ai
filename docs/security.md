@@ -39,9 +39,13 @@ Threat model: a home LAN with guests and IoT devices, family members including c
 - Model keys and base URLs are in `.env` only, never in logs or the UI. Use a key per role with the least scope the provider allows.
 - A key is bound to the base URL of its role. A role with its own base URL needs its own key, or the server does not start. Base URLs with embedded credentials are rejected.
 - A model endpoint that carries a key must use `https://`, unless it is on loopback. `ALLOW_INSECURE_MODEL_ENDPOINT=1` allows `http://` on the LAN. The server then logs a warning at startup.
+- Base URLs are never editable in the web UI. If that changes, apply the same re-auth and IP checks as for MCP URLs.
+- Child processes (stdio MCP servers) get a clean environment with only the variables they declare, never the model keys or `MCP_SECRET_*`.
+- No settings export, debug or `/env` endpoint shows model keys or base URLs.
 - With the optional external LiteLLM: the server uses a virtual key with a rate limit, limited to the model routes it needs. Never give it the master key.
 - Moderation fails closed: any error, timeout or `rate_limited` → neutral refusal. Moderation runs per sentence before TTS, and on tool args and results.
 - Memory is written only from user turns.
+- Data that leaves the LAN: with a cloud provider (the default is the Mistral API), the voice audio, transcripts, replies and memory facts in the prompt go to that provider. Free tiers may keep this data or train on it. For a child-use device, prefer local providers (Parakeet STT and Piper TTS, see research/m3-audio-probe.md). The web UI shows which provider each role uses.
 - Logs never contain the token, `Authorization`, secret header values, model keys, or provider error bodies. Transcripts are logged only at DEBUG.
 - `.env` is mode 600 and git-ignored. CI runs a secret scan. `.env.example` has placeholders only.
 - Security events are logged: auth failures, session replacements, admin changes, tool calls, confirmations.
