@@ -52,7 +52,7 @@ Total M0–M6: 54–101 h.
 - Time limits: connect and read timeout per call, and a hard turn deadline (8 s, the p95 goal). The wait for
   a token, each retry and each `Retry-After` wait count against the deadline. A `Retry-After` longer than
   the time left ends the turn at once.
-- Retry on 429 with `Retry-After` or 0.5/1/2 s backoff (±25% jitter, at most 2 retries), then
+- Retry on 429 with `Retry-After` or 0.5/1 s backoff (±25% jitter, at most 2 retries), then
   `error {code: rate_limited}`. Retry only before the first token or byte arrives. Never retry a tool call.
   An abort cancels the call and any backoff wait.
 - Caps per turn: 4 LLM calls (tool loop) and 20 TTS calls. Log each 429 with role, status, retry count and

@@ -38,7 +38,7 @@ Threat model: a home LAN with guests and IoT devices, family members including c
 ## Models and data
 - Model keys and base URLs are in `.env` only, never in logs or the UI. Use a key per role with the least scope the provider allows.
 - A key is bound to the base URL of its role. A role with its own base URL needs its own key, or the server does not start. Base URLs with embedded credentials are rejected.
-- A model endpoint that carries a key must use `https://`, unless it is on loopback. `ALLOW_INSECURE_MODEL_ENDPOINT=1` allows `http://` on the LAN. The server then logs a warning at startup.
+- A model endpoint that carries a key must use `https://`, unless it is on loopback. `OTA_ALLOW_INSECURE_MODEL_ENDPOINT=1` allows `http://` to a private LAN IP only. The server then logs a warning at startup.
 - Base URLs are never editable in the web UI. If that changes, apply the same re-auth and IP checks as for MCP URLs.
 - Child processes (stdio MCP servers) get a clean environment with only the variables they declare, never the model keys or `MCP_SECRET_*`.
 - No settings export, debug or `/env` endpoint shows model keys or base URLs.
