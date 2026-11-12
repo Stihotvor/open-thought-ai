@@ -1,11 +1,11 @@
 import asyncio
 import contextlib
-import inspect
 import json
 import logging
 
 import httpx
 import pytest
+from fake_endpoint import make_client
 from model_env import ENDPOINTS
 
 from ota_server.endpoints import ConfigError, load_roles
@@ -29,25 +29,8 @@ BASE = {
 }
 
 
-def as_network(resp: httpx.Response) -> httpx.Response:
-    """MockTransport hands back a response that is already read. A real one is not, and
-    the client reads raw bytes, so rebuild it with an unread stream."""
-    if not isinstance(resp.stream, httpx.ByteStream):
-        return resp  # a custom test stream, already unread
-    return httpx.Response(
-        resp.status_code, headers=resp.headers, stream=httpx.ByteStream(resp.content)
-    )
-
-
 def client_with(handler, env=BASE, trust_env=False, **http_kw):
-    async def network(req):
-        resp = handler(req)
-        if inspect.isawaitable(resp):
-            resp = await resp
-        return as_network(resp)
-
-    http = httpx.AsyncClient(transport=httpx.MockTransport(network), trust_env=trust_env, **http_kw)
-    return ModelClient(load_roles(env), http)
+    return make_client(handler, env, trust_env, **http_kw)
 
 
 def sse(*deltas):

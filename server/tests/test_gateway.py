@@ -1,16 +1,22 @@
 """Protocol v1 tests with an in-process fake device."""
 
+import asyncio
 import hashlib
+import json
 from contextlib import ExitStack
 
 import pytest
 from fastapi.testclient import TestClient
+from model_env import ENDPOINTS
 from starlette.websockets import WebSocketDisconnect
 
 from ota_server import gateway
+from ota_server import session as session_module
 from ota_server.config import Settings, get_settings
+from ota_server.endpoints import ConfigError
 from ota_server.main import create_app
-from ota_server.protocol import AUDIO_CHUNK, BYTES_PER_SECOND, Close
+from ota_server.pipeline import VoicePipeline
+from ota_server.protocol import AUDIO_CHUNK, BYTES_PER_SECOND, Close, TurnError
 from ota_server.ratelimit import TokenBucket
 
 TOKEN = "test-token-0123456789abcdef0123456789"
@@ -90,6 +96,7 @@ def test_echo_round_trip_with_credit(client):
     # Credit sent before reply.start must count. The start credit alone is too small.
     ws.send_json({"type": "audio.credit", "bytes": 16000})
     assert ws.receive_json() == {"type": "state", "turn": turn, "state": "thinking"}
+    assert ws.receive_json() == {"type": "state", "turn": turn, "state": "speaking"}
     assert ws.receive_json() == {"type": "reply.start", "turn": turn}
     received = b""
     while True:
@@ -127,6 +134,100 @@ def test_turn_limit_survives_reconnect(client):
     second = connect(client)
     second.send_json({"type": "listen.start"})
     assert second.receive_json()["code"] == "too_many_turns"
+
+
+def failing_source(error: Exception):
+    async def source(pcm: bytes) -> bytes:
+        raise error
+
+    return source
+
+
+@pytest.mark.parametrize(
+    ("error", "code"),
+    [(TurnError("stt_failed"), "stt_failed"), (RuntimeError("bug"), "internal")],
+)
+def test_failed_turn_sends_error_code(client, error, code):
+    client.app.state.reply_source = failing_source(error)
+    ws = connect(client)
+    turn = speak(ws, 0.5)
+    assert ws.receive_json() == {"type": "state", "turn": turn, "state": "thinking"}
+    assert ws.receive_json() == {"type": "error", "turn": turn, "code": code}
+
+
+def voice_env(monkeypatch, **extra):
+    for name, value in {**ENDPOINTS, "OTA_PIPELINE": "voice", **extra}.items():
+        monkeypatch.setenv(name, value)
+    get_settings.cache_clear()
+
+
+@pytest.mark.parametrize(
+    ("extra", "match"),
+    [
+        ({}, "no moderation"),  # roles are fine, the acknowledgement is missing
+        ({"OTA_VOICE_WITHOUT_MODERATION": "1", "OTA_TTS_MODEL": ""}, "needs these roles: tts"),
+    ],
+)
+def test_voice_pipeline_refuses_to_start(monkeypatch, extra, match):
+    voice_env(monkeypatch, **extra)
+    try:
+        with pytest.raises(ConfigError, match=match), TestClient(create_app()):
+            pass
+    finally:
+        get_settings.cache_clear()
+
+
+def test_voice_pipeline_starts_with_acknowledgement(monkeypatch, caplog):
+    voice_env(monkeypatch, OTA_VOICE_WITHOUT_MODERATION="1", OTA_MODERATION_MODEL="mod-m")
+    try:
+        app = create_app()
+        with TestClient(app):
+            assert isinstance(app.state.reply_source, VoicePipeline)
+        assert "WITHOUT moderation" in caplog.text
+        assert "moderation role is configured but not used" in caplog.text
+    finally:
+        get_settings.cache_clear()
+
+
+def test_abort_while_thinking_ends_the_reply(client):
+    async def slow(pcm: bytes) -> bytes:
+        await asyncio.Event().wait()  # never answers
+        return pcm
+
+    client.app.state.reply_source = slow
+    ws = connect(client)
+    turn = speak(ws, 0.5)
+    assert ws.receive_json() == {"type": "state", "turn": turn, "state": "thinking"}
+    ws.send_json({"type": "abort", "turn": turn})
+    assert ws.receive_json() == {"type": "reply.end", "turn": turn, "reason": "abort"}
+
+
+def test_long_reply_ends_with_cap(client, monkeypatch):
+    monkeypatch.setattr(session_module, "SPEECH_CAP", AUDIO_CHUNK)  # 100 ms for a fast test
+    ws = connect(client)
+    turn = speak(ws, 0.5)  # echo returns 500 ms
+    msgs, received = [], b""
+    while True:
+        msg = ws.receive()
+        if msg.get("bytes"):
+            received += msg["bytes"][1:]
+        elif msg.get("text"):
+            msgs.append(json.loads(msg["text"])["type"])
+            if msgs[-1] == "reply.end":
+                break
+    assert msgs == ["state", "state", "reply.start", "reply.end"]
+    assert json.loads(msg["text"]) == {"type": "reply.end", "turn": turn, "reason": "cap"}
+    assert len(received) == AUDIO_CHUNK  # cut exactly at the cap
+
+
+def test_30_s_of_audio_starts_the_reply(client):
+    ws = connect(client)
+    ws.send_json({"type": "listen.start"})
+    turn = ws.receive_json()["turn"]
+    chunk = bytes([turn]) + b"\x01\x00" * (AUDIO_CHUNK // 2)
+    for _ in range(301):  # 30.1 s: the last frame crosses the limit
+        ws.send_bytes(chunk)
+    assert ws.receive_json() == {"type": "state", "turn": turn, "state": "thinking"}
 
 
 def test_new_connection_replaces_old(client):

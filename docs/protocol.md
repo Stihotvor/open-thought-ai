@@ -70,7 +70,7 @@ Errors are never sent as audio, so they work even when TTS is down.
 4. Yes → run the held call once. Anything else or timeout → cancel, `error {code: confirm_timeout}` on timeout.
 
 ## Long replies ("continue")
-- TTS stops after `speech_cap_s` (default 60 s): `reply.end {reason: cap}`.
+- TTS stops after 60 s of reply audio (a fixed cap): `reply.end {reason: cap}`.
 - The server keeps the unspoken text in memory for 5 min. History stores the spoken part and marks the turn `truncated`.
 - A transcript that matches the "continue" keyword list (EN continue, PL dalej, UK далі) plays the rest, without an LLM call.
 

@@ -76,7 +76,8 @@ async def device_endpoint(ws: WebSocket, settings: Settings = Depends(get_settin
         return
 
     await slot.take(ws)
-    session = DeviceSession(ws, turn_limit=slot.turn_limit(settings))
+    reply_source = ws.app.state.reply_source  # set at startup in main.py
+    session = DeviceSession(ws, reply_source, turn_limit=slot.turn_limit(settings))
     await ws.send_json(
         {
             "type": "hello",
@@ -100,5 +101,5 @@ async def device_endpoint(ws: WebSocket, settings: Settings = Depends(get_settin
     except WebSocketDisconnect:
         pass
     finally:
+        slot.release(ws)  # first, so a failure below cannot keep the slot
         await session.cancel_reply()
-        slot.release(ws)

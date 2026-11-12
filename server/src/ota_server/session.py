@@ -14,15 +14,18 @@ from .protocol import (
     MAX_LEAD_SECONDS,
     MAX_TURN_AUDIO,
     MIN_SPEECH,
+    SPEECH_CAP,
     START_CREDIT,
     ProtocolError,
+    TurnError,
     split_audio,
 )
 from .ratelimit import TokenBucket
 
 log = logging.getLogger(__name__)
 
-# Turns captured audio into reply audio. M2 uses echo. M3 replaces it with the voice pipeline.
+# Turns captured audio into reply audio: echo (M2) or pipeline.VoicePipeline (M3).
+# It raises TurnError(code) when the turn fails; the device then gets that error code.
 ReplySource = Callable[[bytes], Awaitable[bytes]]
 
 
@@ -46,6 +49,9 @@ class DeviceSession:
         self.credit = 0
         self.credit_changed = asyncio.Event()
         self.reply_task: asyncio.Task | None = None
+        # The turn whose reply the device still waits for: set when the reply starts,
+        # cleared by its last message. An abort then owes the device a reply.end.
+        self.open_turn: int | None = None
 
     async def handle_text(self, msg: dict) -> None:
         match msg["type"]:
@@ -64,8 +70,7 @@ class DeviceSession:
                 await self.ws.send_json({"type": "turn.start", "turn": self.turn})
             case "listen.stop":
                 if msg.get("turn") == self.turn and self.listening:
-                    self.listening = False
-                    self.reply_task = asyncio.create_task(self.reply(self.turn, bytes(self.audio)))
+                    self.start_reply()
             case "abort":
                 if msg.get("turn") == self.turn:
                     await self.cancel_reply()
@@ -83,23 +88,46 @@ class DeviceSession:
         if turn != self.turn or not self.listening:
             return  # stale frame from an older turn
         if len(self.audio) + len(pcm) > MAX_TURN_AUDIO:
-            self.listening = False  # 30 s limit: stop collecting, keep what we have
+            self.start_reply()  # 30 s limit: the server stops listening and answers
             return
         self.audio.extend(pcm)
 
+    def start_reply(self) -> None:
+        self.listening = False
+        self.open_turn = self.turn
+        self.reply_task = asyncio.create_task(self.reply(self.turn, bytes(self.audio)))
+
     async def reply(self, turn: int, pcm: bytes) -> None:
         if len(pcm) < MIN_SPEECH:
-            await self.ws.send_json({"type": "error", "turn": turn, "code": "no_speech"})
+            await self.finish({"type": "error", "turn": turn, "code": "no_speech"})
             return
         await self.ws.send_json({"type": "state", "turn": turn, "state": "thinking"})
-        out = await self.reply_source(pcm)
-        await self.ws.send_json({"type": "reply.start", "turn": turn})
         try:
-            await self.stream(turn, out)
-        except asyncio.CancelledError:
-            await self.ws.send_json({"type": "reply.end", "turn": turn, "reason": "abort"})
-            raise
-        await self.ws.send_json({"type": "reply.end", "turn": turn, "reason": "done"})
+            out = await self.reply_source(pcm)
+        except TurnError as exc:
+            await self.finish({"type": "error", "turn": turn, "code": exc.code})
+            return
+        except Exception:  # pylint: disable=broad-exception-caught  # the device must hear it
+            log.exception("reply failed")
+            await self.finish({"type": "error", "turn": turn, "code": "internal"})
+            return
+        reason = "done"
+        if len(out) > SPEECH_CAP:
+            out, reason = out[:SPEECH_CAP], "cap"
+        await self.ws.send_json({"type": "state", "turn": turn, "state": "speaking"})
+        await self.ws.send_json({"type": "reply.start", "turn": turn})
+        await self.stream(turn, out)
+        await self.finish({"type": "reply.end", "turn": turn, "reason": reason})
+
+    async def finish(self, msg: dict) -> None:
+        """Send the last message of a turn. After it, an abort owes the device nothing."""
+        await self.ws.send_json(msg)
+        self.open_turn = None
+
+    async def send_quietly(self, msg: dict) -> None:
+        """Send and ignore any error: used on abort, when the socket may be closed already."""
+        with contextlib.suppress(Exception):
+            await self.ws.send_json(msg)
 
     async def stream(self, turn: int, pcm: bytes) -> None:
         """Send PCM at real time, at most MAX_LEAD_SECONDS ahead, within the granted credit."""
@@ -121,3 +149,8 @@ class DeviceSession:
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
+        if self.open_turn is not None:  # abort while thinking or speaking (docs/protocol.md)
+            await self.send_quietly(
+                {"type": "reply.end", "turn": self.open_turn, "reason": "abort"}
+            )
+            self.open_turn = None
