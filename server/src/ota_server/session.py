@@ -18,6 +18,7 @@ from .protocol import (
     ProtocolError,
     split_audio,
 )
+from .ratelimit import TokenBucket
 
 log = logging.getLogger(__name__)
 
@@ -30,7 +31,13 @@ async def echo(pcm: bytes) -> bytes:
 
 
 class DeviceSession:
-    def __init__(self, ws: WebSocket, reply_source: ReplySource = echo) -> None:
+    def __init__(
+        self,
+        ws: WebSocket,
+        reply_source: ReplySource = echo,
+        turn_limit: TokenBucket | None = None,
+    ) -> None:
+        self.turn_limit = turn_limit
         self.ws = ws
         self.reply_source = reply_source
         self.turn = 0
@@ -43,6 +50,12 @@ class DeviceSession:
     async def handle_text(self, msg: dict) -> None:
         match msg["type"]:
             case "listen.start":
+                if self.turn_limit is not None and self.turn_limit.reserve() > 0:
+                    self.turn_limit.cancel()  # refused: the token was not used
+                    await self.ws.send_json(
+                        {"type": "error", "turn": self.turn, "code": "too_many_turns"}
+                    )
+                    return
                 await self.cancel_reply()
                 self.turn = (self.turn + 1) % 256
                 self.audio.clear()
