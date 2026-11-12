@@ -11,7 +11,7 @@ from fake_endpoint import make_client
 from model_env import ENDPOINTS
 
 from ota_server import pipeline as pipeline_module
-from ota_server.pipeline import TTS_CHUNK, VoicePipeline, system_prompt, tts_chunks
+from ota_server.pipeline import SELF_TEST, TTS_CHUNK, VoicePipeline, system_prompt, tts_chunks
 from ota_server.protocol import BYTES_PER_SECOND, TurnError
 from ota_server.providers import MAX_TTS_TEXT, MISTRAL_CORE, OPENAI_CORE
 
@@ -26,7 +26,11 @@ ENV = {
 CLEAN = {name: False for name in [*MISTRAL_CORE, "health", "pii"]}  # Mistral schema
 OPENAI_CLEAN = {name: False for name in OPENAI_CORE}
 SELF_TEST_WORD = "zabić"  # in the harmful Polish self-test phrase
+CANARY = SELF_TEST["pl"][0]  # rides along in every moderation batch
 SPEECH = b"\x01\x00" * BYTES_PER_SECOND  # 1 s of device PCM
+FIRST, SECOND = "a" * 200 + ".", "b" * 200 + "."
+LONG = f"{FIRST} {SECOND}"
+DOSE_Q, DOSE_A = "How many pills can I take?", "Yes, take ten."
 
 
 def tts_wav(seconds: float = 0.5, rate: int = 24000) -> bytes:
@@ -44,10 +48,15 @@ def sse(text: str) -> str:
     return f"data: {chunk}\n\ndata: [DONE]\n\n"
 
 
+def self_test_only(text: str) -> bool:
+    return SELF_TEST_WORD in text
+
+
 class Endpoint:
-    """A fake OpenAI-compatible endpoint. Moderation flags a text that contains one of
-    `flag`. The first moderation call is the self-test; `result` and `moderation_status`
-    apply only to the calls after it."""
+    """A fake OpenAI-compatible endpoint. `flag(text)` decides each moderation verdict.
+    Moderation calls are numbered: 1 is the self-test, 2 the transcript, 3 the reply.
+    `result`, `moderation_status` and `result_count_delta` apply from call `from_call` on,
+    so a retried 429 or a repeated self-test meets the same answer."""
 
     def __init__(
         self,
@@ -55,27 +64,37 @@ class Endpoint:
         reply="Dobrze. A ty?",
         tts=None,
         fail=None,
-        flag=(SELF_TEST_WORD,),
+        flag=self_test_only,
         result=None,
         moderation_status=None,
+        result_count_delta=0,
+        from_call=2,
     ):
         self.transcript, self.reply, self.tts, self.fail = transcript, reply, tts, fail or {}
         self.flag, self.result, self.moderation_status = flag, result, moderation_status
+        self.result_count_delta, self.from_call = result_count_delta, from_call
         self.calls: list[str] = []
         self.moderated: list[list[str]] = []  # the inputs of each moderation call
 
     def verdict(self, text: str) -> dict:
-        return {"categories": {**CLEAN, "selfharm": any(w in text for w in self.flag)}}
+        return {"categories": {**CLEAN, "selfharm": self.flag(text)}}
 
     def moderation(self, req: httpx.Request) -> httpx.Response:
         texts = json.loads(req.content)["input"]
         self.moderated.append(texts)
-        after_self_test = len(self.moderated) > 1
-        if after_self_test and self.moderation_status:
+        aimed = len(self.moderated) >= self.from_call
+        if aimed and self.moderation_status:
             return httpx.Response(self.moderation_status)
-        if after_self_test and self.result is not None:
-            return httpx.Response(200, json={"results": [self.result for _ in texts]})
-        return httpx.Response(200, json={"results": [self.verdict(t) for t in texts]})
+        results = [self.verdict(t) for t in texts]
+        if aimed and self.result is not None:  # the canary keeps its true verdict
+            results = [
+                r if self_test_only(t) else self.result for t, r in zip(texts, results, strict=True)
+            ]
+        if aimed and self.result_count_delta < 0:
+            results = results[: self.result_count_delta]
+        if aimed and self.result_count_delta > 0:
+            results += results[:1] * self.result_count_delta
+        return httpx.Response(200, json={"results": results})
 
     def __call__(self, req: httpx.Request) -> httpx.Response:
         path = req.url.path
@@ -123,26 +142,66 @@ def test_turn_runs_self_test_stt_chat_tts():
 def test_reply_is_moderated_with_its_question():
     endpoint = Endpoint()
     run(endpoint)
-    assert endpoint.moderated[-1] == ["Dobrze.", "A ty?", "Jak się masz?\nDobrze. A ty?"]
+    assert endpoint.moderated[-1] == ["Dobrze.", "A ty?", "Jak się masz?\nDobrze. A ty?", CANARY]
 
 
 def test_long_transcript_is_moderated_in_pieces_and_whole():
-    first, second = "a" * 200 + ".", "b" * 200 + "."
-    endpoint = Endpoint(transcript=f"{first} {second}")
+    endpoint = Endpoint(transcript=LONG)
     run(endpoint)
-    assert endpoint.moderated[1] == [first, second, f"{first} {second}"]
+    assert endpoint.moderated[1] == [FIRST, SECOND, LONG, CANARY]
 
 
-def test_self_test_failure_refuses_every_turn():
-    endpoint = Endpoint(flag=())  # moderation misses the harmful self-test phrase
-    assert refused(endpoint) == "moderated"
-    assert endpoint.calls == ["moderations"]  # no STT, no chat
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"flag": lambda text: False},  # misses the harmful phrase
+        {"flag": lambda text: True},  # flags the harmless phrase too
+        {"result_count_delta": -1, "from_call": 1},
+        {"result_count_delta": 1, "from_call": 1},
+    ],
+)
+def test_self_test_failure_refuses_every_turn(kwargs):
+    endpoint = Endpoint(**kwargs)
+    pipeline = pipeline_for(endpoint)
+
+    async def two_turns():
+        for _ in range(2):
+            with pytest.raises(TurnError) as err:
+                await pipeline(SPEECH)
+            assert err.value.code == "moderated"
+
+    asyncio.run(two_turns())
+    assert endpoint.calls == ["moderations", "moderations"]  # retried, never STT or chat
+    assert not pipeline.moderation_checked
 
 
 def test_self_test_error_refuses_the_turn():
     endpoint = Endpoint(fail={"/v1/moderations": 500})
     assert refused(endpoint) == "moderated"
     assert "transcriptions" not in endpoint.calls
+
+
+def test_canary_catches_moderation_that_stopped_working():
+    endpoint = Endpoint()
+    pipeline = pipeline_for(endpoint)
+
+    async def turns():
+        await pipeline(SPEECH)  # the self-test passes, the first turn speaks
+        endpoint.flag = lambda text: False  # the endpoint now passes everything
+        with pytest.raises(TurnError) as err:
+            await pipeline(SPEECH)
+        assert err.value.code == "moderated"
+
+    asyncio.run(turns())
+    assert endpoint.calls.count("completions") == 1  # the second turn never reached chat
+    assert not pipeline.moderation_checked  # the next turn runs the self-test again
+
+
+def test_question_with_reply_input_is_capped():
+    endpoint = Endpoint(transcript="q" * 2000 + ".", reply="r" * 3000 + ".")
+    run(endpoint)
+    context = endpoint.moderated[-1][-2]
+    assert context == "q" * 499 + ".\n" + "r" * 1500
 
 
 def test_self_test_runs_once():
@@ -174,11 +233,42 @@ def test_failures_map_to_device_error_codes(path, status, code):
     assert refused(Endpoint(fail={path: status})) == code
 
 
-@pytest.mark.parametrize("status", [500, 429])
-def test_moderation_failure_after_self_test_fails_closed(status):
-    endpoint = Endpoint(moderation_status=status)
+STAGES = [(2, "completions"), (3, "speech")]  # (first failing moderation call, blocked call)
+
+
+@pytest.mark.parametrize(("at", "blocked"), STAGES)
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"moderation_status": 500},
+        {"moderation_status": 429},
+        {"result_count_delta": -1},
+        {"result_count_delta": 1},
+    ],
+)
+def test_moderation_failure_fails_closed_at_each_stage(at, blocked, kwargs):
+    endpoint = Endpoint(from_call=at, **kwargs)
     assert refused(endpoint) == "moderated"
-    assert "completions" not in endpoint.calls
+    assert blocked not in endpoint.calls
+
+
+@pytest.mark.parametrize(
+    ("transcript", "reply", "flagged_text", "blocked"),
+    [
+        (LONG, "Ok.", SECOND, "completions"),  # only the second transcript piece
+        (LONG, "Ok.", LONG, "completions"),  # only the whole transcript
+        ("Jak się masz?", "Dobrze. A ty?", "A ty?", "speech"),  # only the last reply chunk
+        (DOSE_Q, DOSE_A, f"{DOSE_Q}\n{DOSE_A}", "speech"),  # only the question with the reply
+    ],
+)
+def test_a_flag_on_any_single_input_refuses(transcript, reply, flagged_text, blocked):
+    endpoint = Endpoint(
+        transcript=transcript,
+        reply=reply,
+        flag=lambda text: self_test_only(text) or text == flagged_text,
+    )
+    assert refused(endpoint) == "moderated"
+    assert blocked not in endpoint.calls
 
 
 @pytest.mark.parametrize(
@@ -189,7 +279,7 @@ def test_moderation_failure_after_self_test_fails_closed(status):
     ],
 )
 def test_flagged_text_is_moderated_and_logged(caplog, kwargs, side, never_called):
-    endpoint = Endpoint(flag=(SELF_TEST_WORD, "hurt"), **kwargs)
+    endpoint = Endpoint(flag=lambda text: self_test_only(text) or "hurt" in text, **kwargs)
     with caplog.at_level(logging.WARNING):
         assert refused(endpoint) == "moderated"
     assert never_called not in endpoint.calls
@@ -209,10 +299,11 @@ def test_flagged_text_is_moderated_and_logged(caplog, kwargs, side, never_called
         {"flagged": "no", "categories": CLEAN},
     ],
 )
-def test_suspect_results_fail_closed(result):
-    endpoint = Endpoint(result=result)
+@pytest.mark.parametrize(("at", "blocked"), STAGES)
+def test_suspect_results_fail_closed(result, at, blocked):
+    endpoint = Endpoint(result=result, from_call=at)
     assert refused(endpoint) == "moderated"
-    assert "completions" not in endpoint.calls  # refused already at the transcript
+    assert blocked not in endpoint.calls
 
 
 @pytest.mark.parametrize(

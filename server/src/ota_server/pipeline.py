@@ -27,6 +27,9 @@ log = logging.getLogger(__name__)
 
 LANGUAGE_NAMES = {"en": "English", "pl": "Polish", "uk": "Ukrainian"}
 TTS_CHUNK = 300  # characters: short sentences after the first are merged up to this length
+# The question-with-reply moderation input: the end of the question and the start of the
+# reply, short enough that padding cannot dilute it and the provider does not cut it.
+PAIR_QUESTION, PAIR_REPLY = 500, 1500
 SENTENCE_END = re.compile(r"(?<=[.!?…])\s+")
 STAGE_CODES = {
     "stt": "stt_failed",
@@ -115,8 +118,20 @@ class VoicePipeline:  # pylint: disable=too-few-public-methods  # a callable Rep
         self.moderation_checked = True
 
     async def moderate(self, side: str, texts: list[str], budget: TurnBudget) -> None:
-        """Raise TurnError("moderated") when any text is flagged. Logs the side, not the text."""
-        if any(await self.client.moderate(texts, budget)):
+        """Raise TurnError("moderated") when any text is flagged. Logs the side, not the text.
+
+        The harmful self-test phrase rides along as a canary in every batch. If it is not
+        flagged, moderation stopped working since the self-test (another model, a stub, a
+        fallback route): the turn is refused and the self-test runs again next turn."""
+        if not texts:
+            raise TurnError("moderated")  # an empty batch proves nothing
+        canary = SELF_TEST[self.language][0]
+        *verdicts, canary_flagged = await self.client.moderate([*texts, canary], budget)
+        if not canary_flagged:
+            self.moderation_checked = False
+            log.error("moderation canary was not flagged: voice turns are refused")
+            raise TurnError("moderated")
+        if any(verdicts):
             log.warning("moderation flagged the %s", side)
             raise TurnError("moderated")
 
@@ -146,7 +161,8 @@ class VoicePipeline:  # pylint: disable=too-few-public-methods  # a callable Rep
             stage = "moderation"
             # Each chunk, plus the question with the whole reply: "Yes, take ten" is only
             # harmful as the answer to a question.
-            await self.moderate("reply", [*chunks, f"{text}\n{reply}"], budget)
+            context = f"{text[-PAIR_QUESTION:]}\n{reply[:PAIR_REPLY]}"
+            await self.moderate("reply", [*chunks, context], budget)
             stage = "tts"
             out = bytearray()
             for chunk in chunks:
