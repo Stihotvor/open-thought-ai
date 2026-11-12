@@ -15,7 +15,7 @@ import asyncio
 import json
 import logging
 import math
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Mapping
 from typing import Any
 
 import httpx
@@ -94,7 +94,7 @@ def _retry_after(resp: httpx.Response) -> float | None:
     return value if math.isfinite(value) and value >= 0 else None
 
 
-async def _lines(resp: httpx.Response) -> AsyncIterator[str]:
+async def _lines(resp: httpx.Response) -> AsyncGenerator[str]:
     """Split the byte stream into lines. Refuse a line longer than MAX_SSE_LINE
     before it is fully buffered."""
     pending = bytearray()
@@ -178,7 +178,9 @@ class ModelClient:
 
         try:
             async with asyncio.timeout(budget.left()):
-                return await limited_call(lambda: call(cfg), self.buckets[role], budget, log_429)
+                return await limited_call(
+                    lambda: call(cfg), self.buckets[role], budget, on_429=log_429
+                )
         except TimeoutError:
             raise DeadlineExceeded() from None
         except httpx.TimeoutException:

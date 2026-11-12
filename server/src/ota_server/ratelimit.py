@@ -116,6 +116,7 @@ async def limited_call[T](
     call: Callable[[], Awaitable[T]],
     bucket: TokenBucket,
     budget: TurnBudget,
+    *,
     on_429: Callable[[int], None] = lambda attempt: None,
     sleep: Sleep = asyncio.sleep,
     rand: Callable[[], float] = random.random,

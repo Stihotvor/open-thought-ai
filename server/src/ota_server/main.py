@@ -17,14 +17,14 @@ async def lifespan(_: FastAPI):
 
 def create_app() -> FastAPI:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
-    app = FastAPI(title="open-thought-ai server", lifespan=lifespan)
-    app.include_router(router)
+    application = FastAPI(title="open-thought-ai server", lifespan=lifespan)
+    application.include_router(router)
 
-    @app.get("/healthz")
+    @application.get("/healthz")
     def healthz() -> dict:
         return {"status": "ok"}
 
-    return app
+    return application
 
 
 app = create_app()

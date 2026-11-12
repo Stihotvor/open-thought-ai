@@ -13,7 +13,11 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "bandit>=1.9.4",
+    "mypy>=2.4.1",
+    "pylint>=4.1.3",
     "pytest>=8.3",
+    "pytest-cov>=7.1.0",
     "ruff>=0.8",
 ]
 
@@ -32,6 +36,31 @@ select = ["E", "F", "I", "B", "UP", "SIM"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.12"
+warn_unused_ignores = true
+warn_redundant_casts = true
+
+[tool.pylint.main]
+# Docstrings are required on modules and on non-obvious code only (ruff style), not on every
+# function. Ruff already checks line length and imports.
+disable = ["missing-function-docstring", "missing-class-docstring", "line-too-long"]
+
+[tool.pylint.design]
+max-args = 6  # limited_call: three required, three keyword-only test hooks
+max-attributes = 8  # DeviceSession holds the per-turn state of protocol v1
+
+[tool.bandit]
+exclude_dirs = ["tests"]
+
+[tool.coverage.run]
+source = ["ota_server"]
+branch = true
+
+[tool.coverage.report]
+fail_under = 90
+show_missing = true
 
 [tool.ruff.lint.flake8-bugbear]
 extend-immutable-calls = ["fastapi.Depends"]
