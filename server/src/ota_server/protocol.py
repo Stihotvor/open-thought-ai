@@ -18,7 +18,7 @@ MIN_SPEECH = int(0.3 * BYTES_PER_SECOND)
 START_CREDIT = 9600
 MAX_LEAD_SECONDS = 0.3
 HELLO_TIMEOUT = 5.0
-SPEECH_CAP = 60 * BYTES_PER_SECOND  # speech_cap_s: longer replies end with reason "cap"
+SPEECH_CAP = 60 * BYTES_PER_SECOND  # fixed 60 s reply cap: longer replies end with reason "cap"
 
 
 class TurnError(Exception):

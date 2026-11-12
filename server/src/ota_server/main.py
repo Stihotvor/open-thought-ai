@@ -19,7 +19,8 @@ VOICE_ROLES = (STT, CHAT, TTS)
 
 
 def voice_roles(env: Mapping[str, str], settings: Settings) -> dict[str, RoleConfig]:
-    """The model roles for the voice pipeline. Raises ConfigError when it must not start."""
+    """Check that the voice pipeline may start, and return its model roles.
+    Raises ConfigError when it must not start."""
     if not settings.voice_without_moderation:
         raise ConfigError(
             "the voice pipeline has no moderation yet: set OTA_VOICE_WITHOUT_MODERATION=1 "
@@ -29,9 +30,6 @@ def voice_roles(env: Mapping[str, str], settings: Settings) -> dict[str, RoleCon
     missing = [role for role in VOICE_ROLES if role not in roles]
     if missing:
         raise ConfigError(f"the voice pipeline needs these roles: {', '.join(missing)}")
-    log.warning("voice pipeline runs WITHOUT moderation: not for use with children")
-    if MODERATION in roles:
-        log.warning("the moderation role is configured but not used yet")
     return roles
 
 
@@ -40,6 +38,9 @@ async def start_reply_source(settings: Settings, stack: AsyncExitStack) -> Reply
     if settings.pipeline != "voice":
         return echo
     roles = voice_roles(model_env(), settings)
+    log.warning("voice pipeline runs WITHOUT moderation: not for use with children")
+    if MODERATION in roles:
+        log.warning("the moderation role is configured but not used yet")
     http = await stack.enter_async_context(make_http_client())
     return VoicePipeline(ModelClient(roles, http), settings.language, settings.tts_voice)
 

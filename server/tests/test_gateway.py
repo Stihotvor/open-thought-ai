@@ -206,14 +206,28 @@ def test_long_reply_ends_with_cap(client, monkeypatch):
     monkeypatch.setattr(session_module, "SPEECH_CAP", AUDIO_CHUNK)  # 100 ms for a fast test
     ws = connect(client)
     turn = speak(ws, 0.5)  # echo returns 500 ms
-    msgs = []
+    msgs, received = [], b""
     while True:
         msg = ws.receive()
-        if msg.get("text"):
-            msgs.append(json.loads(msg["text"]))
-            if msgs[-1]["type"] == "reply.end":
+        if msg.get("bytes"):
+            received += msg["bytes"][1:]
+        elif msg.get("text"):
+            msgs.append(json.loads(msg["text"])["type"])
+            if msgs[-1] == "reply.end":
                 break
-    assert msgs[-1] == {"type": "reply.end", "turn": turn, "reason": "cap"}
+    assert msgs == ["state", "state", "reply.start", "reply.end"]
+    assert json.loads(msg["text"]) == {"type": "reply.end", "turn": turn, "reason": "cap"}
+    assert len(received) == AUDIO_CHUNK  # cut exactly at the cap
+
+
+def test_30_s_of_audio_starts_the_reply(client):
+    ws = connect(client)
+    ws.send_json({"type": "listen.start"})
+    turn = ws.receive_json()["turn"]
+    chunk = bytes([turn]) + b"\x01\x00" * (AUDIO_CHUNK // 2)
+    for _ in range(301):  # 30.1 s: the last frame crosses the limit
+        ws.send_bytes(chunk)
+    assert ws.receive_json() == {"type": "state", "turn": turn, "state": "thinking"}
 
 
 def test_new_connection_replaces_old(client):

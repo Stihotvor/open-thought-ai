@@ -63,9 +63,11 @@ so the insecure flag is needed. It allows `http://` only to a private LAN IP.
 > so nothing checks what is said to the child. Voice mode starts only when you accept this
 > with `OTA_VOICE_WITHOUT_MODERATION=1`.
 
+Read the warning above, then remove the `#` from the acknowledgement line yourself.
+
 ```bash
 OTA_PIPELINE=voice
-OTA_VOICE_WITHOUT_MODERATION=1
+# OTA_VOICE_WITHOUT_MODERATION=1
 OTA_ALLOW_INSECURE_MODEL_ENDPOINT=1
 OTA_STT_BASE_URL=http://192.168.1.20:8000/v1
 OTA_STT_KEY=<key>

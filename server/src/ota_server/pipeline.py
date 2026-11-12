@@ -92,7 +92,11 @@ class VoicePipeline:  # pylint: disable=too-few-public-methods  # a callable Rep
                 if len(out) >= SPEECH_CAP:
                     break  # the session plays at most SPEECH_CAP: save the other TTS calls
                 wav = await self.client.speak(chunk, self.voice, budget)
-                out += await asyncio.to_thread(wav_to_pcm, wav)  # CPU work off the event loop
+                # A thread, so the event loop keeps running (it gets GIL time slices). The thread
+                # cannot be cancelled, so check the deadline once it is done.
+                out += await asyncio.to_thread(wav_to_pcm, wav)
+                if budget.left() <= 0:
+                    raise DeadlineExceeded()
             return bytes(out)
         except RateLimited:
             raise TurnError("rate_limited") from None

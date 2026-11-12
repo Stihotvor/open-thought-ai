@@ -14,7 +14,7 @@ from array import array
 from .protocol import SAMPLE_RATE
 
 MIN_RATE, MAX_RATE = 8_000, 48_000  # TTS voices are 16-24 kHz; anything else is refused
-MAX_CHUNK_SECONDS = 60  # one TTS chunk; a longer one is refused before it is resampled
+MAX_CHUNK_SECONDS = 30  # one TTS chunk (<= 300 chars, about 20 s of speech); longer is refused
 
 
 class AudioError(Exception):

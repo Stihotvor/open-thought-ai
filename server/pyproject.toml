@@ -50,7 +50,7 @@ disable = ["missing-function-docstring", "missing-class-docstring", "line-too-lo
 
 [tool.pylint.design]
 max-args = 6  # limited_call: three required, three keyword-only test hooks
-max-attributes = 9  # DeviceSession holds the per-turn state of protocol v1 and its turn limit
+max-attributes = 10  # DeviceSession: the per-turn state of protocol v1, turn limit, open turn
 
 [tool.bandit]
 exclude_dirs = ["tests"]
