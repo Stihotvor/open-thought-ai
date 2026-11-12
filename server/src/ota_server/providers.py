@@ -27,11 +27,24 @@ log = logging.getLogger(__name__)
 
 CONNECT_TIMEOUT = 3.0
 MIN_TIMEOUT = 0.01  # seconds; httpx needs a positive timeout
-CALL_CAPS = {CHAT: 4, STT: 2, TTS: 20}  # per turn; add a cap with each new client method
+CALL_CAPS = {CHAT: 4, STT: 2, TTS: 20, MODERATION: 2}  # per turn; one cap per client method
 MAX_BODY = 8 * 1024 * 1024  # bytes, any response
 MAX_UPLOAD = 4 * 1024 * 1024  # bytes, STT input
 MAX_TTS_TEXT = 1000  # characters per TTS call
 MAX_TRANSCRIPT = 4000  # characters, about 2 min of speech
+# Moderation categories that block a turn on a family device (Mistral names). Health,
+# financial, law and pii are allowed: a child may ask about a headache. An OpenAI-style
+# "flagged" field, when present, decides instead.
+BLOCKED_CATEGORIES = frozenset(
+    {
+        "sexual",
+        "hate_and_discrimination",
+        "violence_and_threats",
+        "dangerous_and_criminal_content",
+        "selfharm",
+        "jailbreaking",
+    }
+)
 MAX_SSE_LINE = 64 * 1024  # bytes
 MAX_CHAT_TEXT = 16 * 1024  # characters per chat reply
 SSE_PREFIX = "data:"
@@ -111,6 +124,18 @@ async def _lines(resp: httpx.Response) -> AsyncGenerator[str]:
             raise ProviderError(CHAT)
     if pending:
         yield pending.decode("utf-8", "replace")
+
+
+def _flagged(result: dict) -> bool:
+    """One moderation result. An unknown shape raises ValueError, so the turn fails closed:
+    a provider with other category names and no "flagged" field never passes silently."""
+    flagged = result.get("flagged")
+    if isinstance(flagged, bool):
+        return flagged
+    categories = result.get("categories")
+    if not isinstance(categories, dict) or not BLOCKED_CATEGORIES & categories.keys():
+        raise ValueError("unknown moderation result")
+    return any(categories.get(name) is True for name in BLOCKED_CATEGORIES)
 
 
 def _sse_data(line: str) -> str | None:
@@ -252,6 +277,18 @@ class ModelClient:
         if not isinstance(text, str) or len(text) > MAX_TRANSCRIPT:
             raise ProviderError(STT)
         return text
+
+    async def moderate(self, texts: list[str], budget: TurnBudget) -> bool:
+        """True when any text is flagged. Any failure raises: the caller refuses the turn."""
+        body = {"model": self._role(MODERATION).model, "input": texts}
+        raw = await self._post(MODERATION, "/moderations", budget, json=body)
+        try:
+            results = json.loads(raw)["results"]
+            if not isinstance(results, list) or len(results) != len(texts):
+                raise ValueError("one moderation result per text expected")
+            return any(_flagged(result) for result in results)
+        except (ValueError, LookupError, TypeError, AttributeError, RecursionError):
+            raise ProviderError(MODERATION) from None
 
     async def speak(self, text: str, voice: str, budget: TurnBudget) -> bytes:
         if len(text) > MAX_TTS_TEXT:

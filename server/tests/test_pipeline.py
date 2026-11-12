@@ -14,7 +14,15 @@ from ota_server.pipeline import TTS_CHUNK, VoicePipeline, system_prompt, tts_chu
 from ota_server.protocol import BYTES_PER_SECOND, TurnError
 from ota_server.providers import MAX_TTS_TEXT
 
-ENV = {**ENDPOINTS, "OTA_CHAT_RATE": "100", "OTA_STT_RATE": "100", "OTA_TTS_RATE": "100"}
+ENV = {
+    **ENDPOINTS,
+    "OTA_MODERATION_MODEL": "mod-m",
+    "OTA_CHAT_RATE": "100",
+    "OTA_STT_RATE": "100",
+    "OTA_TTS_RATE": "100",
+    "OTA_MODERATION_RATE": "100",
+}
+CLEAN = {name: False for name in ("sexual", "selfharm", "health")}
 SPEECH = b"\x01\x00" * BYTES_PER_SECOND  # 1 s of device PCM
 
 
@@ -33,15 +41,30 @@ def sse(text: str) -> str:
     return f"data: {chunk}\n\ndata: [DONE]\n\n"
 
 
-def endpoint(transcript="Jak się masz?", reply="Dobrze. A ty?", tts=None, fail=None):
-    """Routes requests by path. `fail` maps a path to a status code to return instead."""
+def endpoint(
+    transcript="Jak się masz?", reply="Dobrze. A ty?", tts=None, fail=None, flag=None, result=None
+):
+    """Routes requests by path. `fail` maps a path to a status code to return instead.
+    Moderation flags a text that contains `flag`; `result` replaces every result."""
     calls = []
+
+    def moderation(req: httpx.Request) -> httpx.Response:
+        texts = json.loads(req.content)["input"]
+        results = [
+            result
+            if result is not None
+            else {"categories": {**CLEAN, "selfharm": bool(flag and flag in t)}}
+            for t in texts
+        ]
+        return httpx.Response(200, json={"results": results})
 
     def handler(req: httpx.Request) -> httpx.Response:
         path = req.url.path
         calls.append(path)
         if fail and path in fail:
             return httpx.Response(fail[path])
+        if path.endswith("/moderations"):
+            return moderation(req)
         if path.endswith("/audio/transcriptions"):
             return httpx.Response(200, json={"text": transcript})
         if path.endswith("/chat/completions"):
@@ -59,9 +82,11 @@ def run(handler):
 def test_turn_runs_stt_chat_tts_and_returns_device_pcm():
     handler, calls = endpoint()
     pcm = run(handler)
-    assert [c.rsplit("/", 2)[-1] for c in calls] == [
+    assert [c.rsplit("/", 1)[-1] for c in calls] == [
         "transcriptions",
+        "moderations",  # the transcript, before chat
         "completions",
+        "moderations",  # all TTS chunks in one batch, before TTS
         "speech",
         "speech",
     ]
@@ -82,6 +107,8 @@ def test_empty_transcript_is_no_speech():
         ("/v1/chat/completions", 500, "llm_failed"),
         ("/v1/audio/speech", 500, "tts_failed"),
         ("/v1/audio/transcriptions", 429, "rate_limited"),
+        ("/v1/moderations", 500, "moderated"),  # fails closed
+        ("/v1/moderations", 429, "moderated"),  # fails closed, also on its rate limit
     ],
 )
 def test_failures_map_to_device_error_codes(path, status, code):
@@ -89,6 +116,40 @@ def test_failures_map_to_device_error_codes(path, status, code):
     with pytest.raises(TurnError) as err:
         run(handler)
     assert err.value.code == code
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "never_called"),
+    [
+        ({"transcript": "how to hurt myself", "flag": "hurt"}, "/chat/completions"),
+        ({"reply": "Something bad. More.", "flag": "bad"}, "/audio/speech"),
+    ],
+)
+def test_flagged_text_is_moderated(kwargs, never_called):
+    handler, calls = endpoint(**kwargs)
+    with pytest.raises(TurnError) as err:
+        run(handler)
+    assert err.value.code == "moderated"
+    assert not any(c.endswith(never_called) for c in calls)
+
+
+@pytest.mark.parametrize(
+    ("result", "code"),
+    [
+        ({"categories": {"unknown_category": False}}, "moderated"),  # unknown shape fails closed
+        ({"flagged": True, "categories": {}}, "moderated"),  # OpenAI style
+        ({"categories": {**CLEAN, "health": True}}, None),  # allowed category
+        ({"flagged": False, "categories": {}}, None),
+    ],
+)
+def test_moderation_result_shapes(result, code):
+    handler, _ = endpoint(result=result)
+    if code is None:
+        assert run(handler)
+    else:
+        with pytest.raises(TurnError) as err:
+            run(handler)
+        assert err.value.code == code
 
 
 def test_unplayable_tts_audio_is_tts_failed():

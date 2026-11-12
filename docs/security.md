@@ -43,7 +43,8 @@ Threat model: a home LAN with guests and IoT devices, family members including c
 - Child processes (stdio MCP servers) get a clean environment with only the variables they declare, never the model keys or `MCP_SECRET_*`.
 - No settings export, debug or `/env` endpoint shows model keys or base URLs.
 - With the optional external LiteLLM: the server uses a virtual key with a rate limit, limited to the model routes it needs. Never give it the master key.
-- Moderation fails closed: any error, timeout or `rate_limited` → neutral refusal. Moderation runs per sentence before TTS, and on tool args and results.
+- Moderation fails closed: any error, timeout, `rate_limited` or unknown response shape → neutral refusal (`moderated`). It checks the transcript before chat and every TTS chunk before TTS, and tool args and results. Voice mode does not start without a moderation role.
+- Blocked categories: sexual, hate, violence, dangerous or criminal content, self-harm, jailbreaking. Health, financial, law and personal data are allowed, so a child can ask about a headache.
 - Memory is written only from user turns.
 - Data that leaves the LAN: with a cloud provider (the default is the Mistral API), the voice audio, transcripts, replies and memory facts in the prompt go to that provider. Free tiers may keep this data or train on it. For a child-use device, prefer local providers (Parakeet STT and Piper TTS, see research/m3-audio-probe.md). The web UI shows which provider each role uses.
 - Logs never contain the token, `Authorization`, secret header values, model keys, or provider error bodies. Transcripts are logged only at DEBUG.

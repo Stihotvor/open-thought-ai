@@ -1,10 +1,12 @@
 """One voice turn: STT -> chat -> TTS -> device PCM (docs/architecture.md, `pipeline`).
 
-This first version builds the whole reply, then the session streams it.
-Not yet here (next steps in M3): per-sentence streaming to the device, moderation,
-the `transcript` message, history, VAD and "continue". Until moderation exists, the voice
-pipeline needs two settings (`OTA_PIPELINE=voice`, `OTA_VOICE_WITHOUT_MODERATION=1`)
-and is not for use with children.
+Moderation (docs/security.md): the transcript is checked before chat, and every TTS chunk
+is checked in one batch before TTS. A flagged text, or any moderation failure (error,
+timeout, rate limit), refuses the turn with the `moderated` code: it fails closed.
+
+This version builds the whole reply, then the session streams it. Not yet here (next
+steps in M3): per-sentence streaming to the device, the `transcript` message, history,
+VAD and "continue".
 """
 
 import asyncio
@@ -22,7 +24,12 @@ log = logging.getLogger(__name__)
 LANGUAGE_NAMES = {"en": "English", "pl": "Polish", "uk": "Ukrainian"}
 TTS_CHUNK = 300  # characters: short sentences after the first are merged up to this length
 SENTENCE_END = re.compile(r"(?<=[.!?…])\s+")
-STAGE_CODES = {"stt": "stt_failed", "chat": "llm_failed", "tts": "tts_failed"}
+STAGE_CODES = {
+    "stt": "stt_failed",
+    "moderation": "moderated",
+    "chat": "llm_failed",
+    "tts": "tts_failed",
+}
 
 
 def system_prompt(language: str) -> str:
@@ -77,6 +84,9 @@ class VoicePipeline:  # pylint: disable=too-few-public-methods  # a callable Rep
             text = (await self.client.transcribe(pcm_to_wav(pcm), self.language, budget)).strip()
             if not text:
                 raise TurnError("no_speech")
+            stage = "moderation"
+            if await self.client.moderate([text], budget):
+                raise TurnError("moderated")
             stage = "chat"
             messages = [
                 {"role": "system", "content": system_prompt(self.language)},
@@ -86,9 +96,13 @@ class VoicePipeline:  # pylint: disable=too-few-public-methods  # a callable Rep
                 reply = "".join([delta async for delta in deltas]).strip()
             if not reply:
                 raise TurnError("llm_failed")
+            chunks = tts_chunks(reply)
+            stage = "moderation"
+            if await self.client.moderate(chunks, budget):
+                raise TurnError("moderated")
             stage = "tts"
             out = bytearray()
-            for chunk in tts_chunks(reply):
+            for chunk in chunks:
                 if len(out) >= SPEECH_CAP:
                     break  # the session plays at most SPEECH_CAP: save the other TTS calls
                 wav = await self.client.speak(chunk, self.voice, budget)
@@ -99,7 +113,8 @@ class VoicePipeline:  # pylint: disable=too-few-public-methods  # a callable Rep
                     raise DeadlineExceeded()
             return bytes(out)
         except RateLimited:
-            raise TurnError("rate_limited") from None
+            # Moderation fails closed: its rate limit refuses the turn like any other failure.
+            raise TurnError("moderated" if stage == "moderation" else "rate_limited") from None
         except (ProviderError, DeadlineExceeded, CallCapExceeded, AudioError) as exc:
             log.warning("turn failed at %s: %s", stage, type(exc).__name__)
             raise TurnError(STAGE_CODES[stage]) from None

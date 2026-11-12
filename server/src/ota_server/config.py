@@ -23,10 +23,8 @@ class Settings(BaseSettings):
     turns_per_minute: float = Field(default=6, gt=0, le=600)
     turn_burst: int = Field(default=3, ge=1, le=20)
     # Reply source: "echo" (M2 test mode) or "voice" (STT -> chat -> TTS, needs the model roles).
-    # Echo stays the default until moderation exists (docs/security.md).
+    # Voice mode needs a moderation role (docs/security.md); without it, startup fails.
     pipeline: Literal["echo", "voice"] = "echo"
-    # Voice mode has no moderation yet. It starts only with this explicit acknowledgement.
-    voice_without_moderation: bool = False
     tts_voice: str = Field(default="", max_length=100)
 
 
