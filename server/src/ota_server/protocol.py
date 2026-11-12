@@ -5,6 +5,15 @@ from enum import IntEnum
 
 PROTO_VERSION = 1
 
+
+class TurnError(Exception):
+    """A turn failed. `code` is the protocol error code the device gets (docs/protocol.md)."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+
+
 SAMPLE_RATE = 16_000
 BYTES_PER_SECOND = SAMPLE_RATE * 2  # 16-bit mono PCM
 

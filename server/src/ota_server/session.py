@@ -16,13 +16,15 @@ from .protocol import (
     MIN_SPEECH,
     START_CREDIT,
     ProtocolError,
+    TurnError,
     split_audio,
 )
 from .ratelimit import TokenBucket
 
 log = logging.getLogger(__name__)
 
-# Turns captured audio into reply audio. M2 uses echo. M3 replaces it with the voice pipeline.
+# Turns captured audio into reply audio: echo (M2) or pipeline.VoicePipeline (M3).
+# It raises TurnError(code) when the turn fails; the device then gets that error code.
 ReplySource = Callable[[bytes], Awaitable[bytes]]
 
 
@@ -92,7 +94,15 @@ class DeviceSession:
             await self.ws.send_json({"type": "error", "turn": turn, "code": "no_speech"})
             return
         await self.ws.send_json({"type": "state", "turn": turn, "state": "thinking"})
-        out = await self.reply_source(pcm)
+        try:
+            out = await self.reply_source(pcm)
+        except TurnError as exc:
+            await self.ws.send_json({"type": "error", "turn": turn, "code": exc.code})
+            return
+        except Exception:  # pylint: disable=broad-exception-caught  # the device must hear an error
+            log.exception("reply failed")
+            await self.ws.send_json({"type": "error", "turn": turn, "code": "internal"})
+            return
         await self.ws.send_json({"type": "reply.start", "turn": turn})
         try:
             await self.stream(turn, out)

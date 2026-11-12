@@ -5,12 +5,15 @@ from contextlib import ExitStack
 
 import pytest
 from fastapi.testclient import TestClient
+from model_env import ENDPOINTS
 from starlette.websockets import WebSocketDisconnect
 
 from ota_server import gateway
 from ota_server.config import Settings, get_settings
+from ota_server.endpoints import ConfigError
 from ota_server.main import create_app
-from ota_server.protocol import AUDIO_CHUNK, BYTES_PER_SECOND, Close
+from ota_server.pipeline import VoicePipeline
+from ota_server.protocol import AUDIO_CHUNK, BYTES_PER_SECOND, Close, TurnError
 from ota_server.ratelimit import TokenBucket
 
 TOKEN = "test-token-0123456789abcdef0123456789"
@@ -127,6 +130,51 @@ def test_turn_limit_survives_reconnect(client):
     second = connect(client)
     second.send_json({"type": "listen.start"})
     assert second.receive_json()["code"] == "too_many_turns"
+
+
+def failing_source(error: Exception):
+    async def source(pcm: bytes) -> bytes:
+        raise error
+
+    return source
+
+
+@pytest.mark.parametrize(
+    ("error", "code"),
+    [(TurnError("stt_failed"), "stt_failed"), (RuntimeError("bug"), "internal")],
+)
+def test_failed_turn_sends_error_code(client, error, code):
+    client.app.state.reply_source = failing_source(error)
+    ws = connect(client)
+    turn = speak(ws, 0.5)
+    assert ws.receive_json() == {"type": "state", "turn": turn, "state": "thinking"}
+    assert ws.receive_json() == {"type": "error", "turn": turn, "code": code}
+
+
+def test_voice_pipeline_without_model_roles_fails_at_startup(monkeypatch):
+    monkeypatch.setenv("OTA_PIPELINE", "voice")
+    get_settings.cache_clear()
+    try:
+        with (
+            pytest.raises(ConfigError, match="no base URL|needs these roles"),
+            TestClient(create_app()),
+        ):
+            pass
+    finally:
+        get_settings.cache_clear()
+
+
+def test_voice_pipeline_starts_with_model_roles(monkeypatch):
+    for name, value in ENDPOINTS.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("OTA_PIPELINE", "voice")
+    get_settings.cache_clear()
+    try:
+        app = create_app()
+        with TestClient(app):
+            assert isinstance(app.state.reply_source, VoicePipeline)
+    finally:
+        get_settings.cache_clear()
 
 
 def test_new_connection_replaces_old(client):

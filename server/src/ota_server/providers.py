@@ -15,7 +15,7 @@ import asyncio
 import json
 import logging
 import math
-from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from typing import Any
 
 import httpx
@@ -264,7 +264,7 @@ class ModelClient:
         }
         return await self._post(TTS, "/audio/speech", budget, json=body)
 
-    async def chat(self, messages: list[dict], budget: TurnBudget) -> AsyncIterator[str]:
+    async def chat(self, messages: list[dict], budget: TurnBudget) -> AsyncGenerator[str]:
         """Stream text deltas. A 429 is retried only before the first byte arrives.
 
         Callers must close the stream: `async with contextlib.aclosing(client.chat(...))`.

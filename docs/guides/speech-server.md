@@ -60,6 +60,7 @@ Add these lines to the server `.env`. The speech server is on the LAN over plain
 so the insecure flag is needed. It allows `http://` only to a private LAN IP.
 
 ```bash
+OTA_PIPELINE=voice
 OTA_ALLOW_INSECURE_MODEL_ENDPOINT=1
 OTA_STT_BASE_URL=http://192.168.1.20:8000/v1
 OTA_STT_KEY=<key>
