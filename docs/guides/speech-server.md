@@ -61,8 +61,9 @@ so the insecure flag is needed. It allows `http://` only to a private LAN IP.
 
 Voice mode also needs a moderation role: without it, the server does not start. speaches has
 no moderation, so keep moderation on the default endpoint (Mistral, `OTA_MODERATION_MODEL`).
-**Verify** with a live test that it catches Polish and Ukrainian: Mistral does not list them
-as supported moderation languages.
+Mistral does not list Polish and Ukrainian as supported moderation languages. A self-test
+checks this before the first voice turn. If the log says "moderation self-test failed",
+moderation does not work in your language, and every voice turn is refused.
 
 ```bash
 OTA_PIPELINE=voice

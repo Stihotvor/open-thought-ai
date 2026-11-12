@@ -43,8 +43,12 @@ Threat model: a home LAN with guests and IoT devices, family members including c
 - Child processes (stdio MCP servers) get a clean environment with only the variables they declare, never the model keys or `MCP_SECRET_*`.
 - No settings export, debug or `/env` endpoint shows model keys or base URLs.
 - With the optional external LiteLLM: the server uses a virtual key with a rate limit, limited to the model routes it needs. Never give it the master key.
-- Moderation fails closed: any error, timeout, `rate_limited` or unknown response shape → neutral refusal (`moderated`). It checks the transcript before chat and every TTS chunk before TTS, and tool args and results. Voice mode does not start without a moderation role.
-- Blocked categories: sexual, hate, violence, dangerous or criminal content, self-harm, jailbreaking. Health, financial, law and personal data are allowed, so a child can ask about a headache.
+- Moderation fails closed: any error, timeout, `rate_limited` or unknown response shape → neutral refusal (`moderated`). Voice mode does not start without a moderation role.
+- What is checked: the transcript before chat (in pieces and whole), every TTS chunk plus the question with the whole reply before TTS, and later tool args and results.
+- Self-test: before the first voice turn, a known-harmful and a harmless phrase in the device language must get the right verdicts. Until they do, every turn is refused and an error is logged. This checks that moderation works in Polish and Ukrainian, which Mistral does not list.
+- A result must carry one complete known category schema (Mistral or OpenAI) with boolean values. Every category is blocked except health, financial, law and personal data, so a child can ask about a headache. An unknown category that is true also blocks.
+- The system prompt also forbids asking for personal data, secrets from parents, and medicine doses. These are not moderation categories, so the prompt is the only control for now.
+- A flagged turn logs which side was flagged (transcript or reply), never the text.
 - Memory is written only from user turns.
 - Data that leaves the LAN: with a cloud provider (the default is the Mistral API), the voice audio, transcripts, replies and memory facts in the prompt go to that provider. Free tiers may keep this data or train on it. For a child-use device, prefer local providers (Parakeet STT and Piper TTS, see research/m3-audio-probe.md). The web UI shows which provider each role uses.
 - Logs never contain the token, `Authorization`, secret header values, model keys, or provider error bodies. Transcripts are logged only at DEBUG.

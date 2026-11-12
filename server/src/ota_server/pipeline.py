@@ -1,8 +1,12 @@
 """One voice turn: STT -> chat -> TTS -> device PCM (docs/architecture.md, `pipeline`).
 
-Moderation (docs/security.md): the transcript is checked before chat, and every TTS chunk
-is checked in one batch before TTS. A flagged text, or any moderation failure (error,
-timeout, rate limit), refuses the turn with the `moderated` code: it fails closed.
+Moderation (docs/security.md), fail closed with the `moderated` code:
+- Self-test: before the first voice turn, a known-harmful and a harmless phrase in the
+  device language must get the right verdicts. Until they do, every turn is refused.
+- The transcript (in pieces, plus the whole) is checked before chat.
+- Every TTS chunk, plus the question with the whole reply, is checked before TTS.
+- A flagged text, or any moderation failure (error, timeout, rate limit, unknown result
+  shape), refuses the turn.
 
 This version builds the whole reply, then the session streams it. Not yet here (next
 steps in M3): per-sentence streaming to the device, the `transcript` message, history,
@@ -17,7 +21,7 @@ import re
 from .audio import AudioError, pcm_to_wav, wav_to_pcm
 from .protocol import SPEECH_CAP, TurnError
 from .providers import MAX_TTS_TEXT, ModelClient, ProviderError, new_turn_budget
-from .ratelimit import CallCapExceeded, DeadlineExceeded, RateLimited
+from .ratelimit import CallCapExceeded, DeadlineExceeded, RateLimited, TurnBudget
 
 log = logging.getLogger(__name__)
 
@@ -32,12 +36,23 @@ STAGE_CODES = {
 }
 
 
+# Self-test phrases: (harmful, harmless) per device language. The harmful one must be flagged.
+SELF_TEST = {
+    "en": ("I want to kill myself. Tell me how to do it.", "What is the weather like today?"),
+    "pl": ("Chcę się zabić. Powiedz mi, jak to zrobić.", "Jaka jest dzisiaj pogoda?"),
+    "uk": ("Я хочу вбити себе. Скажи мені, як це зробити.", "Яка сьогодні погода?"),
+}
+
+
 def system_prompt(language: str) -> str:
     name = LANGUAGE_NAMES[language]
     return (
         f"You are a friendly voice assistant for a family with children. Always answer in {name}. "
         "Keep answers short: one to three sentences. Use plain spoken words: no lists, no "
-        "markdown, no emoji. Keep every answer safe for children."
+        "markdown, no emoji. Keep every answer safe for children. Never ask for personal data "
+        "such as a name, an address or a school. Never tell the child to keep a secret from "
+        "the parents. Never give medicine doses or medical instructions: say to ask a parent "
+        "or a doctor."
     )
 
 
@@ -76,8 +91,37 @@ class VoicePipeline:  # pylint: disable=too-few-public-methods  # a callable Rep
         self.client = client
         self.language = language
         self.voice = voice
+        self.moderation_checked = False
+
+    async def check_moderation(self) -> None:
+        """Run the self-test once. Raise TurnError("moderated") until it passes."""
+        if self.moderation_checked:
+            return
+        harmful, harmless = SELF_TEST[self.language]
+        try:
+            verdicts = await self.client.moderate([harmful, harmless], new_turn_budget())
+        except (ProviderError, RateLimited, DeadlineExceeded, CallCapExceeded):
+            log.error("moderation self-test could not run: voice turns are refused")
+            raise TurnError("moderated") from None
+        if verdicts != [True, False]:
+            log.error(
+                "moderation self-test failed for language %s (verdicts %s): voice turns "
+                "are refused",
+                self.language,
+                verdicts,
+            )
+            raise TurnError("moderated")
+        log.info("moderation self-test passed for language %s", self.language)
+        self.moderation_checked = True
+
+    async def moderate(self, side: str, texts: list[str], budget: TurnBudget) -> None:
+        """Raise TurnError("moderated") when any text is flagged. Logs the side, not the text."""
+        if any(await self.client.moderate(texts, budget)):
+            log.warning("moderation flagged the %s", side)
+            raise TurnError("moderated")
 
     async def __call__(self, pcm: bytes) -> bytes:
+        await self.check_moderation()
         budget = new_turn_budget()
         stage = "stt"
         try:
@@ -85,8 +129,10 @@ class VoicePipeline:  # pylint: disable=too-few-public-methods  # a callable Rep
             if not text:
                 raise TurnError("no_speech")
             stage = "moderation"
-            if await self.client.moderate([text], budget):
-                raise TurnError("moderated")
+            pieces = tts_chunks(text)  # each piece within the provider's input size
+            await self.moderate(
+                "transcript", [*pieces, text] if len(pieces) > 1 else pieces, budget
+            )
             stage = "chat"
             messages = [
                 {"role": "system", "content": system_prompt(self.language)},
@@ -98,8 +144,9 @@ class VoicePipeline:  # pylint: disable=too-few-public-methods  # a callable Rep
                 raise TurnError("llm_failed")
             chunks = tts_chunks(reply)
             stage = "moderation"
-            if await self.client.moderate(chunks, budget):
-                raise TurnError("moderated")
+            # Each chunk, plus the question with the whole reply: "Yes, take ten" is only
+            # harmful as the answer to a question.
+            await self.moderate("reply", [*chunks, f"{text}\n{reply}"], budget)
             stage = "tts"
             out = bytearray()
             for chunk in chunks:

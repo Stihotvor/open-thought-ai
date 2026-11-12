@@ -32,19 +32,20 @@ MAX_BODY = 8 * 1024 * 1024  # bytes, any response
 MAX_UPLOAD = 4 * 1024 * 1024  # bytes, STT input
 MAX_TTS_TEXT = 1000  # characters per TTS call
 MAX_TRANSCRIPT = 4000  # characters, about 2 min of speech
-# Moderation categories that block a turn on a family device (Mistral names). Health,
-# financial, law and pii are allowed: a child may ask about a headache. An OpenAI-style
-# "flagged" field, when present, decides instead.
-BLOCKED_CATEGORIES = frozenset(
+# Moderation (docs/security.md). Every category is blocked except these: a child may ask
+# about a headache. An unknown category that is true also blocks.
+ALLOWED_CATEGORIES = frozenset({"health", "financial", "law", "pii"})
+# A result must carry one complete known schema, so a stub or a partial answer fails closed.
+MISTRAL_CORE = frozenset(
     {
         "sexual",
         "hate_and_discrimination",
         "violence_and_threats",
         "dangerous_and_criminal_content",
         "selfharm",
-        "jailbreaking",
     }
 )
+OPENAI_CORE = frozenset({"sexual", "hate", "harassment", "self-harm", "violence"})
 MAX_SSE_LINE = 64 * 1024  # bytes
 MAX_CHAT_TEXT = 16 * 1024  # characters per chat reply
 SSE_PREFIX = "data:"
@@ -127,15 +128,21 @@ async def _lines(resp: httpx.Response) -> AsyncGenerator[str]:
 
 
 def _flagged(result: dict) -> bool:
-    """One moderation result. An unknown shape raises ValueError, so the turn fails closed:
-    a provider with other category names and no "flagged" field never passes silently."""
-    flagged = result.get("flagged")
-    if isinstance(flagged, bool):
-        return flagged
+    """One moderation result: flagged when "flagged" is true or any category outside
+    ALLOWED_CATEGORIES is true. An unknown shape raises ValueError, so the turn fails closed."""
     categories = result.get("categories")
-    if not isinstance(categories, dict) or not BLOCKED_CATEGORIES & categories.keys():
-        raise ValueError("unknown moderation result")
-    return any(categories.get(name) is True for name in BLOCKED_CATEGORIES)
+    if not isinstance(categories, dict):
+        raise ValueError("moderation result without categories")
+    if not (categories.keys() >= MISTRAL_CORE or categories.keys() >= OPENAI_CORE):
+        raise ValueError("unknown moderation schema")
+    if not all(isinstance(value, bool) for value in categories.values()):
+        raise ValueError("moderation categories must be booleans")
+    flagged = result.get("flagged", False)
+    if not isinstance(flagged, bool):
+        raise ValueError("moderation flag must be a boolean")
+    return flagged or any(
+        value for name, value in categories.items() if name not in ALLOWED_CATEGORIES
+    )
 
 
 def _sse_data(line: str) -> str | None:
@@ -278,15 +285,15 @@ class ModelClient:
             raise ProviderError(STT)
         return text
 
-    async def moderate(self, texts: list[str], budget: TurnBudget) -> bool:
-        """True when any text is flagged. Any failure raises: the caller refuses the turn."""
+    async def moderate(self, texts: list[str], budget: TurnBudget) -> list[bool]:
+        """One verdict per text, True when flagged. Any failure raises: the caller refuses."""
         body = {"model": self._role(MODERATION).model, "input": texts}
         raw = await self._post(MODERATION, "/moderations", budget, json=body)
         try:
             results = json.loads(raw)["results"]
             if not isinstance(results, list) or len(results) != len(texts):
                 raise ValueError("one moderation result per text expected")
-            return any(_flagged(result) for result in results)
+            return [_flagged(result) for result in results]
         except (ValueError, LookupError, TypeError, AttributeError, RecursionError):
             raise ProviderError(MODERATION) from None
 
