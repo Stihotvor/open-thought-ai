@@ -11,6 +11,7 @@ from ota_server import gateway
 from ota_server.config import Settings, get_settings
 from ota_server.main import create_app
 from ota_server.protocol import AUDIO_CHUNK, BYTES_PER_SECOND, Close
+from ota_server.ratelimit import TokenBucket
 
 TOKEN = "test-token-0123456789abcdef0123456789"
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
@@ -106,6 +107,26 @@ def test_short_audio_gives_no_speech(client):
     ws = connect(client)
     turn = speak(ws, 0.1)
     assert ws.receive_json() == {"type": "error", "turn": turn, "code": "no_speech"}
+
+
+def test_too_many_turn_starts_are_refused(client):
+    gateway.slot.turns = TokenBucket(rate=1 / 60, burst=2)  # 2 turns, then one per minute
+    ws = connect(client)
+    for _ in range(2):
+        ws.send_json({"type": "listen.start"})
+        assert ws.receive_json()["type"] == "turn.start"
+    ws.send_json({"type": "listen.start"})
+    assert ws.receive_json() == {"type": "error", "turn": 2, "code": "too_many_turns"}
+
+
+def test_turn_limit_survives_reconnect(client):
+    gateway.slot.turns = TokenBucket(rate=1 / 60, burst=1)
+    first = connect(client)
+    first.send_json({"type": "listen.start"})
+    assert first.receive_json()["type"] == "turn.start"
+    second = connect(client)
+    second.send_json({"type": "listen.start"})
+    assert second.receive_json()["code"] == "too_many_turns"
 
 
 def test_new_connection_replaces_old(client):

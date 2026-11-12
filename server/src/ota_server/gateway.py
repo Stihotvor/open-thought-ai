@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 
 from .config import Settings, get_settings
 from .protocol import HELLO_TIMEOUT, PROTO_VERSION, Close, ProtocolError, parse_text
+from .ratelimit import TokenBucket
 from .session import DeviceSession
 
 log = logging.getLogger(__name__)
@@ -21,6 +22,12 @@ class SessionSlot:
 
     def __init__(self) -> None:
         self.ws: WebSocket | None = None
+        self.turns: TokenBucket | None = None  # kept across reconnects, so a reconnect is no reset
+
+    def turn_limit(self, settings: Settings) -> TokenBucket:
+        if self.turns is None:
+            self.turns = TokenBucket(settings.turns_per_minute / 60, settings.turn_burst)
+        return self.turns
 
     async def take(self, ws: WebSocket) -> None:
         old, self.ws = self.ws, ws
@@ -69,7 +76,7 @@ async def device_endpoint(ws: WebSocket, settings: Settings = Depends(get_settin
         return
 
     await slot.take(ws)
-    session = DeviceSession(ws)
+    session = DeviceSession(ws, turn_limit=slot.turn_limit(settings))
     await ws.send_json(
         {
             "type": "hello",

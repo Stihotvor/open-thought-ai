@@ -14,6 +14,9 @@ class Settings(BaseSettings):
     device_token_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     language: str = Field(default="en", pattern=r"^(en|pl|uk)$")
     volume: int = Field(default=60, ge=0, le=100)
+    # Turn starts per device: protects the provider quota from a stuck button or a replay loop.
+    turns_per_minute: float = Field(default=6, gt=0, le=600)
+    turn_burst: int = Field(default=3, ge=1, le=20)
 
 
 @lru_cache
