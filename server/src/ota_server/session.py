@@ -14,6 +14,7 @@ from .protocol import (
     MAX_LEAD_SECONDS,
     MAX_TURN_AUDIO,
     MIN_SPEECH,
+    SPEECH_CAP,
     START_CREDIT,
     ProtocolError,
     TurnError,
@@ -95,21 +96,30 @@ class DeviceSession:
             return
         await self.ws.send_json({"type": "state", "turn": turn, "state": "thinking"})
         try:
-            out = await self.reply_source(pcm)
-        except TurnError as exc:
-            await self.ws.send_json({"type": "error", "turn": turn, "code": exc.code})
-            return
-        except Exception:  # pylint: disable=broad-exception-caught  # the device must hear an error
-            log.exception("reply failed")
-            await self.ws.send_json({"type": "error", "turn": turn, "code": "internal"})
-            return
-        await self.ws.send_json({"type": "reply.start", "turn": turn})
-        try:
+            try:
+                out = await self.reply_source(pcm)
+            except TurnError as exc:
+                await self.ws.send_json({"type": "error", "turn": turn, "code": exc.code})
+                return
+            except Exception:  # pylint: disable=broad-exception-caught  # the device must hear it
+                log.exception("reply failed")
+                await self.ws.send_json({"type": "error", "turn": turn, "code": "internal"})
+                return
+            reason = "done"
+            if len(out) > SPEECH_CAP:
+                out, reason = out[:SPEECH_CAP], "cap"
+            await self.ws.send_json({"type": "state", "turn": turn, "state": "speaking"})
+            await self.ws.send_json({"type": "reply.start", "turn": turn})
             await self.stream(turn, out)
-        except asyncio.CancelledError:
-            await self.ws.send_json({"type": "reply.end", "turn": turn, "reason": "abort"})
+            await self.ws.send_json({"type": "reply.end", "turn": turn, "reason": reason})
+        except asyncio.CancelledError:  # abort while thinking or speaking (docs/protocol.md)
+            await self.send_quietly({"type": "reply.end", "turn": turn, "reason": "abort"})
             raise
-        await self.ws.send_json({"type": "reply.end", "turn": turn, "reason": "done"})
+
+    async def send_quietly(self, msg: dict) -> None:
+        """Send if the socket is still open. Used on abort, when it may be closed already."""
+        with contextlib.suppress(Exception):
+            await self.ws.send_json(msg)
 
     async def stream(self, turn: int, pcm: bytes) -> None:
         """Send PCM at real time, at most MAX_LEAD_SECONDS ahead, within the granted credit."""

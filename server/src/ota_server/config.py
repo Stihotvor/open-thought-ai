@@ -25,6 +25,8 @@ class Settings(BaseSettings):
     # Reply source: "echo" (M2 test mode) or "voice" (STT -> chat -> TTS, needs the model roles).
     # Echo stays the default until moderation exists (docs/security.md).
     pipeline: Literal["echo", "voice"] = "echo"
+    # Voice mode has no moderation yet. It starts only with this explicit acknowledgement.
+    voice_without_moderation: bool = False
     tts_voice: str = Field(default="", max_length=100)
 
 

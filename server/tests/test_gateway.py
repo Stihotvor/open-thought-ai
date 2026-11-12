@@ -1,6 +1,8 @@
 """Protocol v1 tests with an in-process fake device."""
 
+import asyncio
 import hashlib
+import json
 from contextlib import ExitStack
 
 import pytest
@@ -9,6 +11,7 @@ from model_env import ENDPOINTS
 from starlette.websockets import WebSocketDisconnect
 
 from ota_server import gateway
+from ota_server import session as session_module
 from ota_server.config import Settings, get_settings
 from ota_server.endpoints import ConfigError
 from ota_server.main import create_app
@@ -93,6 +96,7 @@ def test_echo_round_trip_with_credit(client):
     # Credit sent before reply.start must count. The start credit alone is too small.
     ws.send_json({"type": "audio.credit", "bytes": 16000})
     assert ws.receive_json() == {"type": "state", "turn": turn, "state": "thinking"}
+    assert ws.receive_json() == {"type": "state", "turn": turn, "state": "speaking"}
     assert ws.receive_json() == {"type": "reply.start", "turn": turn}
     received = b""
     while True:
@@ -151,30 +155,65 @@ def test_failed_turn_sends_error_code(client, error, code):
     assert ws.receive_json() == {"type": "error", "turn": turn, "code": code}
 
 
-def test_voice_pipeline_without_model_roles_fails_at_startup(monkeypatch):
-    monkeypatch.setenv("OTA_PIPELINE", "voice")
+def voice_env(monkeypatch, **extra):
+    for name, value in {**ENDPOINTS, "OTA_PIPELINE": "voice", **extra}.items():
+        monkeypatch.setenv(name, value)
     get_settings.cache_clear()
+
+
+@pytest.mark.parametrize(
+    ("extra", "match"),
+    [
+        ({}, "no moderation"),  # roles are fine, the acknowledgement is missing
+        ({"OTA_VOICE_WITHOUT_MODERATION": "1", "OTA_TTS_MODEL": ""}, "needs these roles: tts"),
+    ],
+)
+def test_voice_pipeline_refuses_to_start(monkeypatch, extra, match):
+    voice_env(monkeypatch, **extra)
     try:
-        with (
-            pytest.raises(ConfigError, match="no base URL|needs these roles"),
-            TestClient(create_app()),
-        ):
+        with pytest.raises(ConfigError, match=match), TestClient(create_app()):
             pass
     finally:
         get_settings.cache_clear()
 
 
-def test_voice_pipeline_starts_with_model_roles(monkeypatch):
-    for name, value in ENDPOINTS.items():
-        monkeypatch.setenv(name, value)
-    monkeypatch.setenv("OTA_PIPELINE", "voice")
-    get_settings.cache_clear()
+def test_voice_pipeline_starts_with_acknowledgement(monkeypatch, caplog):
+    voice_env(monkeypatch, OTA_VOICE_WITHOUT_MODERATION="1", OTA_MODERATION_MODEL="mod-m")
     try:
         app = create_app()
         with TestClient(app):
             assert isinstance(app.state.reply_source, VoicePipeline)
+        assert "WITHOUT moderation" in caplog.text
+        assert "moderation role is configured but not used" in caplog.text
     finally:
         get_settings.cache_clear()
+
+
+def test_abort_while_thinking_ends_the_reply(client):
+    async def slow(pcm: bytes) -> bytes:
+        await asyncio.Event().wait()  # never answers
+        return pcm
+
+    client.app.state.reply_source = slow
+    ws = connect(client)
+    turn = speak(ws, 0.5)
+    assert ws.receive_json() == {"type": "state", "turn": turn, "state": "thinking"}
+    ws.send_json({"type": "abort", "turn": turn})
+    assert ws.receive_json() == {"type": "reply.end", "turn": turn, "reason": "abort"}
+
+
+def test_long_reply_ends_with_cap(client, monkeypatch):
+    monkeypatch.setattr(session_module, "SPEECH_CAP", AUDIO_CHUNK)  # 100 ms for a fast test
+    ws = connect(client)
+    turn = speak(ws, 0.5)  # echo returns 500 ms
+    msgs = []
+    while True:
+        msg = ws.receive()
+        if msg.get("text"):
+            msgs.append(json.loads(msg["text"]))
+            if msgs[-1]["type"] == "reply.end":
+                break
+    assert msgs[-1] == {"type": "reply.end", "turn": turn, "reason": "cap"}
 
 
 def test_new_connection_replaces_old(client):

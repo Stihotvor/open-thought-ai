@@ -9,6 +9,7 @@ import pytest
 from fake_endpoint import make_client
 from model_env import ENDPOINTS
 
+from ota_server import pipeline as pipeline_module
 from ota_server.pipeline import TTS_CHUNK, VoicePipeline, system_prompt, tts_chunks
 from ota_server.protocol import BYTES_PER_SECOND, TurnError
 from ota_server.providers import MAX_TTS_TEXT
@@ -50,8 +51,8 @@ def endpoint(transcript="Jak się masz?", reply="Dobrze. A ty?", tts=None, fail=
     return handler, calls
 
 
-def run(handler, language="pl"):
-    pipeline = VoicePipeline(make_client(handler, ENV), language, "voice-1")
+def run(handler):
+    pipeline = VoicePipeline(make_client(handler, ENV), "pl", "voice-1")
     return asyncio.run(pipeline(SPEECH))
 
 
@@ -64,7 +65,7 @@ def test_turn_runs_stt_chat_tts_and_returns_device_pcm():
         "speech",
         "speech",
     ]
-    assert len(pcm) == 2 * BYTES_PER_SECOND // 2  # two 0.5 s chunks, now at 16 kHz
+    assert len(pcm) == BYTES_PER_SECOND  # two TTS chunks of 0.5 s each, now at 16 kHz
 
 
 def test_empty_transcript_is_no_speech():
@@ -109,17 +110,25 @@ def test_first_sentence_alone_then_merged():
     assert tts_chunks(text) == ["Hi.", "One. Two. Three."]
 
 
-def test_merged_chunks_stay_short():
-    sentence = "x" * 200 + "."
-    chunks = tts_chunks(" ".join([sentence] * 4))
-    assert chunks[0] == sentence
-    assert all(len(c) <= TTS_CHUNK for c in chunks[1:])
+def test_short_sentences_are_merged_up_to_the_chunk_size():
+    s = "a" * 49 + "."  # 50 characters
+    chunks = tts_chunks(" ".join([s] * 7))
+    # first alone; then 5 sentences fit in TTS_CHUNK (254 chars), the 6th would not (305)
+    assert chunks == [s, " ".join([s] * 5), s]
+    assert all(len(c) <= TTS_CHUNK for c in chunks)
 
 
 def test_very_long_sentence_is_cut_for_tts():
     chunks = tts_chunks("word " * 500)
     assert all(len(c) <= MAX_TTS_TEXT for c in chunks)
     assert " ".join(chunks).split() == ["word"] * 500
+
+
+def test_tts_stops_once_the_cap_is_reached(monkeypatch):
+    monkeypatch.setattr(pipeline_module, "SPEECH_CAP", BYTES_PER_SECOND // 2)  # 0.5 s
+    handler, calls = endpoint(reply="Hi. Two. Three.")
+    run(handler)
+    assert sum(c.endswith("/audio/speech") for c in calls) == 1
 
 
 def test_prompt_names_the_language():

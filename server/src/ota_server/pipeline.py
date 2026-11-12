@@ -2,16 +2,18 @@
 
 This first version builds the whole reply, then the session streams it.
 Not yet here (next steps in M3): per-sentence streaming to the device, moderation,
-history, VAD and "continue". Until moderation exists, the voice pipeline is opt-in
-(`OTA_PIPELINE=voice`) and not for use with children.
+the `transcript` message, history, VAD and "continue". Until moderation exists, the voice
+pipeline needs two settings (`OTA_PIPELINE=voice`, `OTA_VOICE_WITHOUT_MODERATION=1`)
+and is not for use with children.
 """
 
+import asyncio
 import contextlib
 import logging
 import re
 
 from .audio import AudioError, pcm_to_wav, wav_to_pcm
-from .protocol import TurnError
+from .protocol import SPEECH_CAP, TurnError
 from .providers import MAX_TTS_TEXT, ModelClient, ProviderError, new_turn_budget
 from .ratelimit import CallCapExceeded, DeadlineExceeded, RateLimited
 
@@ -87,7 +89,10 @@ class VoicePipeline:  # pylint: disable=too-few-public-methods  # a callable Rep
             stage = "tts"
             out = bytearray()
             for chunk in tts_chunks(reply):
-                out += wav_to_pcm(await self.client.speak(chunk, self.voice, budget))
+                if len(out) >= SPEECH_CAP:
+                    break  # the session plays at most SPEECH_CAP: save the other TTS calls
+                wav = await self.client.speak(chunk, self.voice, budget)
+                out += await asyncio.to_thread(wav_to_pcm, wav)  # CPU work off the event loop
             return bytes(out)
         except RateLimited:
             raise TurnError("rate_limited") from None

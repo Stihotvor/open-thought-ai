@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from .config import Settings, get_settings
 from .protocol import HELLO_TIMEOUT, PROTO_VERSION, Close, ProtocolError, parse_text
 from .ratelimit import TokenBucket
-from .session import DeviceSession, echo
+from .session import DeviceSession
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -76,7 +76,7 @@ async def device_endpoint(ws: WebSocket, settings: Settings = Depends(get_settin
         return
 
     await slot.take(ws)
-    reply_source = getattr(ws.app.state, "reply_source", echo)  # set at startup in main.py
+    reply_source = ws.app.state.reply_source  # set at startup in main.py
     session = DeviceSession(ws, reply_source, turn_limit=slot.turn_limit(settings))
     await ws.send_json(
         {
@@ -101,5 +101,5 @@ async def device_endpoint(ws: WebSocket, settings: Settings = Depends(get_settin
     except WebSocketDisconnect:
         pass
     finally:
+        slot.release(ws)  # first, so a failure below cannot keep the slot
         await session.cancel_reply()
-        slot.release(ws)

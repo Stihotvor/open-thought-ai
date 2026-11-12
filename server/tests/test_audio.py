@@ -35,6 +35,11 @@ def test_linear_interpolation():
     assert list(resample(array("h", [0, 100, 200, 300]), 3, 2)) == [0, 150]
 
 
+def test_stereo_downmix_truncates_toward_zero():
+    stereo = make_wav([-1, -2], rate=16000, channels=2)
+    assert list(array("h", wav_to_pcm(stereo))) == [-1]
+
+
 def test_stereo_is_downmixed():
     stereo = make_wav([1000, 3000, 1000, 3000], rate=16000, channels=2)
     assert list(array("h", wav_to_pcm(stereo))) == [2000, 2000]
@@ -42,7 +47,13 @@ def test_stereo_is_downmixed():
 
 @pytest.mark.parametrize(
     "data",
-    [b"not a wav", make_wav([0, 0], rate=16000, width=1)],
+    [
+        b"not a wav",
+        make_wav([0, 0], rate=16000, width=1),
+        make_wav([0] * 100, rate=100),  # a fake rate would blow up the resampler
+        make_wav([0, 0], rate=96000),
+        make_wav([0] * (8000 * 61), rate=8000),  # one chunk longer than 60 s
+    ],
 )
 def test_unplayable_audio_is_refused(data):
     with pytest.raises(AudioError):

@@ -6,14 +6,6 @@ from enum import IntEnum
 PROTO_VERSION = 1
 
 
-class TurnError(Exception):
-    """A turn failed. `code` is the protocol error code the device gets (docs/protocol.md)."""
-
-    def __init__(self, code: str) -> None:
-        super().__init__(code)
-        self.code = code
-
-
 SAMPLE_RATE = 16_000
 BYTES_PER_SECOND = SAMPLE_RATE * 2  # 16-bit mono PCM
 
@@ -26,6 +18,15 @@ MIN_SPEECH = int(0.3 * BYTES_PER_SECOND)
 START_CREDIT = 9600
 MAX_LEAD_SECONDS = 0.3
 HELLO_TIMEOUT = 5.0
+SPEECH_CAP = 60 * BYTES_PER_SECOND  # speech_cap_s: longer replies end with reason "cap"
+
+
+class TurnError(Exception):
+    """A turn failed. `code` is the protocol error code the device gets (docs/protocol.md)."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
 
 
 class Close(IntEnum):

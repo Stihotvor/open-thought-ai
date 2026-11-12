@@ -13,6 +13,9 @@ from array import array
 
 from .protocol import SAMPLE_RATE
 
+MIN_RATE, MAX_RATE = 8_000, 48_000  # TTS voices are 16-24 kHz; anything else is refused
+MAX_CHUNK_SECONDS = 60  # one TTS chunk; a longer one is refused before it is resampled
+
 
 class AudioError(Exception):
     """The audio is not a WAV file the server can play."""
@@ -50,7 +53,7 @@ def _downmix(samples: array, channels: int) -> array:
     frames = len(samples) // channels
     return array(
         "h",
-        (sum(samples[i * channels : (i + 1) * channels]) // channels for i in range(frames)),
+        (int(sum(samples[i * channels : (i + 1) * channels]) / channels) for i in range(frames)),
     )
 
 
@@ -81,6 +84,8 @@ def wav_to_pcm(data: bytes) -> bytes:
             raw = w.readframes(w.getnframes())
     except (wave.Error, EOFError) as exc:
         raise AudioError("not a WAV file") from exc
-    if channels not in (1, 2) or rate <= 0:
+    if channels not in (1, 2) or not MIN_RATE <= rate <= MAX_RATE:
         raise AudioError("unsupported channel count or rate")
+    if len(raw) // (2 * channels) > rate * MAX_CHUNK_SECONDS:
+        raise AudioError("audio chunk too long")
     return _to_bytes(resample(_downmix(_samples(raw), channels), rate, SAMPLE_RATE))
