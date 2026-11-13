@@ -136,8 +136,10 @@ def test_turn_limit_survives_reconnect(client):
     assert second.receive_json()["code"] == "too_many_turns"
 
 
-def failing_source(error: Exception):
-    async def source(pcm: bytes) -> bytes:
+def failing_source(error: Exception, chunks: int = 0):
+    async def source(pcm: bytes):
+        for _ in range(chunks):
+            yield pcm[:AUDIO_CHUNK]
         raise error
 
     return source
@@ -191,9 +193,9 @@ def test_voice_pipeline_starts_with_all_roles(monkeypatch):
 
 
 def test_abort_while_thinking_ends_the_reply(client):
-    async def slow(pcm: bytes) -> bytes:
+    async def slow(pcm: bytes):
         await asyncio.Event().wait()  # never answers
-        return pcm
+        yield pcm
 
     client.app.state.reply_source = slow
     ws = connect(client)
@@ -235,3 +237,43 @@ def test_new_connection_replaces_old(client):
     first = connect(client)
     connect(client)
     assert close_code(first) == Close.REPLACED
+
+
+def reply_messages(ws) -> tuple[list[dict], bytes]:
+    msgs, received = [], b""
+    while not msgs or msgs[-1]["type"] not in ("reply.end", "error"):
+        msg = ws.receive()
+        if msg.get("bytes"):
+            received += msg["bytes"][1:]
+        elif msg.get("text"):
+            msgs.append(json.loads(msg["text"]))
+    return msgs, received
+
+
+def test_failure_after_audio_ends_the_reply_with_error(client):
+    client.app.state.reply_source = failing_source(TurnError("tts_failed"), chunks=1)
+    ws = connect(client)
+    turn = speak(ws, 0.5)
+    msgs, received = reply_messages(ws)
+    assert [m["type"] for m in msgs] == ["state", "state", "reply.start", "reply.end"]
+    assert msgs[-1] == {"type": "reply.end", "turn": turn, "reason": "error"}
+    assert len(received) == AUDIO_CHUNK
+
+
+def test_chunks_stream_in_order_and_the_cap_stops_the_source(client, monkeypatch):
+    monkeypatch.setattr(session_module, "SPEECH_CAP", 2 * AUDIO_CHUNK)
+    made = []
+
+    async def chunks(pcm: bytes):
+        for n in range(1, 10):
+            made.append(n)
+            yield bytes([n, 0]) * (AUDIO_CHUNK // 2)
+
+    client.app.state.reply_source = chunks
+    ws = connect(client)
+    turn = speak(ws, 0.5)
+    msgs, received = reply_messages(ws)
+    assert msgs[-1] == {"type": "reply.end", "turn": turn, "reason": "cap"}
+    assert received == bytes([1, 0]) * (AUDIO_CHUNK // 2) + bytes([2, 0]) * (AUDIO_CHUNK // 2)
+    # played, queued, one waiting to be queued, one being made: the prefetch is bounded
+    assert len(made) <= 2 + session_module.PREFETCH + 2

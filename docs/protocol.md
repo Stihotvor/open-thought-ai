@@ -71,6 +71,8 @@ Errors are never sent as audio, so they work even when TTS is down.
 
 ## Long replies ("continue")
 - TTS stops after 60 s of reply audio (a fixed cap): `reply.end {reason: cap}`.
+- Reply audio streams per TTS chunk: the first sentence plays while the next one is synthesized. The whole reply is moderated before `reply.start`.
+- A failure before `reply.start` sends `error {code}`. A failure after it sends `reply.end {reason: error}`, because audio already played.
 - The server keeps the unspoken text in memory for 5 min. History stores the spoken part and marks the turn `truncated`.
 - A transcript that matches the "continue" keyword list (EN continue, PL dalej, UK далі) plays the rest, without an LLM call.
 

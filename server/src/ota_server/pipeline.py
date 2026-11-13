@@ -8,18 +8,22 @@ Moderation (docs/security.md), fail closed with the `moderated` code:
 - A flagged text, or any moderation failure (error, timeout, rate limit, unknown result
   shape), refuses the turn.
 
-This version builds the whole reply, then the session streams it. Not yet here (next
-steps in M3): per-sentence streaming to the device, the `transcript` message, history,
-VAD and "continue".
+Streaming: the whole reply is moderated before any sound (the question with the whole
+reply is one input), then each TTS chunk is yielded as soon as it is spoken, so the device
+plays the first sentence while the next one is synthesized. The session closes the
+generator at the 60 s cap, which stops the remaining TTS calls.
+
+Not yet here (next steps in M3): the `transcript` message, history, VAD and "continue".
 """
 
 import asyncio
 import contextlib
 import logging
 import re
+from collections.abc import AsyncGenerator
 
 from .audio import AudioError, pcm_to_wav, wav_to_pcm
-from .protocol import SPEECH_CAP, TurnError
+from .protocol import TurnError
 from .providers import MAX_TTS_TEXT, ModelClient, ProviderError, new_turn_budget
 from .ratelimit import CallCapExceeded, DeadlineExceeded, RateLimited, TurnBudget
 
@@ -135,7 +139,7 @@ class VoicePipeline:  # pylint: disable=too-few-public-methods  # a callable Rep
             log.warning("moderation flagged the %s", side)
             raise TurnError("moderated")
 
-    async def __call__(self, pcm: bytes) -> bytes:
+    async def __call__(self, pcm: bytes) -> AsyncGenerator[bytes]:
         await self.check_moderation()
         budget = new_turn_budget()
         stage = "stt"
@@ -164,17 +168,14 @@ class VoicePipeline:  # pylint: disable=too-few-public-methods  # a callable Rep
             context = f"{text[-PAIR_QUESTION:]}\n{reply[:PAIR_REPLY]}"
             await self.moderate("reply", [*chunks, context], budget)
             stage = "tts"
-            out = bytearray()
             for chunk in chunks:
-                if len(out) >= SPEECH_CAP:
-                    break  # the session plays at most SPEECH_CAP: save the other TTS calls
                 wav = await self.client.speak(chunk, self.voice, budget)
                 # A thread, so the event loop keeps running (it gets GIL time slices). The thread
                 # cannot be cancelled, so check the deadline once it is done.
-                out += await asyncio.to_thread(wav_to_pcm, wav)
+                out = await asyncio.to_thread(wav_to_pcm, wav)
                 if budget.left() <= 0:
                     raise DeadlineExceeded()
-            return bytes(out)
+                yield out
         except RateLimited:
             # Moderation fails closed: its rate limit refuses the turn like any other failure.
             raise TurnError("moderated" if stage == "moderation" else "rate_limited") from None
