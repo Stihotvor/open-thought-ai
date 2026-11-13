@@ -66,6 +66,10 @@ class TurnBudget:
         """Remaining time, never below zero. Use it as a timeout value."""
         return max(self.remaining(), 0.0)
 
+    def extend(self, seconds: float) -> None:
+        """Move the deadline later, for time the turn spent waiting, not working."""
+        self.end += seconds
+
     def count_call(self, kind: str) -> None:
         self.calls[kind] = self.calls.get(kind, 0) + 1
         cap = self.max_calls.get(kind)

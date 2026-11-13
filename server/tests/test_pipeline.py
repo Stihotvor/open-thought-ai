@@ -13,7 +13,8 @@ from model_env import ENDPOINTS
 from ota_server import pipeline as pipeline_module
 from ota_server.pipeline import SELF_TEST, TTS_CHUNK, VoicePipeline, system_prompt, tts_chunks
 from ota_server.protocol import BYTES_PER_SECOND, TurnError
-from ota_server.providers import MAX_TTS_TEXT, MISTRAL_CORE, OPENAI_CORE
+from ota_server.providers import CALL_CAPS, MAX_TTS_TEXT, MISTRAL_CORE, OPENAI_CORE
+from ota_server.ratelimit import TurnBudget
 
 ENV = {
     **ENDPOINTS,
@@ -114,8 +115,12 @@ def pipeline_for(endpoint: Endpoint) -> VoicePipeline:
     return VoicePipeline(make_client(endpoint, ENV), "pl", "voice-1")
 
 
+async def drain(pipeline: VoicePipeline) -> bytes:
+    return b"".join([chunk async for chunk in pipeline(SPEECH)])
+
+
 def run(endpoint: Endpoint) -> bytes:
-    return asyncio.run(pipeline_for(endpoint)(SPEECH))
+    return asyncio.run(drain(pipeline_for(endpoint)))
 
 
 def refused(endpoint: Endpoint) -> str:
@@ -167,7 +172,7 @@ def test_self_test_failure_refuses_every_turn(kwargs):
     async def two_turns():
         for _ in range(2):
             with pytest.raises(TurnError) as err:
-                await pipeline(SPEECH)
+                await drain(pipeline)
             assert err.value.code == "moderated"
 
     asyncio.run(two_turns())
@@ -186,10 +191,10 @@ def test_canary_catches_moderation_that_stopped_working():
     pipeline = pipeline_for(endpoint)
 
     async def turns():
-        await pipeline(SPEECH)  # the self-test passes, the first turn speaks
+        await drain(pipeline)  # the self-test passes, the first turn speaks
         endpoint.flag = lambda text: False  # the endpoint now passes everything
         with pytest.raises(TurnError) as err:
-            await pipeline(SPEECH)
+            await drain(pipeline)
         assert err.value.code == "moderated"
 
     asyncio.run(turns())
@@ -209,8 +214,8 @@ def test_self_test_runs_once():
     pipeline = pipeline_for(endpoint)
 
     async def two_turns():
-        await pipeline(SPEECH)
-        await pipeline(SPEECH)
+        await drain(pipeline)
+        await drain(pipeline)
 
     asyncio.run(two_turns())
     assert endpoint.calls.count("moderations") == 1 + 2 * 2
@@ -346,10 +351,16 @@ def test_very_long_sentence_is_cut_for_tts():
     assert " ".join(chunks).split() == ["word"] * 500
 
 
-def test_tts_stops_once_the_cap_is_reached(monkeypatch):
-    monkeypatch.setattr(pipeline_module, "SPEECH_CAP", BYTES_PER_SECOND // 2)  # 0.5 s
+def test_first_chunk_is_yielded_before_the_next_tts_call():
     endpoint = Endpoint(reply="Hi. Two. Three.")
-    run(endpoint)
+
+    async def first_chunk() -> bytes:
+        chunks = pipeline_for(endpoint)(SPEECH)
+        chunk = await anext(chunks)
+        await chunks.aclose()  # as the session does at the cap: no more TTS calls
+        return chunk
+
+    assert len(asyncio.run(first_chunk())) == BYTES_PER_SECOND // 2
     assert endpoint.calls.count("speech") == 1
 
 
@@ -357,3 +368,25 @@ def test_prompt_names_the_language_and_child_rules():
     prompt = system_prompt("uk")
     assert "Ukrainian" in prompt
     assert "secret" in prompt and "medicine" in prompt and "address" in prompt
+
+
+def test_playback_time_does_not_count_against_the_deadline(monkeypatch):
+    monkeypatch.setattr(
+        pipeline_module, "new_turn_budget", lambda: TurnBudget(max_calls=CALL_CAPS, deadline_s=2.0)
+    )
+    endpoint = Endpoint(reply="Hi. " + "Two. " * 70 + "Three.")  # three TTS chunks
+
+    async def slow_listener() -> int:
+        count = 0
+        async for _ in pipeline_for(endpoint)(SPEECH):
+            count += 1
+            await asyncio.sleep(1.5)  # the device plays: 3 x 1.5 s is past the 2 s deadline
+        return count
+
+    assert asyncio.run(slow_listener()) == 3
+
+
+def test_a_flagged_reply_makes_no_audio():
+    endpoint = Endpoint(flag=lambda t: self_test_only(t) or "ty?" in t)
+    assert refused(endpoint) == "moderated"
+    assert "speech" not in endpoint.calls

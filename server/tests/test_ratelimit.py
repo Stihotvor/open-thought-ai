@@ -200,3 +200,12 @@ def test_call_caps_per_turn():
     with pytest.raises(CallCapExceeded):
         budget.count_call("a")
     budget.count_call("b")  # no cap for this kind
+
+
+def test_extend_moves_the_deadline_later():
+    now = [0.0]
+    budget = TurnBudget(clock=lambda: now[0], deadline_s=8.0)
+    now[0] = 10.0
+    assert budget.left() == 0.0
+    budget.extend(5.0)  # time spent waiting for the device does not count
+    assert budget.left() == 3.0

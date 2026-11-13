@@ -33,6 +33,7 @@ One WebSocket connection between the device and the server.
 - Device jitter buffer: **12 KB** (~375 ms). I2S DMA: 2 × 1 KB.
 - The server paces audio at real time with a maximum lead of **300 ms**.
 - The device sends `audio.credit {bytes}` when its free buffer rises above 4 KB. The server never sends more than the granted credit. Start credit = 9 600 bytes, set again at each `turn.start`. Credit sent before `reply.start` counts.
+- The server caps the open credit at 12 KB (the jitter buffer). If the device gives no credit for 10 s, the server ends the reply with `reply.end {reason: error}`.
 
 ## Messages
 | type | dir | fields | meaning |
@@ -71,6 +72,8 @@ Errors are never sent as audio, so they work even when TTS is down.
 
 ## Long replies ("continue")
 - TTS stops after 60 s of reply audio (a fixed cap): `reply.end {reason: cap}`.
+- Reply audio streams per TTS chunk: the first sentence plays while the next one is synthesized. The whole reply is moderated before `reply.start`.
+- A failure before `reply.start` sends `error {code}`. A failure after it sends `reply.end {reason: error}`, because audio already played.
 - The server keeps the unspoken text in memory for 5 min. History stores the spoken part and marks the turn `truncated`.
 - A transcript that matches the "continue" keyword list (EN continue, PL dalej, UK далі) plays the rest, without an LLM call.
 
