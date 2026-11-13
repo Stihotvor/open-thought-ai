@@ -8,7 +8,7 @@ import pytest
 
 from ota_server import session as session_module
 from ota_server.protocol import AUDIO_CHUNK, MAX_CREDIT
-from ota_server.session import DeviceSession
+from ota_server.session import CreditStalled, DeviceSession
 
 
 class FakeSocket:
@@ -49,7 +49,7 @@ def test_credit_is_capped_at_the_device_buffer():
 def test_no_credit_ends_the_stream(monkeypatch):
     monkeypatch.setattr(session_module, "CREDIT_TIMEOUT", 0.05)
     session = new_session()
-    with pytest.raises(TimeoutError):
+    with pytest.raises(CreditStalled):
         asyncio.run(session.stream(1, b"\0" * AUDIO_CHUNK, 0, time.monotonic()))
 
 

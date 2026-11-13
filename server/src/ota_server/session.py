@@ -34,6 +34,10 @@ PREFETCH = 2  # reply chunks made ahead of playback: TTS runs while the device p
 END = None  # the queue item after the last chunk
 
 
+class CreditStalled(Exception):
+    """The device gave no audio credit for CREDIT_TIMEOUT seconds."""
+
+
 async def echo(pcm: bytes) -> AsyncGenerator[bytes]:
     yield pcm
 
@@ -146,7 +150,7 @@ class DeviceSession:
             room = SPEECH_CAP - sent
             try:
                 clock = await self.stream(turn, item[:room], sent, clock)
-            except TimeoutError:
+            except CreditStalled:
                 log.warning("device gave no audio credit for %s s: reply ends", CREDIT_TIMEOUT)
                 reason = "error"
                 break
@@ -185,7 +189,10 @@ class DeviceSession:
             chunk = pcm[start : start + AUDIO_CHUNK]
             while self.credit < len(chunk):
                 self.credit_changed.clear()
-                await asyncio.wait_for(self.credit_changed.wait(), CREDIT_TIMEOUT)
+                try:
+                    await asyncio.wait_for(self.credit_changed.wait(), CREDIT_TIMEOUT)
+                except TimeoutError:
+                    raise CreditStalled() from None
             position = (sent + start) / BYTES_PER_SECOND
             lead = position - (time.monotonic() - clock)
             if lead < 0:  # the device ran out of audio: pace from now
