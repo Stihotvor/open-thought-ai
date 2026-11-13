@@ -155,8 +155,11 @@ def test_failed_turn_sends_error_code(client, error, code):
     assert ws.receive_json() == {"type": "error", "turn": turn, "code": code}
 
 
+VOICE_ENV = {**ENDPOINTS, "OTA_MODERATION_MODEL": "mod-m", "OTA_PIPELINE": "voice"}
+
+
 def voice_env(monkeypatch, **extra):
-    for name, value in {**ENDPOINTS, "OTA_PIPELINE": "voice", **extra}.items():
+    for name, value in {**VOICE_ENV, **extra}.items():
         monkeypatch.setenv(name, value)
     get_settings.cache_clear()
 
@@ -164,8 +167,8 @@ def voice_env(monkeypatch, **extra):
 @pytest.mark.parametrize(
     ("extra", "match"),
     [
-        ({}, "no moderation"),  # roles are fine, the acknowledgement is missing
-        ({"OTA_VOICE_WITHOUT_MODERATION": "1", "OTA_TTS_MODEL": ""}, "needs these roles: tts"),
+        ({"OTA_MODERATION_MODEL": ""}, "needs these roles: moderation"),
+        ({"OTA_TTS_MODEL": ""}, "needs these roles: tts"),
     ],
 )
 def test_voice_pipeline_refuses_to_start(monkeypatch, extra, match):
@@ -177,14 +180,12 @@ def test_voice_pipeline_refuses_to_start(monkeypatch, extra, match):
         get_settings.cache_clear()
 
 
-def test_voice_pipeline_starts_with_acknowledgement(monkeypatch, caplog):
-    voice_env(monkeypatch, OTA_VOICE_WITHOUT_MODERATION="1", OTA_MODERATION_MODEL="mod-m")
+def test_voice_pipeline_starts_with_all_roles(monkeypatch):
+    voice_env(monkeypatch)
     try:
         app = create_app()
         with TestClient(app):
             assert isinstance(app.state.reply_source, VoicePipeline)
-        assert "WITHOUT moderation" in caplog.text
-        assert "moderation role is configured but not used" in caplog.text
     finally:
         get_settings.cache_clear()
 
