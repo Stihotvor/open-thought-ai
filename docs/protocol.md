@@ -33,6 +33,7 @@ One WebSocket connection between the device and the server.
 - Device jitter buffer: **12 KB** (~375 ms). I2S DMA: 2 × 1 KB.
 - The server paces audio at real time with a maximum lead of **300 ms**.
 - The device sends `audio.credit {bytes}` when its free buffer rises above 4 KB. The server never sends more than the granted credit. Start credit = 9 600 bytes, set again at each `turn.start`. Credit sent before `reply.start` counts.
+- The server caps the open credit at 12 KB (the jitter buffer). If the device gives no credit for 10 s, the server ends the reply with `reply.end {reason: error}`.
 
 ## Messages
 | type | dir | fields | meaning |

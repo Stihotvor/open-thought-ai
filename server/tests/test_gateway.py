@@ -94,7 +94,7 @@ def test_echo_round_trip_with_credit(client):
     ws = connect(client)
     turn = speak(ws, 0.5)
     # Credit sent before reply.start must count. The start credit alone is too small.
-    ws.send_json({"type": "audio.credit", "bytes": 16000})
+    ws.send_json({"type": "audio.credit", "bytes": 2688})  # up to the 12 KB device buffer
     assert ws.receive_json() == {"type": "state", "turn": turn, "state": "thinking"}
     assert ws.receive_json() == {"type": "state", "turn": turn, "state": "speaking"}
     assert ws.receive_json() == {"type": "reply.start", "turn": turn}
@@ -104,6 +104,8 @@ def test_echo_round_trip_with_credit(client):
         if msg.get("bytes"):
             assert msg["bytes"][0] == turn
             received += msg["bytes"][1:]
+            if len(received) == 3 * AUDIO_CHUNK:  # the device played some: more credit
+                ws.send_json({"type": "audio.credit", "bytes": 6400})
         else:
             break
     assert len(received) == int(0.5 * BYTES_PER_SECOND)
@@ -299,3 +301,12 @@ def test_chunks_stream_in_order_and_the_cap_stops_the_source(client, monkeypatch
     assert received == bytes([1, 0]) * (AUDIO_CHUNK // 2) + bytes([2, 0]) * (AUDIO_CHUNK // 2)
     # played, queued, one waiting to be queued, one being made: the prefetch is bounded
     assert len(made) <= 2 + session_module.PREFETCH + 2
+
+
+def test_a_device_without_credit_ends_the_reply(client, monkeypatch):
+    monkeypatch.setattr(session_module, "CREDIT_TIMEOUT", 0.2)
+    ws = connect(client)
+    turn = speak(ws, 0.5)  # echo: 16 000 bytes, start credit 9 600, no credit after it
+    msgs, received = reply_messages(ws)
+    assert msgs[-1] == {"type": "reply.end", "turn": turn, "reason": "error"}
+    assert len(received) <= 9600

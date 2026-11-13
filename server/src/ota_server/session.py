@@ -11,6 +11,8 @@ from fastapi import WebSocket
 from .protocol import (
     AUDIO_CHUNK,
     BYTES_PER_SECOND,
+    CREDIT_TIMEOUT,
+    MAX_CREDIT,
     MAX_LEAD_SECONDS,
     MAX_TURN_AUDIO,
     MIN_SPEECH,
@@ -81,7 +83,7 @@ class DeviceSession:
                 granted = msg.get("bytes")
                 if not isinstance(granted, int) or granted <= 0:
                     raise ProtocolError("bad credit")
-                self.credit += granted
+                self.credit = min(self.credit + granted, MAX_CREDIT)
                 self.credit_changed.set()
             case other:
                 log.info("ignored message type %s", other)
@@ -142,7 +144,12 @@ class DeviceSession:
                 speaking = await self.start_speaking(turn)
                 clock = time.monotonic()
             room = SPEECH_CAP - sent
-            clock = await self.stream(turn, item[:room], sent, clock)
+            try:
+                clock = await self.stream(turn, item[:room], sent, clock)
+            except TimeoutError:
+                log.warning("device gave no audio credit for %s s: reply ends", CREDIT_TIMEOUT)
+                reason = "error"
+                break
             sent += min(len(item), room)
             if len(item) > room:
                 reason = "cap"
@@ -158,7 +165,9 @@ class DeviceSession:
 
     async def finish(self, msg: dict) -> None:
         """Send the last message of a turn. After it, an abort owes the device nothing.
-        The turn is closed before the send, so an abort during the send adds no second end."""
+        The turn is closed before the send, so an abort during the send adds no second end.
+        If that abort cancels the send itself, the device gets no end message: it already
+        flushed its audio on the button press (docs/protocol.md), so nothing is lost."""
         self.open_turn = None
         await self.ws.send_json(msg)
 
@@ -176,7 +185,7 @@ class DeviceSession:
             chunk = pcm[start : start + AUDIO_CHUNK]
             while self.credit < len(chunk):
                 self.credit_changed.clear()
-                await self.credit_changed.wait()
+                await asyncio.wait_for(self.credit_changed.wait(), CREDIT_TIMEOUT)
             position = (sent + start) / BYTES_PER_SECOND
             lead = position - (time.monotonic() - clock)
             if lead < 0:  # the device ran out of audio: pace from now
@@ -191,12 +200,9 @@ class DeviceSession:
         task, self.reply_task = self.reply_task, None
         if task and not task.done():
             task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-            except Exception:  # pylint: disable=broad-exception-caught  # e.g. a closed socket
-                log.exception("reply task failed")
+            await asyncio.wait([task])  # a cancel aimed at the caller still reaches it
+        if task and task.done() and not task.cancelled() and task.exception():
+            log.error("reply task failed", exc_info=task.exception())  # e.g. a closed socket
         if self.open_turn is not None:  # abort while thinking or speaking (docs/protocol.md)
             await self.send_quietly(
                 {"type": "reply.end", "turn": self.open_turn, "reason": "abort"}
