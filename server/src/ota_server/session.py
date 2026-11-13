@@ -142,7 +142,7 @@ class DeviceSession:
                 speaking = await self.start_speaking(turn)
                 clock = time.monotonic()
             room = SPEECH_CAP - sent
-            await self.stream(turn, item[:room], sent, clock)
+            clock = await self.stream(turn, item[:room], sent, clock)
             sent += min(len(item), room)
             if len(item) > room:
                 reason = "cap"
@@ -157,35 +157,46 @@ class DeviceSession:
         return True
 
     async def finish(self, msg: dict) -> None:
-        """Send the last message of a turn. After it, an abort owes the device nothing."""
-        await self.ws.send_json(msg)
+        """Send the last message of a turn. After it, an abort owes the device nothing.
+        The turn is closed before the send, so an abort during the send adds no second end."""
         self.open_turn = None
+        await self.ws.send_json(msg)
 
     async def send_quietly(self, msg: dict) -> None:
         """Send and ignore any error: used on abort, when the socket may be closed already."""
         with contextlib.suppress(Exception):
             await self.ws.send_json(msg)
 
-    async def stream(self, turn: int, pcm: bytes, sent: int, clock: float) -> None:
+    async def stream(self, turn: int, pcm: bytes, sent: int, clock: float) -> float:
         """Send PCM at real time, at most MAX_LEAD_SECONDS ahead, within the granted credit.
-        `sent` bytes of this reply already went out since `clock` (monotonic time)."""
+        `sent` bytes of this reply already went out since `clock` (monotonic time).
+        Returns the clock, moved later when the audio came late (slow TTS), so the
+        late audio is paced again and not sent as one burst."""
         for start in range(0, len(pcm), AUDIO_CHUNK):
             chunk = pcm[start : start + AUDIO_CHUNK]
             while self.credit < len(chunk):
                 self.credit_changed.clear()
                 await self.credit_changed.wait()
-            lead = (sent + start) / BYTES_PER_SECOND - (time.monotonic() - clock)
+            position = (sent + start) / BYTES_PER_SECOND
+            lead = position - (time.monotonic() - clock)
+            if lead < 0:  # the device ran out of audio: pace from now
+                clock, lead = time.monotonic() - position, 0.0
             if lead > MAX_LEAD_SECONDS:
                 await asyncio.sleep(lead - MAX_LEAD_SECONDS)
             self.credit -= len(chunk)
             await self.ws.send_bytes(bytes([turn]) + chunk)
+        return clock
 
     async def cancel_reply(self) -> None:
         task, self.reply_task = self.reply_task, None
         if task and not task.done():
             task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
+            try:
                 await task
+            except asyncio.CancelledError:
+                pass
+            except Exception:  # pylint: disable=broad-exception-caught  # e.g. a closed socket
+                log.exception("reply task failed")
         if self.open_turn is not None:  # abort while thinking or speaking (docs/protocol.md)
             await self.send_quietly(
                 {"type": "reply.end", "turn": self.open_turn, "reason": "abort"}

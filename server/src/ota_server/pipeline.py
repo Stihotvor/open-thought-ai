@@ -165,17 +165,20 @@ class VoicePipeline:  # pylint: disable=too-few-public-methods  # a callable Rep
             stage = "moderation"
             # Each chunk, plus the question with the whole reply: "Yes, take ten" is only
             # harmful as the answer to a question.
-            context = f"{text[-PAIR_QUESTION:]}\n{reply[:PAIR_REPLY]}"
-            await self.moderate("reply", [*chunks, context], budget)
+            pair = f"{text[-PAIR_QUESTION:]}\n{reply[:PAIR_REPLY]}"
+            await self.moderate("reply", [*chunks, pair], budget)
             stage = "tts"
             for chunk in chunks:
                 wav = await self.client.speak(chunk, self.voice, budget)
                 # A thread, so the event loop keeps running (it gets GIL time slices). The thread
                 # cannot be cancelled, so check the deadline once it is done.
-                out = await asyncio.to_thread(wav_to_pcm, wav)
+                pcm = await asyncio.to_thread(wav_to_pcm, wav)
                 if budget.left() <= 0:
                     raise DeadlineExceeded()
-                yield out
+                paused = budget.clock()
+                yield pcm
+                # The session waits here while the device plays: that time is not TTS work.
+                budget.extend(budget.clock() - paused)
         except RateLimited:
             # Moderation fails closed: its rate limit refuses the turn like any other failure.
             raise TurnError("moderated" if stage == "moderation" else "rate_limited") from None

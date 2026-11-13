@@ -10,9 +10,11 @@ import pytest
 from fake_endpoint import make_client
 from model_env import ENDPOINTS
 
+from ota_server import pipeline as pipeline_module
 from ota_server.pipeline import SELF_TEST, TTS_CHUNK, VoicePipeline, system_prompt, tts_chunks
 from ota_server.protocol import BYTES_PER_SECOND, TurnError
-from ota_server.providers import MAX_TTS_TEXT, MISTRAL_CORE, OPENAI_CORE
+from ota_server.providers import CALL_CAPS, MAX_TTS_TEXT, MISTRAL_CORE, OPENAI_CORE
+from ota_server.ratelimit import TurnBudget
 
 ENV = {
     **ENDPOINTS,
@@ -366,3 +368,25 @@ def test_prompt_names_the_language_and_child_rules():
     prompt = system_prompt("uk")
     assert "Ukrainian" in prompt
     assert "secret" in prompt and "medicine" in prompt and "address" in prompt
+
+
+def test_playback_time_does_not_count_against_the_deadline(monkeypatch):
+    monkeypatch.setattr(
+        pipeline_module, "new_turn_budget", lambda: TurnBudget(max_calls=CALL_CAPS, deadline_s=2.0)
+    )
+    endpoint = Endpoint(reply="Hi. " + "Two. " * 70 + "Three.")  # three TTS chunks
+
+    async def slow_listener() -> int:
+        count = 0
+        async for _ in pipeline_for(endpoint)(SPEECH):
+            count += 1
+            await asyncio.sleep(1.5)  # the device plays: 3 x 1.5 s is past the 2 s deadline
+        return count
+
+    assert asyncio.run(slow_listener()) == 3
+
+
+def test_a_flagged_reply_makes_no_audio():
+    endpoint = Endpoint(flag=lambda t: self_test_only(t) or "ty?" in t)
+    assert refused(endpoint) == "moderated"
+    assert "speech" not in endpoint.calls

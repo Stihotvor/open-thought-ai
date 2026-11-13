@@ -251,13 +251,35 @@ def reply_messages(ws) -> tuple[list[dict], bytes]:
 
 
 def test_failure_after_audio_ends_the_reply_with_error(client):
-    client.app.state.reply_source = failing_source(TurnError("tts_failed"), chunks=1)
+    client.app.state.reply_source = failing_source(TurnError("tts_failed"), chunks=3)
     ws = connect(client)
     turn = speak(ws, 0.5)
     msgs, received = reply_messages(ws)
     assert [m["type"] for m in msgs] == ["state", "state", "reply.start", "reply.end"]
     assert msgs[-1] == {"type": "reply.end", "turn": turn, "reason": "error"}
-    assert len(received) == AUDIO_CHUNK
+    assert len(received) == 3 * AUDIO_CHUNK  # queued chunks play before the error ends it
+
+
+def test_abort_while_speaking_closes_the_source(client):
+    closed = asyncio.Event()
+
+    async def endless(pcm: bytes):
+        try:
+            while True:
+                yield pcm[:AUDIO_CHUNK]
+        finally:
+            closed.set()
+
+    client.app.state.reply_source = endless
+    ws = connect(client)
+    turn = speak(ws, 0.5)
+    while ws.receive_json()["type"] != "reply.start":
+        pass
+    ws.send_json({"type": "abort", "turn": turn})
+    while (msg := ws.receive()).get("text") is None:
+        pass  # audio sent before the abort
+    assert json.loads(msg["text"]) == {"type": "reply.end", "turn": turn, "reason": "abort"}
+    assert closed.is_set()
 
 
 def test_chunks_stream_in_order_and_the_cap_stops_the_source(client, monkeypatch):
