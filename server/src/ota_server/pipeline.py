@@ -13,7 +13,9 @@ reply is one input), then each TTS chunk is yielded as soon as it is spoken, so 
 plays the first sentence while the next one is synthesized. The session closes the
 generator at the 60 s cap, which stops the remaining TTS calls.
 
-Not yet here (next steps in M3): the `transcript` message, history, VAD and "continue".
+History: the session keeps what the device played and passes it in. The newest turns that
+fit in MAX_HISTORY_CHARS go to chat. "continue" works through it.
+Not yet here: the `transcript` message and VAD.
 """
 
 import asyncio
@@ -26,6 +28,7 @@ from .audio import AudioError, pcm_to_wav, wav_to_pcm
 from .protocol import TurnError
 from .providers import MAX_TTS_TEXT, ModelClient, ProviderError, new_turn_budget
 from .ratelimit import CallCapExceeded, DeadlineExceeded, RateLimited, TurnBudget
+from .reply import History, ReplyChunk
 
 log = logging.getLogger(__name__)
 
@@ -34,6 +37,9 @@ TTS_CHUNK = 300  # characters: short sentences after the first are merged up to 
 # The question-with-reply moderation input: the end of the question and the start of the
 # reply, short enough that padding cannot dilute it and the provider does not cut it.
 PAIR_QUESTION, PAIR_REPLY = 500, 1500
+# Chat history sent per turn, in characters: older turns are left out, so a long talk
+# cannot grow past a small model's context window and fail every later turn.
+MAX_HISTORY_CHARS = 8000
 SENTENCE_END = re.compile(r"(?<=[.!?…])\s+")
 STAGE_CODES = {
     "stt": "stt_failed",
@@ -54,12 +60,14 @@ SELF_TEST = {
 def system_prompt(language: str) -> str:
     name = LANGUAGE_NAMES[language]
     return (
-        f"You are a friendly voice assistant for a family with children. Always answer in {name}. "
-        "Keep answers short: one to three sentences. Use plain spoken words: no lists, no "
-        "markdown, no emoji. Keep every answer safe for children. Never ask for personal data "
-        "such as a name, an address or a school. Never tell the child to keep a secret from "
-        "the parents. Never give medicine doses or medical instructions: say to ask a parent "
-        "or a doctor."
+        f"You are a friendly voice assistant for a household. Always answer in {name}. "
+        "Keep answers short: one to three sentences, unless the user asks for more. Use plain "
+        "spoken words: no lists, no markdown, no emoji. Refuse to help with violence, weapons, "
+        "self-harm, drugs or crime. If someone talks about hurting themselves, answer kindly "
+        "and tell them to contact a trusted person or the emergency number. Never ask for "
+        "personal data such as an address, a password or bank details. Never give medicine "
+        "doses or medical instructions: say to ask a doctor or a pharmacist. If the user says "
+        '"continue", go on from where your last answer stopped.'
     )
 
 
@@ -139,7 +147,42 @@ class VoicePipeline:  # pylint: disable=too-few-public-methods  # a callable Rep
             log.warning("moderation flagged the %s", side)
             raise TurnError("moderated")
 
-    async def __call__(self, pcm: bytes) -> AsyncGenerator[bytes]:
+    def messages(self, text: str, history: History) -> list[dict]:
+        """The chat input: system prompt, the newest remembered turns that fit in
+        MAX_HISTORY_CHARS, then the new question."""
+        past: list[dict] = []
+        size = 0
+        for question, reply in reversed(history):
+            size += len(question) + len(reply)
+            if size > MAX_HISTORY_CHARS:
+                break
+            past[:0] = [
+                {"role": "user", "content": question},
+                {"role": "assistant", "content": reply},
+            ]
+        return [
+            {"role": "system", "content": system_prompt(self.language)},
+            *past,
+            {"role": "user", "content": text},
+        ]
+
+    async def speak(
+        self, question: str, chunks: list[str], budget: TurnBudget
+    ) -> AsyncGenerator[ReplyChunk]:
+        """Yield each chunk as audio, with its text for the session history."""
+        for chunk in chunks:
+            wav = await self.client.speak(chunk, self.voice, budget)
+            # A thread, so the event loop keeps running (it gets GIL time slices). The thread
+            # cannot be cancelled, so check the deadline once it is done.
+            pcm = await asyncio.to_thread(wav_to_pcm, wav)
+            if budget.left() <= 0:
+                raise DeadlineExceeded()
+            paused = budget.clock()
+            yield ReplyChunk(pcm, chunk, question)
+            # The session waits here while the device plays: that time is not TTS work.
+            budget.extend(budget.clock() - paused)
+
+    async def __call__(self, pcm: bytes, history: History) -> AsyncGenerator[ReplyChunk]:
         await self.check_moderation()
         budget = new_turn_budget()
         stage = "stt"
@@ -153,11 +196,9 @@ class VoicePipeline:  # pylint: disable=too-few-public-methods  # a callable Rep
                 "transcript", [*pieces, text] if len(pieces) > 1 else pieces, budget
             )
             stage = "chat"
-            messages = [
-                {"role": "system", "content": system_prompt(self.language)},
-                {"role": "user", "content": text},
-            ]
-            async with contextlib.aclosing(self.client.chat(messages, budget)) as deltas:
+            async with contextlib.aclosing(
+                self.client.chat(self.messages(text, history), budget)
+            ) as deltas:
                 reply = "".join([delta async for delta in deltas]).strip()
             if not reply:
                 raise TurnError("llm_failed")
@@ -168,17 +209,9 @@ class VoicePipeline:  # pylint: disable=too-few-public-methods  # a callable Rep
             pair = f"{text[-PAIR_QUESTION:]}\n{reply[:PAIR_REPLY]}"
             await self.moderate("reply", [*chunks, pair], budget)
             stage = "tts"
-            for chunk in chunks:
-                wav = await self.client.speak(chunk, self.voice, budget)
-                # A thread, so the event loop keeps running (it gets GIL time slices). The thread
-                # cannot be cancelled, so check the deadline once it is done.
-                pcm = await asyncio.to_thread(wav_to_pcm, wav)
-                if budget.left() <= 0:
-                    raise DeadlineExceeded()
-                paused = budget.clock()
-                yield pcm
-                # The session waits here while the device plays: that time is not TTS work.
-                budget.extend(budget.clock() - paused)
+            async with contextlib.aclosing(self.speak(text, chunks, budget)) as audio:
+                async for chunk in audio:
+                    yield chunk
         except RateLimited:
             # Moderation fails closed: its rate limit refuses the turn like any other failure.
             raise TurnError("moderated" if stage == "moderation" else "rate_limited") from None

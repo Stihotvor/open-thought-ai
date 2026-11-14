@@ -77,7 +77,12 @@ async def device_endpoint(ws: WebSocket, settings: Settings = Depends(get_settin
 
     await slot.take(ws)
     reply_source = ws.app.state.reply_source  # set at startup in main.py
-    session = DeviceSession(ws, reply_source, turn_limit=slot.turn_limit(settings))
+    session = DeviceSession(
+        ws,
+        reply_source,
+        turn_limit=slot.turn_limit(settings),
+        history_turns=settings.history_turns,
+    )
     await ws.send_json(
         {
             "type": "hello",

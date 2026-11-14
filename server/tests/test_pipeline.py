@@ -76,6 +76,7 @@ class Endpoint:
         self.result_count_delta, self.from_call = result_count_delta, from_call
         self.calls: list[str] = []
         self.moderated: list[list[str]] = []  # the inputs of each moderation call
+        self.chats: list[list[dict]] = []  # the messages of each chat call
 
     def verdict(self, text: str) -> dict:
         return {"categories": {**CLEAN, "selfharm": self.flag(text)}}
@@ -107,6 +108,7 @@ class Endpoint:
         if path.endswith("/audio/transcriptions"):
             return httpx.Response(200, json={"text": self.transcript})
         if path.endswith("/chat/completions"):
+            self.chats.append(json.loads(req.content)["messages"])
             return httpx.Response(200, text=sse(self.reply))
         return httpx.Response(200, content=self.tts if self.tts is not None else tts_wav())
 
@@ -116,7 +118,7 @@ def pipeline_for(endpoint: Endpoint) -> VoicePipeline:
 
 
 async def drain(pipeline: VoicePipeline) -> bytes:
-    return b"".join([chunk async for chunk in pipeline(SPEECH)])
+    return b"".join([chunk.pcm async for chunk in pipeline(SPEECH, ())])
 
 
 def run(endpoint: Endpoint) -> bytes:
@@ -355,10 +357,10 @@ def test_first_chunk_is_yielded_before_the_next_tts_call():
     endpoint = Endpoint(reply="Hi. Two. Three.")
 
     async def first_chunk() -> bytes:
-        chunks = pipeline_for(endpoint)(SPEECH)
+        chunks = pipeline_for(endpoint)(SPEECH, ())
         chunk = await anext(chunks)
         await chunks.aclose()  # as the session does at the cap: no more TTS calls
-        return chunk
+        return chunk.pcm
 
     assert len(asyncio.run(first_chunk())) == BYTES_PER_SECOND // 2
     assert endpoint.calls.count("speech") == 1
@@ -367,7 +369,8 @@ def test_first_chunk_is_yielded_before_the_next_tts_call():
 def test_prompt_names_the_language_and_child_rules():
     prompt = system_prompt("uk")
     assert "Ukrainian" in prompt
-    assert "secret" in prompt and "medicine" in prompt and "address" in prompt
+    assert "self-harm" in prompt and "medicine" in prompt and "password" in prompt
+    assert '"continue"' in prompt
 
 
 def test_playback_time_does_not_count_against_the_deadline(monkeypatch):
@@ -378,7 +381,7 @@ def test_playback_time_does_not_count_against_the_deadline(monkeypatch):
 
     async def slow_listener() -> int:
         count = 0
-        async for _ in pipeline_for(endpoint)(SPEECH):
+        async for _ in pipeline_for(endpoint)(SPEECH, ()):
             count += 1
             await asyncio.sleep(1.5)  # the device plays: 3 x 1.5 s is past the 2 s deadline
         return count
@@ -390,3 +393,40 @@ def test_a_flagged_reply_makes_no_audio():
     endpoint = Endpoint(flag=lambda t: self_test_only(t) or "ty?" in t)
     assert refused(endpoint) == "moderated"
     assert "speech" not in endpoint.calls
+
+
+def test_chunks_carry_their_text_and_question():
+    async def collect() -> list:
+        return [chunk async for chunk in pipeline_for(Endpoint())(SPEECH, ())]
+
+    chunks = asyncio.run(collect())
+    assert [(c.text, c.question) for c in chunks] == [
+        ("Dobrze.", "Jak się masz?"),
+        ("A ty?", "Jak się masz?"),
+    ]
+
+
+def test_history_goes_to_chat_in_order():
+    history = (("q1", "r1"), ("q2", "r2"))
+    messages = pipeline_for(Endpoint()).messages("q3", history)
+    assert messages[0]["role"] == "system"
+    assert [m["content"] for m in messages[1:]] == ["q1", "r1", "q2", "r2", "q3"]
+    assert [m["role"] for m in messages[1:]] == ["user", "assistant"] * 2 + ["user"]
+
+
+def test_history_keeps_the_newest_turns_that_fit(monkeypatch):
+    monkeypatch.setattr(pipeline_module, "MAX_HISTORY_CHARS", 10)
+    history = (("old", "aaaa"), ("new", "bbbb"))  # 7 characters each
+    messages = pipeline_for(Endpoint()).messages("q", history)
+    assert [m["content"] for m in messages[1:]] == ["new", "bbbb", "q"]
+
+
+def test_the_chat_call_gets_the_history():
+    endpoint = Endpoint()
+
+    async def turn() -> None:
+        async for _ in pipeline_for(endpoint)(SPEECH, (("q1", "r1"),)):
+            pass
+
+    asyncio.run(turn())
+    assert [m["content"] for m in endpoint.chats[0][1:]] == ["q1", "r1", "Jak się masz?"]

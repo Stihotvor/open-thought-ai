@@ -11,7 +11,8 @@ from .endpoints import CHAT, MODERATION, STT, TTS, ConfigError, RoleConfig, load
 from .gateway import router
 from .pipeline import VoicePipeline
 from .providers import ModelClient, make_http_client
-from .session import ReplySource, echo
+from .reply import ReplySource
+from .session import echo
 
 log = logging.getLogger(__name__)
 

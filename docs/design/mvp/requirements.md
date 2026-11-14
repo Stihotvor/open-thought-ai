@@ -23,11 +23,11 @@ Self-hosted pocket voice assistant: own ESP32-C3 firmware and own Python server.
 - C8 Budget: 0 € per month. Free tiers only.
 - C9 Storage: reuse the existing Postgres (≥ 15) and Qdrant. One schema, role and collection per instance. Redis is not used in the MVP.
 - C10 Tools: the server is the MCP client. Tool sources are device tools and external MCP servers (mainly n8n), managed in the web UI.
-- C11 Speakers: one shared conversation history per device. No speaker identification in the MVP.
+- C11 Speakers: one shared conversation history per device connection (sliding window, `OTA_HISTORY_TURNS`). No speaker identification in the MVP.
 
 ## Edge Cases
 - E1 Long answers: the server stops TTS after 60 s of speech. The user says "continue" to get the rest.
-- E2 Children: a family-safe system prompt plus a moderation check before TTS. A blocked reply plays a neutral refusal.
+- E2 Safety: a safe system prompt plus a moderation check before TTS. A blocked reply plays a neutral refusal. The MVP is not for children (owner decision, 2026-11-14).
 - E3 Risky tools: a tool flagged `confirm` runs only after a spoken "yes" (keyword list per language) within 10 s after the question ends. The hub enforces it (protocol: `confirm.request`). New tools start with `confirm=true`.
 - E4 Button pressed during a reply: the device flushes its audio at once, sends `abort`, and starts a new listen (barge-in).
 - E5 A new authenticated connection replaces the old session (close code 4000 to the old one). This covers Wi-Fi drops.
