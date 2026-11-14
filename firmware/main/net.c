@@ -67,7 +67,12 @@ void net_connect(const char *ssid, const char *password)
 {
     wifi_config_t config = {0};
     strlcpy((char *)config.sta.ssid, ssid, sizeof(config.sta.ssid));
-    strlcpy((char *)config.sta.password, password, sizeof(config.sta.password));
+    // A 64-character hex key fills the field with no terminator; strlcpy would cut it.
+    size_t len = strlen(password);
+    memcpy(config.sta.password, password, len < sizeof(config.sta.password) ? len : 64);
+    // Never join an open network that copies our SSID when we have a password (downgrade).
+    config.sta.threshold.authmode = len > 0 ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
+    config.sta.pmf_cfg.capable = true;
     s_station = true;
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &config));
     ESP_ERROR_CHECK(esp_wifi_connect());

@@ -12,12 +12,9 @@
 
 void config_init(void)
 {
-#if CONFIG_NVS_ENCRYPTION
-    // Release gate (docs/security.md): needs an eFuse key, never burned in M1.
-    esp_err_t err = nvs_flash_secure_init(NULL);
-#else
+    // NVS encryption is a release gate (docs/security.md): it needs an eFuse key, never
+    // burned in M1. Plain NVS until then.
     esp_err_t err = nvs_flash_init();
-#endif
     if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());
         err = nvs_flash_init();
@@ -67,19 +64,11 @@ void config_save(const config_t *in)
     nvs_close(nvs);
 }
 
-void config_ap_password(char out[13])
+void config_new_ap_password(char out[13])
 {
-    nvs_handle_t nvs;
-    ESP_ERROR_CHECK(nvs_open(NAMESPACE, NVS_READWRITE, &nvs));
-    size_t size = 13;
-    if (nvs_get_str(nvs, "ap_pass", out, &size) != ESP_OK || strlen(out) != 12) {
-        // esp_random is a true RNG while Wi-Fi or Bluetooth runs: call after Wi-Fi starts.
-        for (int i = 0; i < 12; i++) {
-            out[i] = AP_ALPHABET[esp_random() % (sizeof(AP_ALPHABET) - 1)];
-        }
-        out[12] = '\0';
-        ESP_ERROR_CHECK(nvs_set_str(nvs, "ap_pass", out));
-        ESP_ERROR_CHECK(nvs_commit(nvs));
+    // esp_random is a true RNG while Wi-Fi or Bluetooth runs: call after Wi-Fi starts.
+    for (int i = 0; i < 12; i++) {
+        out[i] = AP_ALPHABET[esp_random() % (sizeof(AP_ALPHABET) - 1)];
     }
-    nvs_close(nvs);
+    out[12] = '\0';
 }

@@ -10,6 +10,7 @@
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_panel_ssd1306.h"
 #include "freertos/FreeRTOS.h"
+#include "esp_log.h"
 #include "freertos/semphr.h"
 
 #define WIDTH 128
@@ -19,7 +20,7 @@
 // bit 0 at the top.
 static uint8_t s_frame[WIDTH * HEIGHT / 8];
 static esp_lcd_panel_handle_t s_panel;
-static SemaphoreHandle_t s_lock;  // faces can be set from the button and app tasks
+static SemaphoreHandle_t s_lock;  // faces are set from the app task and the setup web server
 
 static void pixel(int x, int y)
 {
@@ -178,9 +179,13 @@ static void draw(face_t face)
     }
 }
 
+// A display error (a loose wire) is logged, not fatal: the device works without the OLED.
 static void flush(void)
 {
-    ESP_ERROR_CHECK(esp_lcd_panel_draw_bitmap(s_panel, 0, 0, WIDTH, HEIGHT, s_frame));
+    esp_err_t err = esp_lcd_panel_draw_bitmap(s_panel, 0, 0, WIDTH, HEIGHT, s_frame);
+    if (err != ESP_OK) {
+        ESP_LOGW("face", "display update failed: %s", esp_err_to_name(err));
+    }
 }
 
 void face_show(face_t face)

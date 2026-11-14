@@ -18,6 +18,7 @@ static void button_task(void *arg)
     int same = 0;          // polls that disagree with the debounced state
     int held_ms = 0;
     bool hold_sent = false;
+    TickType_t wake = xTaskGetTickCount();
 
     for (;;) {
         bool raw_down = gpio_get_level(PIN_BUTTON) == 0;  // to GND when pressed
@@ -39,7 +40,7 @@ static void button_task(void *arg)
                 s_handler(BUTTON_HOLD);
             }
         }
-        vTaskDelay(pdMS_TO_TICKS(POLL_MS));
+        xTaskDelayUntil(&wake, pdMS_TO_TICKS(POLL_MS));  // a fixed period, so 5 s is 5 s
     }
 }
 

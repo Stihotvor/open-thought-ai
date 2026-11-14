@@ -1,7 +1,7 @@
 // M1 bring-up: faces, button, test tone, microphone level, Wi-Fi and SoftAP setup.
 //
-// One app task owns the state. The button, Wi-Fi and microphone send it events through a
-// queue, so no state is shared between tasks.
+// One app task owns the state. The button and Wi-Fi send it events through a queue. The
+// only other shared value is `s_listening`, which the app task sets and the mic task reads.
 #include <stdbool.h>
 
 #include "audio.h"
@@ -60,6 +60,10 @@ static void mic_task(void *arg)
     int frames = 0;
     for (;;) {
         size_t n = audio_read(frame);
+        if (n == 0) {
+            vTaskDelay(pdMS_TO_TICKS(20));  // an I2S error: do not spin
+            continue;
+        }
         if (!s_listening) {
             continue;
         }
@@ -103,7 +107,7 @@ static app_state_t on_event(app_state_t state, app_event_t event)
         case EVENT_ONLINE:
             return state == STATE_OFFLINE ? enter(STATE_IDLE) : state;
         case EVENT_OFFLINE:
-            return state == STATE_SETUP ? state : enter(STATE_OFFLINE);
+            return (state == STATE_SETUP || state == STATE_OFFLINE) ? state : enter(STATE_OFFLINE);
         case EVENT_PRESS:
             if (state == STATE_IDLE) {
                 return enter(STATE_LISTENING);

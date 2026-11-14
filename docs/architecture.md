@@ -43,7 +43,7 @@ flowchart LR
 | Module | Job |
 |---|---|
 | `board_pins.h` | All pin numbers in one file. |
-| `provision` | SoftAP page: Wi-Fi, server URL, token, PIN. Uses `net` and `config`. |
+| `provision` | SoftAP page: Wi-Fi, server URL, token, PIN. Uses `net`, `config`, `validate` and `face`. |
 | `validate` | Pure checks for the form fields (host-tested in `firmware/test`). |
 | `config` | NVS settings. The only module that touches NVS. |
 | `net` | Wi-Fi owner: station with 1–60 s backoff, and the setup AP. |

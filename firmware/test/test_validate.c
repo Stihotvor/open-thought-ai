@@ -47,6 +47,8 @@ int main(void)
     INVALID(validate_url("ws://host:0/ws"));
     INVALID(validate_url("ws://host:65536/ws"));
     INVALID(validate_url("ws://host:80x/ws"));
+    INVALID(validate_url("ws://host: 80/ws"));  // strtol would skip the space
+    INVALID(validate_url("ws://host:+80/ws"));
     INVALID(validate_url("ws://user@host:80/ws"));
     INVALID(validate_url("ws://host:80/a b"));
     memset(s, 'a', 140), s[140] = '\0';

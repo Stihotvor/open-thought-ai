@@ -24,5 +24,6 @@ void config_load(config_t *out);
 // marked as complete.
 void config_save(const config_t *in);
 
-// The SoftAP password: 12 random characters, made once and kept in NVS.
-void config_ap_password(char out[13]);
+// A new SoftAP password for this setup: 12 random characters, never stored. Someone who
+// saw an earlier setup screen cannot join the next one.
+void config_new_ap_password(char out[13]);

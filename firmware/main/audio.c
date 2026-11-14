@@ -17,6 +17,8 @@ static int s_volume = 60;
 void audio_init(void)
 {
     i2s_chan_config_t chan_config = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
+    // Send silence when no new audio comes, instead of the last DMA buffers in a loop.
+    chan_config.auto_clear_after_cb = true;
     ESP_ERROR_CHECK(i2s_new_channel(&chan_config, &s_tx, &s_rx));
 
     i2s_std_config_t std_config = {
@@ -45,11 +47,11 @@ void audio_set_volume(int volume)
 
 void audio_play(const int16_t *pcm, size_t samples)
 {
-    int32_t out[AUDIO_FRAME_SAMPLES];
+    static int32_t out[AUDIO_FRAME_SAMPLES];  // one writer (the app task): static saves stack
     while (samples > 0) {
         size_t n = samples < AUDIO_FRAME_SAMPLES ? samples : AUDIO_FRAME_SAMPLES;
         for (size_t i = 0; i < n; i++) {
-            out[i] = (int32_t)(pcm[i] * s_volume / 100) << 16;
+            out[i] = (int32_t)(pcm[i] * s_volume / 100) * 65536;  // top 16 bits of the slot
         }
         size_t written;
         i2s_channel_write(s_tx, out, n * sizeof(int32_t), &written, portMAX_DELAY);
@@ -61,7 +63,7 @@ void audio_play(const int16_t *pcm, size_t samples)
 void audio_tone(int hz, int ms)
 {
     int16_t frame[AUDIO_FRAME_SAMPLES];
-    int total = AUDIO_SAMPLE_RATE * ms / 1000;
+    int total = (int)((int64_t)AUDIO_SAMPLE_RATE * ms / 1000);
     for (int done = 0; done < total; done += AUDIO_FRAME_SAMPLES) {
         for (int i = 0; i < AUDIO_FRAME_SAMPLES; i++) {
             float t = (float)(done + i) / AUDIO_SAMPLE_RATE;
@@ -74,7 +76,7 @@ void audio_tone(int hz, int ms)
 
 size_t audio_read(int16_t pcm[AUDIO_FRAME_SAMPLES])
 {
-    int32_t raw[AUDIO_FRAME_SAMPLES];
+    static int32_t raw[AUDIO_FRAME_SAMPLES];  // one reader (the mic task): static saves stack
     size_t bytes = 0;
     if (i2s_channel_read(s_rx, raw, sizeof(raw), &bytes, 200) != ESP_OK) {
         return 0;
@@ -92,9 +94,15 @@ int audio_rms(const int16_t *pcm, size_t samples)
     if (samples == 0) {
         return 0;
     }
+    int64_t mean = 0;  // remove the microphone DC offset, so silence reads near 0
+    for (size_t i = 0; i < samples; i++) {
+        mean += pcm[i];
+    }
+    mean /= (int64_t)samples;
     int64_t sum = 0;
     for (size_t i = 0; i < samples; i++) {
-        sum += (int32_t)pcm[i] * pcm[i];
+        int64_t d = pcm[i] - mean;
+        sum += d * d;
     }
     return (int)sqrtf((float)(sum / (int64_t)samples));
 }

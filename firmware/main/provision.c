@@ -85,18 +85,28 @@ static bool pin_matches(const char *pin)
 
 // ---- HTTP ----
 
+// HTML-escape `s` into one chunk (inputs are at most 128 characters, 6 bytes each escaped).
 static void send_escaped(httpd_req_t *req, const char *s)
 {
-    for (; *s; s++) {
+    char out[128 * 6 + 1];
+    size_t n = 0;
+    for (; *s && n + 7 < sizeof(out); s++) {
+        const char *entity = NULL;
         switch (*s) {
-            case '&': httpd_resp_sendstr_chunk(req, "&amp;"); break;
-            case '<': httpd_resp_sendstr_chunk(req, "&lt;"); break;
-            case '>': httpd_resp_sendstr_chunk(req, "&gt;"); break;
-            case '"': httpd_resp_sendstr_chunk(req, "&quot;"); break;
-            case '\'': httpd_resp_sendstr_chunk(req, "&#39;"); break;
-            default: httpd_resp_send_chunk(req, s, 1);
+            case '&': entity = "&amp;"; break;
+            case '<': entity = "&lt;"; break;
+            case '>': entity = "&gt;"; break;
+            case '"': entity = "&quot;"; break;
+            case '\'': entity = "&#39;"; break;
+        }
+        if (entity) {
+            n += (size_t)snprintf(out + n, sizeof(out) - n, "%s", entity);
+        } else {
+            out[n++] = *s;
         }
     }
+    out[n] = '\0';
+    httpd_resp_sendstr_chunk(req, out);
 }
 
 // The form. Only the Wi-Fi name and the server URL are filled in again: the token and
@@ -131,11 +141,12 @@ static esp_err_t send_form(httpd_req_t *req, const char *message, const config_t
     return httpd_resp_sendstr_chunk(req, NULL);
 }
 
+// Before a correct PIN, the form shows no saved values (not even the Wi-Fi name or URL).
+static const config_t EMPTY;
+
 static esp_err_t get_form(httpd_req_t *req)
 {
-    config_t saved;
-    config_load(&saved);
-    return send_form(req, NULL, &saved);
+    return send_form(req, NULL, &EMPTY);
 }
 
 static void reboot(void *arg)
@@ -160,7 +171,7 @@ static esp_err_t post_save(httpd_req_t *req)
         req->content_len > MAX_BODY || s_failures >= MAX_PIN_FAILURES) {
         return httpd_resp_send_404(req);
     }
-    char body[MAX_BODY + 1];
+    static char body[MAX_BODY + 1];  // one httpd task runs handlers one at a time
     size_t got = 0;
     while (got < req->content_len) {
         int n = httpd_req_recv(req, body + got, req->content_len - got);
@@ -171,17 +182,16 @@ static esp_err_t post_save(httpd_req_t *req)
     }
     body[got] = '\0';
 
-    config_t in = {0};
+    static config_t in;  // static: keeps the httpd stack small
+    memset(&in, 0, sizeof(in));
     char pin[8] = "";
-    form_value(body, "pin", pin, sizeof(pin));
-    if (!pin_matches(pin)) {
+    if (!form_value(body, "pin", pin, sizeof(pin)) || !pin_matches(pin)) {
         s_failures++;
         ESP_LOGW(TAG, "wrong PIN (%d of %d)", s_failures, MAX_PIN_FAILURES);
         if (s_failures >= MAX_PIN_FAILURES) {
             stop_after_failures();
         }
-        config_load(&in);
-        return send_form(req, "Wrong PIN.", &in);
+        return send_form(req, "Wrong PIN.", &EMPTY);
     }
     bool parsed = form_value(body, "ssid", in.ssid, sizeof(in.ssid)) &&
                   form_value(body, "wifi_pass", in.wifi_pass, sizeof(in.wifi_pass)) &&
@@ -192,7 +202,7 @@ static esp_err_t post_save(httpd_req_t *req)
     if (!error) error = validate_wifi_pass(in.wifi_pass);
     if (!error) error = validate_url(in.url);
     if (!error) error = validate_token(in.token);
-    config_t saved;
+    static config_t saved;
     config_load(&saved);
     if (!error && in.token[0] == '\0' && saved.token[0] == '\0') {
         error = "A device token is needed.";
@@ -216,7 +226,7 @@ void provision_start(void)
     char ssid[9];
     char password[13];
     net_ap_ssid(ssid);
-    config_ap_password(password);  // after net_init: esp_random needs the radio on
+    config_new_ap_password(password);  // after net_init: esp_random needs the radio on
     snprintf(s_pin, sizeof(s_pin), "%06lu", (unsigned long)(esp_random() % 1000000));
     s_failures = 0;
 

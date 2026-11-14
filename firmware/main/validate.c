@@ -64,6 +64,9 @@ const char *validate_url(const char *url)
         }
     }
     const char *port = colon + 1;
+    if (!isdigit((unsigned char)*port)) {
+        return BAD;  // strtol would accept a space or a sign
+    }
     char *end;
     long value = strtol(port, &end, 10);
     if (end == port || value < 1 || value > 65535 || (*end != '\0' && *end != '/')) {
