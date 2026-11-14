@@ -43,13 +43,16 @@ flowchart LR
 | Module | Job |
 |---|---|
 | `board_pins.h` | All pin numbers in one file. |
-| `provision` | SoftAP page: Wi-Fi, server URL, token. Saves to NVS. |
-| `audio_in` | I2S read, 16 kHz/16-bit mono, 20 ms frames. |
-| `audio_out` | I2S write, volume. |
+| `provision` | SoftAP page: Wi-Fi, server URL, token, PIN. Uses `net`, `config`, `validate` and `face`. |
+| `validate` | Pure checks for the form fields (host-tested in `firmware/test`). |
+| `config` | NVS settings. The only module that touches NVS. |
+| `net` | Wi-Fi owner: station with 1–60 s backoff, and the setup AP. |
+| `button` | 10 ms polling, 30 ms debounce, press and 5 s hold events. |
+| `audio` | One full-duplex I2S port (mic and amp share BCLK/WS): 16 kHz mono read in 20 ms frames, write with volume, test tone. |
 | `ws_link` | Protocol v1 client, reconnect with backoff 1–60 s. |
 | `face` | OLED faces per state. |
 | `tools` | Device tools: `set_volume`, `set_face`, `get_status`. |
-| `app_state` | State machine: idle, listening, thinking, speaking, offline, error. |
+| `app_state` | State machine: setup, provisioning, offline, idle, listening, thinking, speaking, error. In `main.c`, one task with an event queue. |
 
 ## Server packages (Python 3.12)
 | Package | Job |

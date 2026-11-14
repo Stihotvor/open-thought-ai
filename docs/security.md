@@ -5,8 +5,12 @@ Threat model: a home LAN with guests and IoT devices, family members including c
 ## Device and provisioning
 - Provisioning AP starts only after a 5 s button hold, runs at most 5 minutes, then stops.
 - AP is WPA2 with a per-device password shown on the OLED. The form also needs a per-boot PIN shown on the OLED.
+- AP password: 12 random characters, new on each AP start and never stored, not derived from the MAC (the MAC is public in every beacon). PIN: 6 digits, new on each AP start, compared in constant time. 5 wrong PINs stop the AP. Form body ≤ 1 KB, one AP client. Leaving setup (save, timeout, PIN failures) reboots the device.
+- The form shows no saved values. After a wrong PIN or a field error, it shows again only what the user typed for the Wi-Fi name and the server URL. Joining the open network that copies the home SSID is blocked: with a saved password the station accepts only WPA2 or better. Logs never print the token, the Wi-Fi password, the AP password or the PIN.
 - The token is never shown again after it is saved.
-- NVS encryption on. Flash encryption and USB-JTAG disable: OPEN (risk of bricking during development); decide before the public release, document the residual risk.
+- NVS encryption: OFF in M1 and M2 (owner decision via the architect, 2026-11-15: a dev board, and no irreversible eFuse burn without owner approval). The Wi-Fi password and the device token are in plain NVS. Anyone with USB access can read them with `esptool read_flash`. Mitigation: "regenerate token" in the UI, then reprovision. The `nvs_keys` partition is reserved for it.
+- Release gate: before any non-dev use, decide HMAC-based NVS encryption (eFuse key burn), flash encryption and USB-JTAG disable together, and document the residual risk.
+- Erase the flash (`idf.py erase-flash`) before the first flash of this firmware and before you flash other firmware on a shared dev board: other firmware can read our NVS.
 - No OTA. The device runs only what was flashed by USB.
 
 ## Transport

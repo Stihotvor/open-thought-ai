@@ -1,0 +1,10 @@
+CONFIG_IDF_TARGET="esp32c3"
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+# The SuperMini logs over its built-in USB serial port (/dev/ttyACM0).
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+# The app task plays tones and starts the setup web server: more than the 3.5 KB default.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=6144
