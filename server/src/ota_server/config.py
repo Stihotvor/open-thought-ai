@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     # Voice mode needs a moderation role (docs/security.md); without it, startup fails.
     pipeline: Literal["echo", "voice"] = "echo"
     tts_voice: str = Field(default="", max_length=100)
+    # Chat memory: the last N turns of this server run, in memory only. 0 turns it off.
+    history_turns: int = Field(default=15, ge=0, le=100)
 
 
 @lru_cache

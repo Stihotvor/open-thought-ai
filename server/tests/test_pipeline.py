@@ -76,6 +76,7 @@ class Endpoint:
         self.result_count_delta, self.from_call = result_count_delta, from_call
         self.calls: list[str] = []
         self.moderated: list[list[str]] = []  # the inputs of each moderation call
+        self.chats: list[list[dict]] = []  # the messages of each chat call
 
     def verdict(self, text: str) -> dict:
         return {"categories": {**CLEAN, "selfharm": self.flag(text)}}
@@ -107,6 +108,7 @@ class Endpoint:
         if path.endswith("/audio/transcriptions"):
             return httpx.Response(200, json={"text": self.transcript})
         if path.endswith("/chat/completions"):
+            self.chats.append(json.loads(req.content)["messages"])
             return httpx.Response(200, text=sse(self.reply))
         return httpx.Response(200, content=self.tts if self.tts is not None else tts_wav())
 
@@ -367,7 +369,8 @@ def test_first_chunk_is_yielded_before_the_next_tts_call():
 def test_prompt_names_the_language_and_child_rules():
     prompt = system_prompt("uk")
     assert "Ukrainian" in prompt
-    assert "secret" in prompt and "medicine" in prompt and "address" in prompt
+    assert "self-harm" in prompt and "medicine" in prompt and "password" in prompt
+    assert '"continue"' in prompt
 
 
 def test_playback_time_does_not_count_against_the_deadline(monkeypatch):
@@ -390,3 +393,53 @@ def test_a_flagged_reply_makes_no_audio():
     endpoint = Endpoint(flag=lambda t: self_test_only(t) or "ty?" in t)
     assert refused(endpoint) == "moderated"
     assert "speech" not in endpoint.calls
+
+
+def turns(endpoint: Endpoint, count: int, history_turns: int = 15) -> list[list[dict]]:
+    pipeline = VoicePipeline(make_client(endpoint, ENV), "pl", "voice-1", history_turns)
+
+    async def run_turns() -> None:
+        for _ in range(count):
+            await drain(pipeline)
+
+    asyncio.run(run_turns())
+    return endpoint.chats
+
+
+def test_the_next_turn_sees_the_last_question_and_reply():
+    chats = turns(Endpoint(), 2)
+    assert [m["role"] for m in chats[1]] == ["system", "user", "assistant", "user"]
+    assert chats[1][1:3] == [
+        {"role": "user", "content": "Jak się masz?"},
+        {"role": "assistant", "content": "Dobrze. A ty?"},
+    ]
+
+
+def test_history_is_a_sliding_window():
+    chats = turns(Endpoint(), 4, history_turns=2)
+    assert len(chats[3]) == 1 + 2 * 2 + 1  # system, two remembered turns, the question
+
+
+def test_history_off_sends_only_the_question():
+    chats = turns(Endpoint(), 2, history_turns=0)
+    assert [m["role"] for m in chats[1]] == ["system", "user"]
+
+
+def test_history_keeps_only_the_played_part_of_a_cut_reply():
+    pipeline = pipeline_for(Endpoint(reply="One. " + "Two. " * 70 + "Three."))
+
+    async def cut_after_two_chunks() -> None:
+        audio = pipeline(SPEECH)
+        await anext(audio)
+        await anext(audio)  # asking for chunk 2 means chunk 1 was played
+        await audio.aclose()  # the cap or an abort, while chunk 2 plays
+
+    asyncio.run(cut_after_two_chunks())
+    assert list(pipeline.history) == [("Jak się masz?", "One.")]
+
+
+def test_a_refused_turn_is_not_remembered():
+    pipeline = pipeline_for(Endpoint(flag=lambda t: self_test_only(t) or "ty?" in t))
+    with pytest.raises(TurnError):
+        asyncio.run(drain(pipeline))
+    assert not pipeline.history

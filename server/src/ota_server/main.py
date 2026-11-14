@@ -34,7 +34,8 @@ async def start_reply_source(settings: Settings, stack: AsyncExitStack) -> Reply
         return echo
     roles = voice_roles(model_env())
     http = await stack.enter_async_context(make_http_client())
-    return VoicePipeline(ModelClient(roles, http), settings.language, settings.tts_voice)
+    client = ModelClient(roles, http)
+    return VoicePipeline(client, settings.language, settings.tts_voice, settings.history_turns)
 
 
 @asynccontextmanager
