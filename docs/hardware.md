@@ -1,6 +1,6 @@
 # Hardware
 
-Status: draft. The EDA review (milestone M0.5) must approve this page before the pins are frozen.
+Status: draft. The pins below are the current development wiring (owner decision, 2026-11-14: use as is for development, rewire at the end). The EDA review (milestone M0.5) must approve this page before the pins are frozen.
 
 ## Parts (BOM)
 | Part | Qty | Note |
@@ -16,12 +16,13 @@ Status: draft. The EDA review (milestone M0.5) must approve this page before the
 All pins are defined in `firmware/main/board_pins.h`.
 | Signal | GPIO | Review note |
 |---|---|---|
-| I2S BCLK (mic + amp) | TBD | Avoid strapping pins GPIO2, GPIO8, GPIO9 |
-| I2S WS (mic + amp) | TBD | |
-| I2S DIN (mic SD) | TBD | |
-| I2S DOUT (amp DIN) | TBD | |
-| I2C SDA / SCL (OLED) | TBD | |
-| Button | TBD | |
+| I2S BCLK (mic + amp) | 2 | Strapping pin: dev wiring only, rewire before release |
+| I2S WS (mic + amp) | 1 | |
+| I2S DIN (mic SD) | 8 | Strapping pin: dev wiring only, rewire before release |
+| I2S DOUT (amp DIN) | 3 | |
+| I2C SDA / SCL (OLED, 0x3C) | 21 / 20 | |
+| Button | 10 | To GND, internal pull-up |
+| Status LED | 0 | High = on |
 | USB D-/D+ | GPIO18/19 | Keep free for USB flashing and logs |
 
 ## Review checklist for the EDA agent

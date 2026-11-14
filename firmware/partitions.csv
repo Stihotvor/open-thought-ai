@@ -1,0 +1,7 @@
+# No OTA (docs/security.md): one factory app, the device runs only what was flashed by USB.
+# nvs_keys is reserved for NVS encryption (a release gate, see docs/security.md); unused now.
+# Name,     Type, SubType,  Offset,   Size,     Flags
+nvs,        data, nvs,      0x9000,   0x5000,
+nvs_keys,   data, nvs_keys, 0xe000,   0x1000,   encrypted
+phy_init,   data, phy,      0xf000,   0x1000,
+factory,    app,  factory,  0x10000,  0x3F0000,

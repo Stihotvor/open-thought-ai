@@ -29,7 +29,7 @@ Total M0–M6: 54–101 h.
 
 ### M1 Firmware bring-up
 - ESP-IDF project, partition table without OTA, `board_pins.h`.
-- SoftAP provisioning: button gesture, WPA2 + OLED PIN, 5 min timeout, NVS encryption.
+- SoftAP provisioning: button gesture, WPA2 + OLED PIN, 5 min timeout, NVS encryption hook (off; decision in docs/security.md).
 - OLED faces for all states.
 - I2S out: test tone and volume.
 - I2S in: mic capture and level log.
