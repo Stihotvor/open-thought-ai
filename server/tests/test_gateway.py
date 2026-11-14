@@ -18,7 +18,7 @@ from ota_server.main import create_app
 from ota_server.pipeline import VoicePipeline
 from ota_server.protocol import AUDIO_CHUNK, BYTES_PER_SECOND, Close, TurnError
 from ota_server.ratelimit import TokenBucket
-from ota_server.session import ReplyChunk
+from ota_server.reply import ReplyChunk
 
 TOKEN = "test-token-0123456789abcdef0123456789"
 AUTH = {"Authorization": f"Bearer {TOKEN}"}

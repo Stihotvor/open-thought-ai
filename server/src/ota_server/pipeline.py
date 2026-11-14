@@ -28,7 +28,7 @@ from .audio import AudioError, pcm_to_wav, wav_to_pcm
 from .protocol import TurnError
 from .providers import MAX_TTS_TEXT, ModelClient, ProviderError, new_turn_budget
 from .ratelimit import CallCapExceeded, DeadlineExceeded, RateLimited, TurnBudget
-from .session import History, ReplyChunk
+from .reply import History, ReplyChunk
 
 log = logging.getLogger(__name__)
 

@@ -8,7 +8,8 @@ import pytest
 
 from ota_server import session as session_module
 from ota_server.protocol import AUDIO_CHUNK, MAX_CREDIT
-from ota_server.session import CreditStalled, DeviceSession, ReplyChunk
+from ota_server.reply import ReplyChunk
+from ota_server.session import CreditStalled, DeviceSession
 
 
 class FakeSocket:
@@ -114,16 +115,23 @@ def test_a_played_reply_is_remembered():
     assert list(session.history) == [("question", "One. Two.")]
 
 
-def test_a_chunk_cut_by_the_cap_is_not_remembered(monkeypatch):
+def test_a_chunk_cut_by_the_cap_is_marked(monkeypatch):
     monkeypatch.setattr(session_module, "SPEECH_CAP", AUDIO_CHUNK + 1)
     session = spoken_reply(["One.", "Two.", "Three."])
-    assert list(session.history) == [("question", "One.")]
+    assert list(session.history) == [("question", "One. Two. …")]
+
+
+def test_a_cut_first_chunk_keeps_the_question(monkeypatch):
+    monkeypatch.setattr(session_module, "SPEECH_CAP", AUDIO_CHUNK // 2)
+    session = spoken_reply(["A long story."])
+    assert list(session.history) == [("question", "A long story. …")]
 
 
 def test_history_turns_is_a_sliding_window():
     session = spoken_reply(["a."], history_turns=2)
-    session.history.extend([("q2", "b."), ("q3", "c.")])
-    assert [q for q, _ in session.history] == ["q2", "q3"]
+    session.remember([ReplyChunk(b"", "b.", "q2")])
+    session.remember([ReplyChunk(b"", "c.", "q3")])
+    assert list(session.history) == [("q2", "b."), ("q3", "c.")]
 
 
 def test_an_aborted_reply_keeps_only_the_played_chunks():
@@ -136,8 +144,13 @@ def test_an_aborted_reply_keeps_only_the_played_chunks():
         session.credit = MAX_CREDIT
         session.open_turn = 1
         session.reply_task = asyncio.create_task(session.reply(1, b"\0" * AUDIO_CHUNK * 4))
-        await asyncio.sleep(0.5)  # "Long." is playing
+        while sum(isinstance(m, bytes) for m in session.ws.sent) < 2:
+            await asyncio.sleep(0.01)  # wait until "Long." is playing
         await session.cancel_reply()
         return session
 
-    assert list(asyncio.run(scenario()).history) == [("question", "One.")]
+    assert list(asyncio.run(scenario()).history) == [("question", "One. Long. …")]
+
+
+def test_echo_turns_leave_no_history():
+    assert not spoken_reply([""]).history

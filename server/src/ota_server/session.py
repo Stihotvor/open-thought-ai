@@ -5,8 +5,8 @@ import contextlib
 import logging
 import time
 from collections import deque
-from collections.abc import AsyncGenerator, Callable, Sequence
-from dataclasses import dataclass
+from collections.abc import AsyncGenerator
+from dataclasses import replace
 
 from fastapi import WebSocket
 
@@ -25,25 +25,11 @@ from .protocol import (
     split_audio,
 )
 from .ratelimit import TokenBucket
+from .reply import History, ReplyChunk, ReplySource
 
 log = logging.getLogger(__name__)
 
 
-@dataclass(frozen=True)
-class ReplyChunk:
-    """Reply audio, with the text it speaks and the question it answers (for history)."""
-
-    pcm: bytes
-    text: str = ""
-    question: str = ""
-
-
-# (question, played reply) pairs of earlier turns, oldest first.
-History = Sequence[tuple[str, str]]
-# Turns captured audio (and the history) into reply chunks: echo (M2) or
-# pipeline.VoicePipeline (M3). It raises TurnError(code) when the turn fails: before the
-# first chunk the device gets that error code, after it the reply ends with reason "error".
-ReplySource = Callable[[bytes, History], AsyncGenerator[ReplyChunk]]
 PREFETCH = 2  # reply chunks made ahead of playback: TTS runs while the device plays
 END = None  # the queue item after the last chunk
 
@@ -121,15 +107,16 @@ class DeviceSession:  # pylint: disable=too-many-instance-attributes  # one devi
     def start_reply(self) -> None:
         self.listening = False
         self.open_turn = self.turn
-        self.reply_task = asyncio.create_task(self.reply(self.turn, bytes(self.audio)))
+        history = tuple(self.history)  # a snapshot: the source never sees later changes
+        self.reply_task = asyncio.create_task(self.reply(self.turn, bytes(self.audio), history))
 
-    async def reply(self, turn: int, pcm: bytes) -> None:
+    async def reply(self, turn: int, pcm: bytes, history: History = ()) -> None:
         if len(pcm) < MIN_SPEECH:
             await self.finish({"type": "error", "turn": turn, "code": "no_speech"})
             return
         await self.ws.send_json({"type": "state", "turn": turn, "state": "thinking"})
         queue: asyncio.Queue = asyncio.Queue(maxsize=PREFETCH)
-        producer = asyncio.create_task(self.produce(pcm, queue))
+        producer = asyncio.create_task(self.produce(pcm, history, queue))
         played: list[ReplyChunk] = []
         try:
             await self.play(turn, queue, played)
@@ -140,16 +127,16 @@ class DeviceSession:  # pylint: disable=too-many-instance-attributes  # one devi
                 await producer
 
     def remember(self, played: list[ReplyChunk]) -> None:
-        """Keep the question and the chunks the device played in full. A chunk cut by the
-        cap or an abort is left out, so "continue" goes on from it."""
+        """Keep the question and the chunks the device played. A chunk cut by the cap, an
+        abort or an error ends with "…", so "continue" goes on from there."""
         texts = [chunk.text for chunk in played if chunk.text]
         if texts:
             self.history.append((played[0].question, " ".join(texts)))
 
-    async def produce(self, pcm: bytes, queue: asyncio.Queue) -> None:
+    async def produce(self, pcm: bytes, history: History, queue: asyncio.Queue) -> None:
         """Put each reply chunk on the queue, then END, or the exception that ended it."""
         try:
-            source = self.reply_source(pcm, tuple(self.history))
+            source = self.reply_source(pcm, history)
             async with contextlib.aclosing(source) as chunks:
                 async for chunk in chunks:
                     await queue.put(chunk)
@@ -175,6 +162,7 @@ class DeviceSession:  # pylint: disable=too-many-instance-attributes  # one devi
                 speaking = await self.start_speaking(turn)
                 clock = time.monotonic()
             room = SPEECH_CAP - sent
+            played.append(replace(item, text=f"{item.text} …" if item.text else ""))  # cut
             try:
                 clock = await self.stream(turn, item.pcm[:room], sent, clock)
             except CreditStalled:
@@ -185,7 +173,7 @@ class DeviceSession:  # pylint: disable=too-many-instance-attributes  # one devi
             if len(item.pcm) > room:
                 reason = "cap"
                 break
-            played.append(item)
+            played[-1] = item  # played in full
         if not speaking:
             await self.start_speaking(turn)  # an empty reply still starts and ends
         await self.finish({"type": "reply.end", "turn": turn, "reason": reason})
