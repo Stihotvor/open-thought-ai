@@ -8,7 +8,7 @@ import pytest
 
 from ota_server import session as session_module
 from ota_server.protocol import AUDIO_CHUNK, MAX_CREDIT
-from ota_server.session import CreditStalled, DeviceSession
+from ota_server.session import CreditStalled, DeviceSession, ReplyChunk
 
 
 class FakeSocket:
@@ -90,3 +90,54 @@ def test_abort_during_the_last_message_adds_no_second_end():
 
     ends = [m for m in asyncio.run(scenario()) if m.get("type") == "reply.end"]
     assert ends == [{"type": "reply.end", "turn": 1, "reason": "done"}]
+
+
+def spoken_reply(texts: list[str], **session_args) -> DeviceSession:
+    """Run one reply of 100 ms chunks through a session with plenty of credit."""
+
+    async def source(pcm: bytes, history):
+        for text in texts:
+            yield ReplyChunk(b"\0" * AUDIO_CHUNK, text, "question")
+
+    async def scenario() -> DeviceSession:
+        session = DeviceSession(FakeSocket(), source, **session_args)  # type: ignore[arg-type]
+        session.credit = MAX_CREDIT
+        session.open_turn = 1
+        await session.reply(1, b"\0" * AUDIO_CHUNK * 4)
+        return session
+
+    return asyncio.run(scenario())
+
+
+def test_a_played_reply_is_remembered():
+    session = spoken_reply(["One.", "Two."])
+    assert list(session.history) == [("question", "One. Two.")]
+
+
+def test_a_chunk_cut_by_the_cap_is_not_remembered(monkeypatch):
+    monkeypatch.setattr(session_module, "SPEECH_CAP", AUDIO_CHUNK + 1)
+    session = spoken_reply(["One.", "Two.", "Three."])
+    assert list(session.history) == [("question", "One.")]
+
+
+def test_history_turns_is_a_sliding_window():
+    session = spoken_reply(["a."], history_turns=2)
+    session.history.extend([("q2", "b."), ("q3", "c.")])
+    assert [q for q, _ in session.history] == ["q2", "q3"]
+
+
+def test_an_aborted_reply_keeps_only_the_played_chunks():
+    async def scenario() -> DeviceSession:
+        async def source(pcm: bytes, history):
+            yield ReplyChunk(b"\0" * AUDIO_CHUNK, "One.", "question")
+            yield ReplyChunk(b"\0" * AUDIO_CHUNK * 50, "Long.", "question")
+
+        session = DeviceSession(FakeSocket(), source)  # type: ignore[arg-type]
+        session.credit = MAX_CREDIT
+        session.open_turn = 1
+        session.reply_task = asyncio.create_task(session.reply(1, b"\0" * AUDIO_CHUNK * 4))
+        await asyncio.sleep(0.5)  # "Long." is playing
+        await session.cancel_reply()
+        return session
+
+    assert list(asyncio.run(scenario()).history) == [("question", "One.")]

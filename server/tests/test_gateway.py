@@ -18,6 +18,7 @@ from ota_server.main import create_app
 from ota_server.pipeline import VoicePipeline
 from ota_server.protocol import AUDIO_CHUNK, BYTES_PER_SECOND, Close, TurnError
 from ota_server.ratelimit import TokenBucket
+from ota_server.session import ReplyChunk
 
 TOKEN = "test-token-0123456789abcdef0123456789"
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
@@ -139,9 +140,9 @@ def test_turn_limit_survives_reconnect(client):
 
 
 def failing_source(error: Exception, chunks: int = 0):
-    async def source(pcm: bytes):
+    async def source(pcm: bytes, _history):
         for _ in range(chunks):
-            yield pcm[:AUDIO_CHUNK]
+            yield ReplyChunk(pcm[:AUDIO_CHUNK])
         raise error
 
     return source
@@ -195,9 +196,9 @@ def test_voice_pipeline_starts_with_all_roles(monkeypatch):
 
 
 def test_abort_while_thinking_ends_the_reply(client):
-    async def slow(pcm: bytes):
+    async def slow(pcm: bytes, _history):
         await asyncio.Event().wait()  # never answers
-        yield pcm
+        yield ReplyChunk(pcm)
 
     client.app.state.reply_source = slow
     ws = connect(client)
@@ -265,10 +266,10 @@ def test_failure_after_audio_ends_the_reply_with_error(client):
 def test_abort_while_speaking_closes_the_source(client):
     closed = asyncio.Event()
 
-    async def endless(pcm: bytes):
+    async def endless(pcm: bytes, _history):
         try:
             while True:
-                yield pcm[:AUDIO_CHUNK]
+                yield ReplyChunk(pcm[:AUDIO_CHUNK])
         finally:
             closed.set()
 
@@ -288,10 +289,10 @@ def test_chunks_stream_in_order_and_the_cap_stops_the_source(client, monkeypatch
     monkeypatch.setattr(session_module, "SPEECH_CAP", 2 * AUDIO_CHUNK)
     made = []
 
-    async def chunks(pcm: bytes):
+    async def chunks(pcm: bytes, _history):
         for n in range(1, 10):
             made.append(n)
-            yield bytes([n, 0]) * (AUDIO_CHUNK // 2)
+            yield ReplyChunk(bytes([n, 0]) * (AUDIO_CHUNK // 2))
 
     client.app.state.reply_source = chunks
     ws = connect(client)
