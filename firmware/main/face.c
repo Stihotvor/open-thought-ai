@@ -12,6 +12,7 @@
 #include "freertos/FreeRTOS.h"
 #include "esp_log.h"
 #include "freertos/semphr.h"
+#include "qrcode.h"
 
 #define WIDTH 128
 #define HEIGHT 64
@@ -203,6 +204,57 @@ void face_show_text(const char *const lines[], int count)
     memset(s_frame, 0, sizeof(s_frame));
     for (int i = 0; i < count && i < FACE_TEXT_LINES; i++) {
         text(1, 2 + i * 10, lines[i]);
+    }
+    flush();
+    xSemaphoreGive(s_lock);
+}
+
+// The QR code: dark modules on a lit square, so phone cameras read it like print.
+// 2 px per module and a 1-module light border: a version 3 code (29 modules) is 62 px.
+#define QR_SCALE 2
+#define QR_BORDER 1
+#define QR_MAX_VERSION 3
+#define QR_TEXT_X 63  // 11 characters fit to the right edge
+
+static bool s_qr_drawn;
+
+static void draw_qr(esp_qrcode_handle_t qr)
+{
+    int size = esp_qrcode_get_size(qr);
+    int box = (size + 2 * QR_BORDER) * QR_SCALE;
+    int top = (HEIGHT - box) / 2;
+    fill_rect(0, top, box, box);
+    for (int y = 0; y < size; y++) {
+        for (int x = 0; x < size; x++) {
+            if (!esp_qrcode_get_module(qr, x, y)) {
+                continue;
+            }
+            for (int d = 0; d < QR_SCALE * QR_SCALE; d++) {  // clear the module's pixels
+                int px = (x + QR_BORDER) * QR_SCALE + d % QR_SCALE;
+                int py = top + (y + QR_BORDER) * QR_SCALE + d / QR_SCALE;
+                s_frame[px + (py / 8) * WIDTH] &= (uint8_t)~(1 << (py % 8));
+            }
+        }
+    }
+    s_qr_drawn = true;
+}
+
+void face_show_qr(const char *qr_text, const char *const lines[], int count)
+{
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    memset(s_frame, 0, sizeof(s_frame));
+    esp_qrcode_config_t config = {
+        .display_func = draw_qr,
+        .max_qrcode_version = QR_MAX_VERSION,
+        .qrcode_ecc_level = ESP_QRCODE_ECC_LOW,
+    };
+    s_qr_drawn = false;
+    esp_qrcode_generate(&config, qr_text);
+    if (!s_qr_drawn) {
+        ESP_LOGW("face", "QR code does not fit: text only");
+    }
+    for (int i = 0; i < count && i < FACE_QR_LINES; i++) {
+        text(QR_TEXT_X, 1 + i * 9, lines[i]);
     }
     flush();
     xSemaphoreGive(s_lock);

@@ -254,12 +254,15 @@ void provision_start(void)
     httpd_register_uri_handler(server, &form);
     httpd_register_uri_handler(server, &save);
 
-    char line_ssid[22], line_pass[22], line_pin[22];
-    snprintf(line_ssid, sizeof(line_ssid), "WIFI %s", ssid);
-    snprintf(line_pass, sizeof(line_pass), "PASS %s", password);
-    snprintf(line_pin, sizeof(line_pin), "PIN  %s", s_pin);
-    const char *const lines[] = {"SETUP", line_ssid, line_pass, line_pin, "192.168.4.1",
-                                 "5 MIN"};
-    face_show_text(lines, 6);
+    // Scan to join: the standard Wi-Fi QR format. The SSID (OTA-XXXX) and the password
+    // alphabet (config.c) have no characters that need escapes (; , : \\ ").
+    char qr[64];
+    snprintf(qr, sizeof(qr), "WIFI:T:WPA;S:%s;P:%s;;", ssid, password);
+    char line_pin[FACE_QR_COLUMNS + 1], pass_1[FACE_QR_COLUMNS + 1], pass_2[FACE_QR_COLUMNS + 1];
+    snprintf(line_pin, sizeof(line_pin), "PIN %s", s_pin);
+    snprintf(pass_1, sizeof(pass_1), "%.6s", password);
+    snprintf(pass_2, sizeof(pass_2), "%s", password + 6);
+    const char *const lines[] = {line_pin, "OPEN", "192.168.4.1", "", "PASS", pass_1, pass_2};
+    face_show_qr(qr, lines, 7);
     ESP_LOGI(TAG, "setup access point %s started for %d minutes", ssid, AP_MINUTES);
 }
