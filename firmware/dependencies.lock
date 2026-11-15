@@ -1,4 +1,14 @@
 dependencies:
+  espressif/esp_websocket_client:
+    component_hash: dc00233af846f3a744ada283a300e0d586040aadc3ee67361645ecdce4523672
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.0'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.8.0
   espressif/qrcode:
     component_hash: 3b493771bc5d6ad30cbf87c25bf784aada8a08c941504355b55d6b75518ed7bc
     dependencies: []
@@ -11,7 +21,8 @@ dependencies:
       type: idf
     version: 5.5.2
 direct_dependencies:
+- espressif/esp_websocket_client
 - espressif/qrcode
-manifest_hash: 51b9dc188306528a9a7578d1e3c5e7af5f05117839000c44715e62121b947b81
+manifest_hash: 0af9c0c539f0725c8a2bf59205a6a625d23f4a9c479adf98d9f8900122d35c1a
 target: esp32c3
 version: 2.0.0

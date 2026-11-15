@@ -134,7 +134,7 @@ static esp_err_t send_form(httpd_req_t *req, const char *message, const config_t
     httpd_resp_sendstr_chunk(req,
         "\"><p>Wi-Fi password<br><input name=wifi_pass type=password maxlength=64>"
         "<p>Server URL<br><input name=url maxlength=128 required "
-        "placeholder='ws://192.168.1.10:8000/ws' value=\"");
+        "placeholder='ws://192.168.1.10:8000/v1/device' value=\"");
     send_escaped(req, values->url);
     httpd_resp_sendstr_chunk(req,
         "\"><p>Device token (empty keeps the saved one)<br>"
