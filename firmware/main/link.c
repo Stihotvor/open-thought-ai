@@ -8,6 +8,9 @@
 #include "esp_app_desc.h"
 #include "esp_log.h"
 #include "esp_websocket_client.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
+#include "freertos/task.h"
 #include "net.h"
 #include "player.h"
 
@@ -16,8 +19,13 @@ static const char *TAG = "link";
 #define PROTO_VERSION 1
 #define BACKOFF_MIN_MS 1000
 #define BACKOFF_MAX_MS 60000
-#define SEND_TIMEOUT pdMS_TO_TICKS(200)
-#define MAX_TEXT 1024           // docs/protocol.md: text frames are at most 1 KB
+// A send that times out closes the connection (esp_websocket_client), and the weak
+// SuperMini radio (2 dBm) can stall for a while: allow 2 s.
+#define SEND_TIMEOUT pdMS_TO_TICKS(2000)
+#define MAX_TEXT 1024    // docs/protocol.md: text frames are at most 1 KB
+#define MAX_NESTING 4    // our messages are flat: deeper JSON is refused before parsing
+#define TX_DEPTH 8       // queued text messages
+#define TX_SIZE 128      // the longest message we send (tool.result) fits
 
 // Close codes after which the device must not reconnect (docs/protocol.md).
 #define CLOSE_REPLACED 4000
@@ -26,18 +34,41 @@ static const char *TAG = "link";
 
 static esp_websocket_client_handle_t s_client;
 static link_handler_t s_handler;
-static int s_backoff_ms = BACKOFF_MIN_MS;
-static bool s_up;          // hello received on this connection (link task only)
-static bool s_stopping;    // a no-reconnect close code arrived (link task only)
-static int s_audio_turn;   // turn of the binary message in progress (link task only)
+static QueueHandle_t s_tx;  // text messages: the send task owns the blocking network write
 
+// Link task only.
+static int s_backoff_ms = BACKOFF_MIN_MS;
+static bool s_up;          // hello received on this connection
+static bool s_stopping;    // a no-reconnect close code arrived
+static bool s_in_binary;   // the message in progress is audio
+static int s_audio_turn;   // its turn id
+
+// Queue a text message. Never blocks: callers include the player and the link task.
 static void send_json(const char *json)
 {
-    if (!esp_websocket_client_is_connected(s_client)) {
-        return;  // the turn is lost anyway: the server cancels it on disconnect
+    char msg[TX_SIZE];
+    if (strlen(json) >= sizeof(msg)) {
+        ESP_LOGE(TAG, "message too long for the send queue");
+        return;
     }
-    if (esp_websocket_client_send_text(s_client, json, (int)strlen(json), SEND_TIMEOUT) < 0) {
-        ESP_LOGW(TAG, "send failed: %s", json);
+    strcpy(msg, json);
+    if (xQueueSend(s_tx, msg, 0) != pdTRUE) {
+        ESP_LOGW(TAG, "send queue full: message dropped");
+    }
+}
+
+static void tx_task(void *arg)
+{
+    (void)arg;
+    char msg[TX_SIZE];
+    for (;;) {
+        xQueueReceive(s_tx, msg, portMAX_DELAY);
+        if (!esp_websocket_client_is_connected(s_client)) {
+            continue;  // the turn is lost anyway: the server cancels it on disconnect
+        }
+        if (esp_websocket_client_send_text(s_client, msg, (int)strlen(msg), SEND_TIMEOUT) < 0) {
+            ESP_LOGW(TAG, "send failed");
+        }
     }
 }
 
@@ -45,20 +76,72 @@ static void send_hello(void)
 {
     char device_id[9];
     net_ap_ssid(device_id);  // OTA-XXXX: from the MAC address, stable per board
-    char json[128];
-    snprintf(json, sizeof(json), "{\"type\":\"hello\",\"proto\":%d,\"fw\":\"%s\",\"device_id\":\"%s\"}",
+    char json[TX_SIZE];
+    snprintf(json, sizeof(json), "{\"type\":\"hello\",\"proto\":%d,\"fw\":\"%.32s\",\"device_id\":\"%s\"}",
              PROTO_VERSION, esp_app_get_description()->version, device_id);
     send_json(json);
 }
 
-static int int_field(const cJSON *msg, const char *name, int fallback)
+// A turn id 0..255, or -1 when the field is missing or not a valid turn.
+static int turn_field(const cJSON *msg)
 {
-    const cJSON *item = cJSON_GetObjectItemCaseSensitive(msg, name);
-    return cJSON_IsNumber(item) ? item->valueint : fallback;
+    const cJSON *item = cJSON_GetObjectItemCaseSensitive(msg, "turn");
+    if (!cJSON_IsNumber(item) || item->valuedouble < 0 || item->valuedouble > 255) {
+        return -1;
+    }
+    return item->valueint;
+}
+
+static int volume_field(const cJSON *msg)
+{
+    const cJSON *item = cJSON_GetObjectItemCaseSensitive(msg, "volume");
+    if (!cJSON_IsNumber(item) || item->valuedouble < 0 || item->valuedouble > 100) {
+        return -1;
+    }
+    return item->valueint;
+}
+
+// True when the JSON nests no deeper than MAX_NESTING (cJSON parses by recursion).
+static bool shallow(const char *data, int len)
+{
+    int depth = 0;
+    for (int i = 0; i < len; i++) {
+        if (data[i] == '{' || data[i] == '[') {
+            if (++depth > MAX_NESTING) {
+                return false;
+            }
+        } else if (data[i] == '}' || data[i] == ']') {
+            depth--;
+        }
+    }
+    return true;  // brackets inside strings only make the count stricter
+}
+
+// Answer a tool call at once: device tools come in M4, and the server waits 2 s.
+static void refuse_tool(const cJSON *msg)
+{
+    const cJSON *id = cJSON_GetObjectItemCaseSensitive(msg, "id");
+    if (!cJSON_IsString(id) || strlen(id->valuestring) > 48) {
+        return;
+    }
+    for (const char *c = id->valuestring; *c; c++) {
+        if (*c < 0x20 || *c == '"' || *c == '\\') {
+            return;  // would need a JSON escape
+        }
+    }
+    char json[TX_SIZE];
+    snprintf(json, sizeof(json),
+             "{\"type\":\"tool.result\",\"id\":\"%s\",\"ok\":false,\"error\":\"unsupported\"}",
+             id->valuestring);
+    send_json(json);
 }
 
 static void on_text(const char *data, int len)
 {
+    if (!shallow(data, len)) {
+        ESP_LOGW(TAG, "message nests too deep");
+        return;
+    }
     cJSON *msg = cJSON_ParseWithLength(data, (size_t)len);
     const cJSON *type = cJSON_GetObjectItemCaseSensitive(msg, "type");
     if (!cJSON_IsString(type)) {
@@ -67,16 +150,20 @@ static void on_text(const char *data, int len)
         return;
     }
     const char *t = type->valuestring;
-    int turn = int_field(msg, "turn", -1);
+    int turn = turn_field(msg);
     if (strcmp(t, "hello") == 0) {
         s_up = true;
         s_backoff_ms = BACKOFF_MIN_MS;
-        s_handler(LINK_UP, int_field(msg, "volume", -1));
+        s_handler(LINK_UP, volume_field(msg));
     } else if (strcmp(t, "settings.update") == 0) {
-        int volume = int_field(msg, "volume", -1);
+        int volume = volume_field(msg);
         if (volume >= 0) {
             s_handler(LINK_VOLUME, volume);
         }
+    } else if (strcmp(t, "tool.call") == 0) {
+        refuse_tool(msg);
+    } else if (turn < 0) {
+        ESP_LOGW(TAG, "%.32s without a valid turn", t);  // all other messages need one
     } else if (strcmp(t, "turn.start") == 0) {
         s_handler(LINK_TURN_START, turn);
     } else if (strcmp(t, "state") == 0) {
@@ -90,56 +177,59 @@ static void on_text(const char *data, int len)
         s_handler(LINK_REPLY_END, turn);
     } else if (strcmp(t, "error") == 0) {
         const cJSON *code = cJSON_GetObjectItemCaseSensitive(msg, "code");
-        ESP_LOGW(TAG, "turn %d error: %s", turn, cJSON_IsString(code) ? code->valuestring : "?");
+        ESP_LOGW(TAG, "turn %d error: %.32s", turn, cJSON_IsString(code) ? code->valuestring : "?");
         s_handler(LINK_ERROR, turn);
-    } else if (strcmp(t, "tool.call") == 0) {
-        // Device tools come in M4. Answer at once, so the server does not wait 2 s.
-        const cJSON *id = cJSON_GetObjectItemCaseSensitive(msg, "id");
-        if (cJSON_IsString(id) && strlen(id->valuestring) < 64 &&
-            strpbrk(id->valuestring, "\"\\") == NULL) {  // no JSON escapes needed
-            char json[160];
-            snprintf(json, sizeof(json),
-                     "{\"type\":\"tool.result\",\"id\":\"%s\",\"ok\":false,\"error\":\"unsupported\"}",
-                     id->valuestring);
-            send_json(json);
-        }
     } else {
-        ESP_LOGI(TAG, "ignored message type %s", t);
+        ESP_LOGI(TAG, "ignored message type %.32s", t);
     }
     cJSON_Delete(msg);
 }
 
+static void on_audio(const esp_websocket_event_data_t *d)
+{
+    const uint8_t *bytes = (const uint8_t *)d->data_ptr;
+    int len = d->data_len;
+    if (d->payload_offset == 0 && len > 0) {
+        s_audio_turn = bytes[0];  // byte 0 of an audio message is the turn id
+        bytes++;
+        len--;
+    }
+    if (len > 0) {
+        player_push(s_audio_turn, bytes, (size_t)len);
+    }
+}
+
 static void on_data(const esp_websocket_event_data_t *d)
 {
-    if (d->op_code == WS_TRANSPORT_OPCODES_CLOSE || d->close_status_code != 0) {
-        int code = d->close_status_code;
-        ESP_LOGW(TAG, "server closed the link: %d", code);
-        if (code == CLOSE_REPLACED || code == CLOSE_BAD_TOKEN || code == CLOSE_BAD_VERSION) {
-            s_stopping = true;
-            s_handler(LINK_STOPPED, code);
-        }
-        return;
-    }
-    if (d->op_code == WS_TRANSPORT_OPCODES_BINARY ||
-        (d->op_code == WS_TRANSPORT_OPCODES_CONT && d->payload_offset > 0)) {
-        const uint8_t *bytes = (const uint8_t *)d->data_ptr;
-        int len = d->data_len;
-        if (d->payload_offset == 0 && len > 0) {
-            s_audio_turn = bytes[0];  // byte 0 of an audio message is the turn id
-            bytes++;
-            len--;
-        }
-        if (len > 0) {
-            player_push(s_audio_turn, bytes, (size_t)len);
-        }
-        return;
-    }
-    if (d->op_code == WS_TRANSPORT_OPCODES_TEXT) {
-        if (d->payload_len > MAX_TEXT || d->data_len != d->payload_len) {
-            ESP_LOGW(TAG, "text message too large: %d bytes", d->payload_len);
+    switch (d->op_code) {
+        case WS_TRANSPORT_OPCODES_CLOSE: {
+            int code = d->close_status_code;
+            ESP_LOGW(TAG, "server closed the link: %d", code);
+            if (code == CLOSE_REPLACED || code == CLOSE_BAD_TOKEN || code == CLOSE_BAD_VERSION) {
+                s_stopping = true;
+                s_handler(LINK_STOPPED, code);
+            }
             return;
         }
-        on_text(d->data_ptr, d->data_len);
+        case WS_TRANSPORT_OPCODES_BINARY:
+            s_in_binary = true;
+            on_audio(d);
+            return;
+        case WS_TRANSPORT_OPCODES_CONT:
+            if (s_in_binary) {
+                on_audio(d);  // the rest of an audio message
+            }
+            return;
+        case WS_TRANSPORT_OPCODES_TEXT:
+            s_in_binary = false;
+            if (d->payload_len > MAX_TEXT || d->data_len != d->payload_len) {
+                ESP_LOGW(TAG, "text message too large: %d bytes", d->payload_len);
+                return;
+            }
+            on_text(d->data_ptr, d->data_len);
+            return;
+        default:
+            return;  // ping and pong: the client answers them
     }
 }
 
@@ -152,6 +242,8 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *event_d
         case WEBSOCKET_EVENT_CONNECTED:
             ESP_LOGI(TAG, "connected");
             s_up = false;
+            s_in_binary = false;
+            xQueueReset(s_tx);  // messages of the old connection mean nothing now
             send_hello();
             break;
         case WEBSOCKET_EVENT_DATA:
@@ -180,6 +272,10 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *event_d
 void link_start(const char *url, const char *token, link_handler_t handler)
 {
     s_handler = handler;
+    s_tx = xQueueCreate(TX_DEPTH, TX_SIZE);
+    configASSERT(s_tx);
+    xTaskCreate(tx_task, "link_tx", 4096, NULL, 5, NULL);
+
     static char headers[160];  // the client keeps a pointer: static
     snprintf(headers, sizeof(headers), "Authorization: Bearer %s\r\n", token);
     const esp_websocket_client_config_t config = {

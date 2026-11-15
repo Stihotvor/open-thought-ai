@@ -43,6 +43,7 @@ typedef enum {
     EVENT_LINK,       // value: a link_event_t, arg: its turn or volume
     EVENT_DRAINED,    // the player played the whole reply
     EVENT_TURN_FULL,  // value: the turn that streamed MAX_TURN_SECONDS of audio
+    EVENT_STREAMED,   // value: the turn whose last audio the mic task has sent
 } event_kind_t;
 
 typedef struct {
@@ -55,6 +56,7 @@ static QueueHandle_t s_events;
 static config_t s_config;
 static bool s_link_started;
 static int s_turn = -1;                    // the current turn, -1 = none (app task only)
+static bool s_stop_pending;                // send listen.stop once the mic has streamed
 static volatile int s_stream_turn = -1;    // the mic task streams this turn, -1 = off
 static volatile bool s_boot_check = true;  // the mic task logs one level at boot
 
@@ -106,6 +108,12 @@ static void mic_task(void *arg)
             s_boot_check = false;
         }
         if (s_stream_turn != turn) {  // a new turn, or streaming stopped
+            if (turn >= 0) {
+                if (have > 0) {
+                    link_send_audio(turn, frame, have);  // the end of the speech
+                }
+                post(EVENT_STREAMED, turn, 0);
+            }
             turn = s_stream_turn;
             have = 0;
             frames = 0;
@@ -174,6 +182,7 @@ static app_state_t turn_failed(void)
 {
     player_flush();
     s_turn = -1;
+    s_stop_pending = false;
     app_state_t state = enter(STATE_IDLE);
     audio_tone(330, 200);
     return state;
@@ -187,9 +196,9 @@ static app_state_t on_press(app_state_t state)
             return enter(STATE_LISTENING);
         case STATE_LISTENING:
             if (s_turn < 0) {
-                return state;  // turn.start has not come yet
+                return enter(STATE_IDLE);  // no turn.start came: cancel the request
             }
-            link_send_listen_stop(s_turn);
+            s_stop_pending = true;  // listen.stop follows EVENT_STREAMED
             return enter(STATE_THINKING);
         case STATE_THINKING:
         case STATE_SPEAKING:
@@ -197,6 +206,7 @@ static app_state_t on_press(app_state_t state)
             player_flush();
             link_send_abort(s_turn);
             s_turn = -1;
+            s_stop_pending = false;
             link_send_listen_start();
             return enter(STATE_LISTENING);
         default:
@@ -216,6 +226,7 @@ static app_state_t on_link_event(app_state_t state, link_event_t event, int arg)
         case LINK_DOWN:
             player_flush();
             s_turn = -1;
+            s_stop_pending = false;
             return is_session(state) ? enter(STATE_OFFLINE) : state;
         case LINK_STOPPED:
             link_halt();
@@ -237,7 +248,10 @@ static app_state_t on_link_event(app_state_t state, link_event_t event, int arg)
         default:
             break;
     }
-    if (arg != s_turn || !is_session(state)) {
+    if (event == LINK_ERROR && state == STATE_LISTENING && s_turn < 0) {
+        return turn_failed();  // listen.start refused (too_many_turns)
+    }
+    if (s_turn < 0 || arg != s_turn || !is_session(state)) {
         return state;  // a message of an old turn (after a barge-in)
     }
     switch (event) {
@@ -279,6 +293,12 @@ static app_state_t on_event(app_state_t state, const app_event_t *e)
                 return enter(STATE_IDLE);
             }
             return state;
+        case EVENT_STREAMED:
+            if (s_stop_pending && e->value == s_turn) {
+                s_stop_pending = false;
+                link_send_listen_stop(s_turn);
+            }
+            return state;
         case EVENT_TURN_FULL:
             return (state == STATE_LISTENING && e->value == s_turn) ? on_press(state) : state;
         case EVENT_PRESS:
@@ -293,7 +313,7 @@ void app_main(void)
     ESP_ERROR_CHECK(gpio_config(&led));
     gpio_set_level(PIN_LED, 1);
 
-    s_events = xQueueCreate(16, sizeof(app_event_t));
+    s_events = xQueueCreate(32, sizeof(app_event_t));
     config_init();
     face_init();
     audio_init();

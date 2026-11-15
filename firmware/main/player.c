@@ -6,6 +6,7 @@
 #include "audio.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/stream_buffer.h"
 #include "freertos/task.h"
 
@@ -13,54 +14,64 @@ static const char *TAG = "player";
 
 #define JITTER_BYTES 12288       // docs/protocol.md: 12 KB, about 375 ms
 #define CREDIT_STEP 4096         // give credit when this much buffer space is free again
-#define CHUNK_BYTES (AUDIO_FRAME_SAMPLES * 2)
+#define CHUNK_SAMPLES AUDIO_FRAME_SAMPLES
 #define WAIT_MS 20               // the task checks for a flush at least this often
 
 static StreamBufferHandle_t s_buffer;
+// The link task writes the buffer and the player task resets it. A stream buffer is not
+// safe for a reset during a send, so both hold this lock.
+static SemaphoreHandle_t s_lock;
 static player_credit_t s_credit;
 static player_drained_t s_drained;
 
-// Set by the app task, read by the link task (push) and the player task.
-static volatile int s_turn = -1;       // the accepted turn, -1 = drop all audio
-static volatile bool s_reset;          // the player task empties the buffer
-static volatile bool s_ending;         // the reply is complete: report when drained
-static volatile uint32_t s_dropped;    // bytes lost to a full buffer (a server bug)
+// Written by the app task under s_lock. Each begin or flush adds one to the generation:
+// the player task then empties the buffer, and credit of an older generation is dropped.
+static int s_turn = -1;              // the accepted turn, -1 = drop all audio
+static uint32_t s_generation;
+static volatile bool s_ending;       // the reply is complete: report when drained
+static uint32_t s_dropped;           // bytes lost to a full buffer (under s_lock)
 
 static void player_task(void *arg)
 {
     (void)arg;
-    static uint8_t chunk[CHUNK_BYTES];
-    size_t have = 0;    // bytes in `chunk`: an odd byte waits for its pair
-    int consumed = 0;   // bytes played since the last credit
+    static int16_t chunk[CHUNK_SAMPLES];
+    uint8_t *bytes = (uint8_t *)chunk;
+    size_t have = 0;          // bytes in `chunk`: an odd byte waits for its pair
+    int consumed = 0;         // bytes played since the last credit
+    uint32_t generation = 0;  // the generation this task has emptied the buffer for
     for (;;) {
-        if (s_reset) {
-            // Only this task reads the buffer, and the link task never blocks on it,
-            // so a reset here cannot fail.
-            xStreamBufferReset(s_buffer);
-            s_reset = false;
+        xSemaphoreTake(s_lock, portMAX_DELAY);
+        if (generation != s_generation) {
+            generation = s_generation;
+            xStreamBufferReset(s_buffer);  // no send can run: the link task needs s_lock
             have = 0;
             consumed = 0;
         }
-        have += xStreamBufferReceive(s_buffer, chunk + have, sizeof(chunk) - have,
+        uint32_t dropped = s_dropped;
+        s_dropped = 0;
+        bool accepting = s_turn >= 0;
+        xSemaphoreGive(s_lock);
+
+        have += xStreamBufferReceive(s_buffer, bytes + have, sizeof(chunk) - have,
                                      pdMS_TO_TICKS(WAIT_MS));
         size_t samples = have / 2;
-        if (samples > 0 && !s_reset) {
-            audio_play((const int16_t *)chunk, samples);
+        if (samples > 0 && generation == s_generation) {  // skip a chunk a flush made stale
+            audio_play(chunk, samples);
             consumed += (int)(samples * 2);
-            have -= samples * 2;
-            memmove(chunk, chunk + samples * 2, have);
         }
-        if (consumed >= CREDIT_STEP && s_turn >= 0) {
-            s_credit(consumed);
+        have -= samples * 2;
+        memmove(bytes, bytes + samples * 2, have);
+
+        if (consumed >= CREDIT_STEP && accepting && generation == s_generation) {
+            s_credit(consumed);  // queued by the link: this call does not block
             consumed = 0;
         }
         if (s_ending && have == 0 && xStreamBufferIsEmpty(s_buffer)) {
             s_ending = false;
             s_drained();
         }
-        if (s_dropped > 0) {
-            ESP_LOGW(TAG, "jitter buffer full: %u bytes dropped", (unsigned)s_dropped);
-            s_dropped = 0;
+        if (dropped > 0) {
+            ESP_LOGW(TAG, "jitter buffer full: %u bytes dropped", (unsigned)dropped);
         }
     }
 }
@@ -70,34 +81,40 @@ void player_start(player_credit_t credit, player_drained_t drained)
     s_credit = credit;
     s_drained = drained;
     s_buffer = xStreamBufferCreate(JITTER_BYTES, 1);
-    configASSERT(s_buffer);
-    xTaskCreate(player_task, "player", 3072, NULL, 6, NULL);
+    s_lock = xSemaphoreCreateMutex();
+    configASSERT(s_buffer && s_lock);
+    xTaskCreate(player_task, "player", 4096, NULL, 6, NULL);
+}
+
+static void new_generation(int turn)
+{
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    s_turn = turn;
+    s_generation++;
+    s_ending = false;
+    xSemaphoreGive(s_lock);
 }
 
 void player_begin(int turn)
 {
-    s_ending = false;
-    s_reset = true;
-    s_turn = turn;
+    new_generation(turn);
+}
+
+void player_flush(void)
+{
+    new_generation(-1);
 }
 
 void player_push(int turn, const uint8_t *pcm, size_t bytes)
 {
-    if (turn != s_turn || s_reset) {
-        return;  // a stale turn, or a flush is pending
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    if (turn == s_turn && s_turn >= 0) {  // else a stale turn, or flushed
+        s_dropped += bytes - xStreamBufferSend(s_buffer, pcm, bytes, 0);
     }
-    size_t sent = xStreamBufferSend(s_buffer, pcm, bytes, 0);
-    s_dropped += bytes - sent;
+    xSemaphoreGive(s_lock);
 }
 
 void player_end(void)
 {
     s_ending = true;
-}
-
-void player_flush(void)
-{
-    s_turn = -1;
-    s_ending = false;
-    s_reset = true;
 }

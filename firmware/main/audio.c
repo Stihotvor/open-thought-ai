@@ -47,7 +47,9 @@ void audio_set_volume(int volume)
 
 void audio_play(const int16_t *pcm, size_t samples)
 {
-    static int32_t out[AUDIO_FRAME_SAMPLES];  // one writer (the app task): static saves stack
+    // On the stack (1.3 KB): the player task and the app task (tones) both call this.
+    // The I2S driver serializes the writes.
+    int32_t out[AUDIO_FRAME_SAMPLES];
     while (samples > 0) {
         size_t n = samples < AUDIO_FRAME_SAMPLES ? samples : AUDIO_FRAME_SAMPLES;
         for (size_t i = 0; i < n; i++) {
