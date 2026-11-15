@@ -60,14 +60,28 @@ void audio_play(const int16_t *pcm, size_t samples)
     }
 }
 
+// The ESP32-C3 has no FPU: sinf() for each sample is slower than real time, so the DMA
+// runs dry and the tone breaks up. Build one sine period once, then step through it.
+#define SINE_TABLE_SIZE 256
+#define TONE_AMPLITUDE 12000
+
 void audio_tone(int hz, int ms)
 {
+    static int16_t table[SINE_TABLE_SIZE];
+    if (table[SINE_TABLE_SIZE / 4] == 0) {
+        for (int i = 0; i < SINE_TABLE_SIZE; i++) {
+            table[i] = (int16_t)(TONE_AMPLITUDE * sinf(2 * (float)M_PI * i / SINE_TABLE_SIZE));
+        }
+    }
+    // Phase in 16.16 fixed point, in table steps.
+    const uint32_t step = (uint32_t)(((uint64_t)hz * SINE_TABLE_SIZE << 16) / AUDIO_SAMPLE_RATE);
+    uint32_t phase = 0;
     int16_t frame[AUDIO_FRAME_SAMPLES];
     int total = (int)((int64_t)AUDIO_SAMPLE_RATE * ms / 1000);
     for (int done = 0; done < total; done += AUDIO_FRAME_SAMPLES) {
         for (int i = 0; i < AUDIO_FRAME_SAMPLES; i++) {
-            float t = (float)(done + i) / AUDIO_SAMPLE_RATE;
-            frame[i] = (int16_t)(12000 * sinf(2 * (float)M_PI * hz * t));
+            frame[i] = table[(phase >> 16) % SINE_TABLE_SIZE];
+            phase += step;
         }
         int left = total - done;
         audio_play(frame, left < AUDIO_FRAME_SAMPLES ? left : AUDIO_FRAME_SAMPLES);
