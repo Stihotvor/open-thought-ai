@@ -1,6 +1,7 @@
 #include "audio.h"
 
 #include <math.h>
+#include <stdbool.h>
 
 #include "board_pins.h"
 #include "driver/i2s_std.h"
@@ -70,10 +71,12 @@ void audio_play(const int16_t *pcm, size_t samples)
 void audio_tone(int hz, int ms)
 {
     static int16_t table[SINE_TABLE_SIZE];
-    if (table[SINE_TABLE_SIZE / 4] == 0) {
+    static bool table_ready;  // tones play only from the app task: no lock needed
+    if (!table_ready) {
         for (int i = 0; i < SINE_TABLE_SIZE; i++) {
             table[i] = (int16_t)(TONE_AMPLITUDE * sinf(2 * (float)M_PI * i / SINE_TABLE_SIZE));
         }
+        table_ready = true;
     }
     // Phase in 16.16 fixed point, in table steps.
     const uint32_t step = (uint32_t)(((uint64_t)hz * SINE_TABLE_SIZE << 16) / AUDIO_SAMPLE_RATE);

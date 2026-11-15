@@ -8,8 +8,7 @@
 #define PROTO_MAX_ID 48      // the longest tool call id we echo back
 
 // True when the JSON text nests no deeper than PROTO_MAX_NESTING. cJSON parses by
-// recursion, so this runs before the parser. Brackets inside strings count too: that
-// only makes the check stricter.
+// recursion, so this runs before the parser. Brackets inside strings do not count.
 bool proto_shallow(const char *data, int len);
 
 // A JSON number as a turn id 0..255, or -1 when it is not a whole number in range.

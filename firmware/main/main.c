@@ -23,13 +23,14 @@
 static const char *TAG = "app";
 
 #define MAX_TURN_SECONDS 30  // docs/protocol.md: at most 30 s of audio per turn
+#define FRAMES_PER_SECOND (AUDIO_SAMPLE_RATE / LINK_AUDIO_SAMPLES)  // 100 ms frames
 
 typedef enum {
     STATE_SETUP,         // not provisioned: waits for the 5 s hold
     STATE_PROVISIONING,  // access point and form are up
     STATE_OFFLINE,       // no Wi-Fi, or no server session yet
     STATE_HALTED,        // the server refused us for good (bad token, version, replaced)
-    STATE_IDLE,          // from here on: a server session is up
+    STATE_IDLE,          // keep the session states last: is_session() compares with this
     STATE_LISTENING,     // listen.start sent: audio streams after turn.start
     STATE_THINKING,
     STATE_SPEAKING,
@@ -40,7 +41,7 @@ typedef enum {
     EVENT_HOLD,
     EVENT_ONLINE,
     EVENT_OFFLINE,
-    EVENT_LINK,       // value: a link_event_t, arg: its turn or volume
+    EVENT_LINK,       // value: a link_event_t, arg: its value (turn, volume or close code)
     EVENT_DRAINED,    // the player played the whole reply
     EVENT_TURN_FULL,  // value: the turn that streamed MAX_TURN_SECONDS of audio
     EVENT_STREAMED,   // value: the turn whose last audio the mic task has sent
@@ -109,6 +110,7 @@ static void mic_task(void *arg)
         }
         if (s_stream_turn != turn) {  // a new turn, or streaming stopped
             if (turn >= 0) {
+                have += n;  // this read belongs to the old turn too
                 if (have > 0) {
                     link_send_audio(turn, frame, have);  // the end of the speech
                 }
@@ -126,7 +128,7 @@ static void mic_task(void *arg)
         if (have + AUDIO_FRAME_SAMPLES > LINK_AUDIO_SAMPLES) {  // the next read would not fit
             link_send_audio(turn, frame, have);
             have = 0;
-            if (++frames == MAX_TURN_SECONDS * 10) {
+            if (++frames == MAX_TURN_SECONDS * FRAMES_PER_SECOND) {
                 post(EVENT_TURN_FULL, turn, 0);
             }
         }
@@ -141,7 +143,9 @@ static void show_setup_hint(void)
 
 static void show_halted(int code)
 {
-    const char *reason = code == 4401 ? "BAD TOKEN" : code == 4426 ? "UPDATE FIRMWARE" : "OTHER DEVICE";
+    const char *reason = code == LINK_CLOSE_BAD_TOKEN     ? "BAD TOKEN"
+                         : code == LINK_CLOSE_BAD_VERSION ? "UPDATE FIRMWARE"
+                                                          : "OTHER DEVICE";  // LINK_CLOSE_REPLACED
     const char *const lines[] = {"SERVER REFUSED", "", reason, "", "HOLD 5 S FOR SETUP"};
     face_show_text(lines, 5);
 }
@@ -188,6 +192,16 @@ static app_state_t turn_failed(void)
     return state;
 }
 
+// The speech is complete (a press or the 30 s cap).
+static app_state_t end_listening(void)
+{
+    if (s_turn < 0) {
+        return enter(STATE_IDLE);  // no turn.start came: cancel the request
+    }
+    s_stop_pending = true;  // listen.stop follows EVENT_STREAMED
+    return enter(STATE_THINKING);
+}
+
 static app_state_t on_press(app_state_t state)
 {
     switch (state) {
@@ -195,11 +209,7 @@ static app_state_t on_press(app_state_t state)
             link_send_listen_start();
             return enter(STATE_LISTENING);
         case STATE_LISTENING:
-            if (s_turn < 0) {
-                return enter(STATE_IDLE);  // no turn.start came: cancel the request
-            }
-            s_stop_pending = true;  // listen.stop follows EVENT_STREAMED
-            return enter(STATE_THINKING);
+            return end_listening();
         case STATE_THINKING:
         case STATE_SPEAKING:
             // Barge-in: silence first, without a wait for the server, then a new turn.
@@ -239,7 +249,8 @@ static app_state_t on_link_event(app_state_t state, link_event_t event, int arg)
             return state;
         case LINK_TURN_START:
             if (state != STATE_LISTENING || s_turn >= 0) {
-                return state;  // a turn we did not ask for
+                link_send_abort(arg);  // the press was cancelled: close the turn on the server
+                return state;
             }
             s_turn = arg;
             player_begin(arg);
@@ -248,8 +259,8 @@ static app_state_t on_link_event(app_state_t state, link_event_t event, int arg)
         default:
             break;
     }
-    if (event == LINK_ERROR && state == STATE_LISTENING && s_turn < 0) {
-        return turn_failed();  // listen.start refused (too_many_turns)
+    if (event == LINK_REFUSED) {
+        return (state == STATE_LISTENING && s_turn < 0) ? turn_failed() : state;
     }
     if (s_turn < 0 || arg != s_turn || !is_session(state)) {
         return state;  // a message of an old turn (after a barge-in)
@@ -300,7 +311,7 @@ static app_state_t on_event(app_state_t state, const app_event_t *e)
             }
             return state;
         case EVENT_TURN_FULL:
-            return (state == STATE_LISTENING && e->value == s_turn) ? on_press(state) : state;
+            return (state == STATE_LISTENING && e->value == s_turn) ? end_listening() : state;
         case EVENT_PRESS:
             return on_press(state);
     }

@@ -260,8 +260,10 @@ void provision_start(void)
     snprintf(qr, sizeof(qr), "WIFI:T:WPA;S:%s;P:%s;;", ssid, password);
     char line_pin[FACE_QR_COLUMNS + 1], pass_1[FACE_QR_COLUMNS + 1], pass_2[FACE_QR_COLUMNS + 1];
     snprintf(line_pin, sizeof(line_pin), "PIN %s", s_pin);
-    snprintf(pass_1, sizeof(pass_1), "%.6s", password);
-    snprintf(pass_2, sizeof(pass_2), "%s", password + 6);
+    // The 12-character password in two halves, so it reads easily next to the code.
+    const int half = (int)strlen(password) / 2;
+    snprintf(pass_1, sizeof(pass_1), "%.*s", half, password);
+    snprintf(pass_2, sizeof(pass_2), "%s", password + half);
     const char *const lines[] = {line_pin, "OPEN", "192.168.4.1", "", "PASS", pass_1, pass_2};
     face_show_qr(qr, lines, 7);
     ESP_LOGI(TAG, "setup access point %s started for %d minutes", ssid, AP_MINUTES);

@@ -31,6 +31,9 @@ int main(void)
     CHECK(shallow("{}{}{}{}{}{}"));                  // siblings do not add depth
     CHECK(shallow(""));
     CHECK(proto_shallow("[[[[[", 4));                // only `len` bytes count
+    CHECK(shallow("{\"a\":\"[[[[[[[[\"}"));             // brackets in a string do not count
+    CHECK(!shallow("[\"]]]]]]]]\",[[[[[[[[[[["));         // closers in a string do not hide depth
+    CHECK(!shallow("[\"\\\"]]]]]]\",[[[[[[[[["));      // nor after an escaped quote
 
     CHECK(proto_turn(0) == 0);
     CHECK(proto_turn(255) == 255);

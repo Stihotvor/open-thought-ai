@@ -38,7 +38,7 @@ Total M0–M6: 54–101 h.
 ### M2 Link + echo
 Status (2026-11-16): device link, push-to-talk and echo work on the board. Free heap with the link up: 141 KB (largest block 114 KB). Open: the `wss://` spike, the button-to-silence measurement, and a mic send buffer (a slow Wi-Fi send can stall the mic for up to 2 s).
 
-- Firmware `ws_link`: connect, hello, ping, backoff reconnect.
+- Firmware `link`: connect, hello, ping, backoff reconnect.
 - Server skeleton: FastAPI, settings, gateway with token auth and session replace.
 - Echo mode: server returns captured PCM with `audio.credit` pacing.
 - Measure free heap with WS + audio buffers (target ≥ 40 KB).

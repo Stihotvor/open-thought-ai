@@ -26,15 +26,14 @@ static const char *TAG = "link";
 #define MAX_TEXT 1024    // docs/protocol.md: text frames are at most 1 KB
 #define TX_DEPTH 8       // queued text messages
 #define TX_SIZE 128      // the longest message we send (tool.result) fits
+#define CREDIT_PERIOD_MS 20  // pending credit goes out when the queue is idle this long
 
-// Close codes after which the device must not reconnect (docs/protocol.md).
-#define CLOSE_REPLACED 4000
-#define CLOSE_BAD_TOKEN 4401
-#define CLOSE_BAD_VERSION 4426
 
 static esp_websocket_client_handle_t s_client;
 static link_handler_t s_handler;
-static QueueHandle_t s_tx;  // text messages: the send task owns the blocking network write
+static QueueHandle_t s_tx;  // control messages: the send task owns the blocking network write
+static portMUX_TYPE s_credit_lock = portMUX_INITIALIZER_UNLOCKED;
+static int s_credit_pending;  // audio credit not yet sent (under s_credit_lock)
 
 // Link task only.
 static int s_backoff_ms = BACKOFF_MIN_MS;
@@ -62,7 +61,17 @@ static void tx_task(void *arg)
     (void)arg;
     char msg[TX_SIZE];
     for (;;) {
-        xQueueReceive(s_tx, msg, portMAX_DELAY);
+        bool have_msg = xQueueReceive(s_tx, msg, pdMS_TO_TICKS(CREDIT_PERIOD_MS)) == pdTRUE;
+        if (!have_msg) {
+            taskENTER_CRITICAL(&s_credit_lock);
+            int credit = s_credit_pending;
+            s_credit_pending = 0;
+            taskEXIT_CRITICAL(&s_credit_lock);
+            if (credit == 0) {
+                continue;
+            }
+            snprintf(msg, sizeof(msg), "{\"type\":\"audio.credit\",\"bytes\":%d}", credit);
+        }
         if (!esp_websocket_client_is_connected(s_client)) {
             continue;  // the turn is lost anyway: the server cancels it on disconnect
         }
@@ -94,6 +103,12 @@ static int volume_field(const cJSON *msg)
 {
     const cJSON *item = cJSON_GetObjectItemCaseSensitive(msg, "volume");
     return cJSON_IsNumber(item) ? proto_volume(item->valuedouble) : -1;
+}
+
+static bool is_code(const cJSON *msg, const char *code)
+{
+    const cJSON *item = cJSON_GetObjectItemCaseSensitive(msg, "code");
+    return cJSON_IsString(item) && strcmp(item->valuestring, code) == 0;
 }
 
 // Answer a tool call at once: device tools come in M4, and the server waits 2 s.
@@ -136,6 +151,9 @@ static void on_text(const char *data, int len)
         }
     } else if (strcmp(t, "tool.call") == 0) {
         refuse_tool(msg);
+    } else if (strcmp(t, "error") == 0 && is_code(msg, "too_many_turns")) {
+        ESP_LOGW(TAG, "listen.start refused: too_many_turns");  // its turn is the old one
+        s_handler(LINK_REFUSED, 0);
     } else if (turn < 0) {
         ESP_LOGW(TAG, "%.32s without a valid turn", t);  // all other messages need one
     } else if (strcmp(t, "turn.start") == 0) {
@@ -159,11 +177,12 @@ static void on_text(const char *data, int len)
     cJSON_Delete(msg);
 }
 
-static void on_audio(const esp_websocket_event_data_t *d)
+// `first`: the data starts a new audio message, so byte 0 is the turn id.
+static void on_audio(const esp_websocket_event_data_t *d, bool first)
 {
     const uint8_t *bytes = (const uint8_t *)d->data_ptr;
     int len = d->data_len;
-    if (d->payload_offset == 0 && len > 0) {
+    if (first && len > 0) {
         s_audio_turn = bytes[0];  // byte 0 of an audio message is the turn id
         bytes++;
         len--;
@@ -179,7 +198,8 @@ static void on_data(const esp_websocket_event_data_t *d)
         case WS_TRANSPORT_OPCODES_CLOSE: {
             int code = d->close_status_code;
             ESP_LOGW(TAG, "server closed the link: %d", code);
-            if (code == CLOSE_REPLACED || code == CLOSE_BAD_TOKEN || code == CLOSE_BAD_VERSION) {
+            if (code == LINK_CLOSE_REPLACED || code == LINK_CLOSE_BAD_TOKEN ||
+                code == LINK_CLOSE_BAD_VERSION) {
                 s_stopping = true;
                 s_handler(LINK_STOPPED, code);
             }
@@ -187,11 +207,11 @@ static void on_data(const esp_websocket_event_data_t *d)
         }
         case WS_TRANSPORT_OPCODES_BINARY:
             s_in_binary = true;
-            on_audio(d);
+            on_audio(d, d->payload_offset == 0);  // a large frame comes in parts
             return;
         case WS_TRANSPORT_OPCODES_CONT:
             if (s_in_binary) {
-                on_audio(d);  // the rest of an audio message
+                on_audio(d, false);  // the rest of an audio message: no turn byte
             }
             return;
         case WS_TRANSPORT_OPCODES_TEXT:
@@ -218,6 +238,9 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *event_d
             s_up = false;
             s_in_binary = false;
             xQueueReset(s_tx);  // messages of the old connection mean nothing now
+            taskENTER_CRITICAL(&s_credit_lock);
+            s_credit_pending = 0;
+            taskEXIT_CRITICAL(&s_credit_lock);
             send_hello();
             break;
         case WEBSOCKET_EVENT_DATA:
@@ -295,9 +318,9 @@ void link_send_abort(int turn)
 
 void link_send_credit(int bytes)
 {
-    char json[48];
-    snprintf(json, sizeof(json), "{\"type\":\"audio.credit\",\"bytes\":%d}", bytes);
-    send_json(json);
+    taskENTER_CRITICAL(&s_credit_lock);
+    s_credit_pending += bytes;
+    taskEXIT_CRITICAL(&s_credit_lock);
 }
 
 void link_send_audio(int turn, const int16_t *pcm, size_t samples)

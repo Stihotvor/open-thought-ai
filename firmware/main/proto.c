@@ -5,12 +5,22 @@
 bool proto_shallow(const char *data, int len)
 {
     int depth = 0;
+    bool in_string = false;
     for (int i = 0; i < len; i++) {
-        if (data[i] == '{' || data[i] == '[') {
+        char c = data[i];
+        if (in_string) {
+            if (c == '\\') {
+                i++;  // skip the escaped character
+            } else if (c == '"') {
+                in_string = false;
+            }
+        } else if (c == '"') {
+            in_string = true;
+        } else if (c == '{' || c == '[') {
             if (++depth > PROTO_MAX_NESTING) {
                 return false;
             }
-        } else if (data[i] == '}' || data[i] == ']') {
+        } else if ((c == '}' || c == ']') && depth > 0) {
             depth--;
         }
     }

@@ -28,7 +28,7 @@ static player_drained_t s_drained;
 // the player task then empties the buffer, and credit of an older generation is dropped.
 static int s_turn = -1;              // the accepted turn, -1 = drop all audio
 static uint32_t s_generation;
-static volatile bool s_ending;       // the reply is complete: report when drained
+static volatile bool s_ending;       // no lock: one bool, the app task sets it, the player clears it
 static uint32_t s_dropped;           // bytes lost to a full buffer (under s_lock)
 
 static void player_task(void *arg)
