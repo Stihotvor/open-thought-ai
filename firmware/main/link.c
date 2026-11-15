@@ -13,6 +13,7 @@
 #include "freertos/task.h"
 #include "net.h"
 #include "player.h"
+#include "proto.h"
 
 static const char *TAG = "link";
 
@@ -23,7 +24,6 @@ static const char *TAG = "link";
 // SuperMini radio (2 dBm) can stall for a while: allow 2 s.
 #define SEND_TIMEOUT pdMS_TO_TICKS(2000)
 #define MAX_TEXT 1024    // docs/protocol.md: text frames are at most 1 KB
-#define MAX_NESTING 4    // our messages are flat: deeper JSON is refused before parsing
 #define TX_DEPTH 8       // queued text messages
 #define TX_SIZE 128      // the longest message we send (tool.result) fits
 
@@ -86,48 +86,22 @@ static void send_hello(void)
 static int turn_field(const cJSON *msg)
 {
     const cJSON *item = cJSON_GetObjectItemCaseSensitive(msg, "turn");
-    if (!cJSON_IsNumber(item) || item->valuedouble < 0 || item->valuedouble > 255) {
-        return -1;
-    }
-    return item->valueint;
+    return cJSON_IsNumber(item) ? proto_turn(item->valuedouble) : -1;
 }
 
+// A volume 0..100, or -1 when the field is missing or not valid.
 static int volume_field(const cJSON *msg)
 {
     const cJSON *item = cJSON_GetObjectItemCaseSensitive(msg, "volume");
-    if (!cJSON_IsNumber(item) || item->valuedouble < 0 || item->valuedouble > 100) {
-        return -1;
-    }
-    return item->valueint;
-}
-
-// True when the JSON nests no deeper than MAX_NESTING (cJSON parses by recursion).
-static bool shallow(const char *data, int len)
-{
-    int depth = 0;
-    for (int i = 0; i < len; i++) {
-        if (data[i] == '{' || data[i] == '[') {
-            if (++depth > MAX_NESTING) {
-                return false;
-            }
-        } else if (data[i] == '}' || data[i] == ']') {
-            depth--;
-        }
-    }
-    return true;  // brackets inside strings only make the count stricter
+    return cJSON_IsNumber(item) ? proto_volume(item->valuedouble) : -1;
 }
 
 // Answer a tool call at once: device tools come in M4, and the server waits 2 s.
 static void refuse_tool(const cJSON *msg)
 {
     const cJSON *id = cJSON_GetObjectItemCaseSensitive(msg, "id");
-    if (!cJSON_IsString(id) || strlen(id->valuestring) > 48) {
+    if (!cJSON_IsString(id) || !proto_safe_id(id->valuestring)) {
         return;
-    }
-    for (const char *c = id->valuestring; *c; c++) {
-        if (*c < 0x20 || *c == '"' || *c == '\\') {
-            return;  // would need a JSON escape
-        }
     }
     char json[TX_SIZE];
     snprintf(json, sizeof(json),
@@ -138,7 +112,7 @@ static void refuse_tool(const cJSON *msg)
 
 static void on_text(const char *data, int len)
 {
-    if (!shallow(data, len)) {
+    if (!proto_shallow(data, len)) {
         ESP_LOGW(TAG, "message nests too deep");
         return;
     }
