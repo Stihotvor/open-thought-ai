@@ -12,6 +12,11 @@
 
 static const char *TAG = "net";
 
+// The ESP32-C3 SuperMini has an RF front-end fault: at the default 20 dBm the radio can
+// go deaf. Limit the TX power (in 0.25 dBm units: 8 = 2 dBm), as the board vendor
+// firmware does. This keeps a short-range link stable.
+#define WIFI_MAX_TX_POWER_QDBM 8
+
 #define BACKOFF_MIN_MS 1000
 #define BACKOFF_MAX_MS 60000
 
@@ -61,6 +66,7 @@ void net_init(net_handler_t handler)
     // Start the radio at once, idle: esp_random() is a true RNG only while it runs.
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_start());
+    ESP_ERROR_CHECK(esp_wifi_set_max_tx_power(WIFI_MAX_TX_POWER_QDBM));
 }
 
 void net_connect(const char *ssid, const char *password)
@@ -96,6 +102,7 @@ void net_start_ap(const char *ssid, const char *password)
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &config));
     ESP_ERROR_CHECK(esp_wifi_start());
+    ESP_ERROR_CHECK(esp_wifi_set_max_tx_power(WIFI_MAX_TX_POWER_QDBM));
 }
 
 void net_ap_ssid(char out[9])
