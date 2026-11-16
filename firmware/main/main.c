@@ -318,6 +318,12 @@ static app_state_t on_event(app_state_t state, const app_event_t *e)
     }
     switch (e->kind) {
         case EVENT_HOLD:
+            // Setup ends with a reboot: stop the session for good, so the link does not
+            // fight the access point with reconnects.
+            player_flush();
+            if (s_link_started) {
+                link_halt();
+            }
             return enter(STATE_PROVISIONING);
         case EVENT_ONLINE:
             if (!s_link_started) {
