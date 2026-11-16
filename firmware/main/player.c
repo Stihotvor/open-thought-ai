@@ -67,6 +67,9 @@ static void player_task(void *arg)
                 vTaskDelay(pdMS_TO_TICKS(WAIT_MS));
                 continue;
             }
+            if (gaps == 0) {
+                audio_take_underruns();  // drop the count of the idle time before the reply
+            }
             playing = true;
         }
 
@@ -93,6 +96,10 @@ static void player_task(void *arg)
             s_ending = false;
             if (gaps > 0) {
                 ESP_LOGW(TAG, "reply had %d gaps (late audio)", gaps);
+            }
+            uint32_t underruns = audio_take_underruns();
+            if (underruns > 1) {  // the last DMA buffer after the reply always counts
+                ESP_LOGW(TAG, "reply had %u speaker underruns", (unsigned)underruns);
             }
             gaps = 0;
             playing = false;

@@ -11,7 +11,21 @@
 // of its slot; the MAX98357A takes the top 16 bits we send.
 #define MIC_SHIFT 14  // 24-bit sample in a 32-bit slot, with some gain, to 16 bits
 
+// DMA holds 6 x 480 frames = 180 ms of output (default 90 ms): the player task can wait
+// that long behind Wi-Fi work before the speaker runs dry.
+#define DMA_DESC_NUM 6
+#define DMA_FRAME_NUM 480
+
 static i2s_chan_handle_t s_tx;
+static volatile uint32_t s_underruns;  // DMA had no new output data (ISR increments)
+
+static bool IRAM_ATTR on_send_overflow(i2s_chan_handle_t handle, i2s_event_data_t *event,
+                                       void *ctx)
+{
+    (void)handle; (void)event; (void)ctx;
+    s_underruns++;
+    return false;
+}
 static i2s_chan_handle_t s_rx;
 static int s_volume = 60;
 
@@ -20,6 +34,8 @@ void audio_init(void)
     i2s_chan_config_t chan_config = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
     // Send silence when no new audio comes, instead of the last DMA buffers in a loop.
     chan_config.auto_clear_after_cb = true;
+    chan_config.dma_desc_num = DMA_DESC_NUM;
+    chan_config.dma_frame_num = DMA_FRAME_NUM;
     ESP_ERROR_CHECK(i2s_new_channel(&chan_config, &s_tx, &s_rx));
 
     i2s_std_config_t std_config = {
@@ -37,6 +53,8 @@ void audio_init(void)
     std_config.slot_cfg.slot_mask = I2S_STD_SLOT_LEFT;  // the mic L/R pin is tied low
     ESP_ERROR_CHECK(i2s_channel_init_std_mode(s_tx, &std_config));
     ESP_ERROR_CHECK(i2s_channel_init_std_mode(s_rx, &std_config));
+    const i2s_event_callbacks_t callbacks = {.on_send_q_ovf = on_send_overflow};
+    ESP_ERROR_CHECK(i2s_channel_register_event_callback(s_tx, &callbacks, NULL));
     ESP_ERROR_CHECK(i2s_channel_enable(s_tx));
     ESP_ERROR_CHECK(i2s_channel_enable(s_rx));
 }
@@ -61,6 +79,13 @@ void audio_play(const int16_t *pcm, size_t samples)
         pcm += n;
         samples -= n;
     }
+}
+
+uint32_t audio_take_underruns(void)
+{
+    uint32_t n = s_underruns;  // a 32-bit read is atomic on the C3
+    s_underruns -= n;
+    return n;
 }
 
 // The ESP32-C3 has no FPU: sinf() for each sample is slower than real time, so the DMA

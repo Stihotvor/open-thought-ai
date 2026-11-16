@@ -15,6 +15,10 @@ void audio_set_volume(int volume);
 // Play 16-bit PCM. Blocks until the samples are in the DMA buffers. Call from one task.
 void audio_play(const int16_t *pcm, size_t samples);
 
+// DMA underruns since the last call: the speaker played silence because no new audio
+// came in time. While nothing plays, every DMA buffer counts, so read it around playback.
+uint32_t audio_take_underruns(void);
+
 // Play a sine tone for `ms` milliseconds at the current volume.
 void audio_tone(int hz, int ms);
 
