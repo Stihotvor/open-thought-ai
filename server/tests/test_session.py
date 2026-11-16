@@ -7,7 +7,7 @@ import time
 import pytest
 
 from ota_server import session as session_module
-from ota_server.protocol import AUDIO_CHUNK, MAX_CREDIT, MAX_LEAD_SECONDS
+from ota_server.protocol import AUDIO_CHUNK, MAX_CREDIT, MAX_LEAD_SECONDS, TRANSCRIPT_MAX_CHARS
 from ota_server.reply import Notify, ReplyChunk, ReplySource, no_notify
 from ota_server.session import CreditStalled, DeviceSession, echo
 
@@ -190,7 +190,7 @@ def test_transcript_is_sent_before_the_reply():
 
 def test_transcript_text_is_truncated():
     msgs = transcript_turn("a" * 300)
-    assert [m["text"] for m in msgs if m["type"] == "transcript"] == ["a" * 200]
+    assert [m["text"] for m in msgs if m["type"] == "transcript"] == ["a" * TRANSCRIPT_MAX_CHARS]
 
 
 def test_no_transcript_after_abort():

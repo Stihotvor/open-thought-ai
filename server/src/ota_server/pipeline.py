@@ -202,12 +202,12 @@ class VoicePipeline:  # pylint: disable=too-few-public-methods  # a callable Rep
     async def __call__(
         self, pcm: bytes, history: History, *, notify: Notify = no_notify
     ) -> AsyncGenerator[ReplyChunk]:
-        pcm = await speech_only(pcm)  # before any provider call, the self-test too
+        speech = await speech_only(pcm)  # before any provider call, the self-test too
         await self.check_moderation()
         budget = new_turn_budget()
         stage = "stt"
         try:
-            text = (await self.client.transcribe(pcm_to_wav(pcm), self.language, budget)).strip()
+            text = (await self.client.transcribe(pcm_to_wav(speech), self.language, budget)).strip()
             if not text:
                 raise TurnError("no_speech")
             stage = "moderation"

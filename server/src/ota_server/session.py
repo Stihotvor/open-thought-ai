@@ -20,6 +20,7 @@ from .protocol import (
     MIN_SPEECH,
     SPEECH_CAP,
     START_CREDIT,
+    TRANSCRIPT_MAX_CHARS,
     ProtocolError,
     TurnError,
     split_audio,
@@ -113,6 +114,7 @@ class DeviceSession:  # pylint: disable=too-many-instance-attributes  # one devi
         self.reply_task = asyncio.create_task(self.reply(self.turn, bytes(self.audio), history))
 
     async def reply(self, turn: int, pcm: bytes, history: History = ()) -> None:
+        # A cheap length pre-filter: MIN_SPEECH_MS in vad.py is the real speech check.
         if len(pcm) < MIN_SPEECH:
             await self.finish({"type": "error", "turn": turn, "code": "no_speech"})
             return
@@ -140,7 +142,9 @@ class DeviceSession:  # pylint: disable=too-many-instance-attributes  # one devi
 
         async def notify(text: str) -> None:
             if self.open_turn == turn:  # not after an abort or the turn's last message
-                await self.ws.send_json({"type": "transcript", "turn": turn, "text": text[:200]})
+                await self.ws.send_json(
+                    {"type": "transcript", "turn": turn, "text": text[:TRANSCRIPT_MAX_CHARS]}
+                )
 
         return notify
 

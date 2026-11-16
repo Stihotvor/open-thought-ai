@@ -24,11 +24,11 @@ def trim_speech(pcm: bytes) -> bytes | None:
     if len(pcm) % 2:
         raise ValueError("PCM has an odd byte count")
     samples = array("h", pcm)
-    starts = [s for s in range(0, len(samples), FRAME_SAMPLES) if _is_speech(samples, s)]
-    if len(starts) * FRAME_MS < MIN_SPEECH_MS:
+    speech_frames = [s for s in range(0, len(samples), FRAME_SAMPLES) if _is_speech(samples, s)]
+    if len(speech_frames) * FRAME_MS < MIN_SPEECH_MS:
         return None
-    first = max(0, starts[0] - MARGIN_SAMPLES)
-    last = min(len(samples), starts[-1] + FRAME_SAMPLES + MARGIN_SAMPLES)
+    first = max(0, speech_frames[0] - MARGIN_SAMPLES)
+    last = min(len(samples), speech_frames[-1] + FRAME_SAMPLES + MARGIN_SAMPLES)
     return pcm[first * 2 : last * 2]
 
 

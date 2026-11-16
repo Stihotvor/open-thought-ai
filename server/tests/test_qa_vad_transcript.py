@@ -8,7 +8,13 @@ from array import array
 import pytest
 from test_pipeline import SILENCE, SPEECH, Endpoint, pipeline_for, square, tts_wav
 
-from ota_server.protocol import BYTES_PER_SECOND, MAX_CREDIT, MAX_TURN_AUDIO, SAMPLE_RATE
+from ota_server.protocol import (
+    BYTES_PER_SECOND,
+    MAX_CREDIT,
+    MAX_TURN_AUDIO,
+    SAMPLE_RATE,
+    TRANSCRIPT_MAX_CHARS,
+)
 from ota_server.session import DeviceSession
 
 
@@ -143,16 +149,16 @@ def test_qa_017_transcript_turn_id():
     assert {"type": "transcript", "turn": 7, "text": "hello"} in msgs
 
 
-@pytest.mark.parametrize("n", [200, 201])
+@pytest.mark.parametrize("n", [TRANSCRIPT_MAX_CHARS, TRANSCRIPT_MAX_CHARS + 1])
 def test_qa_020_021_boundary_lengths(n):
     msgs = turn_msgs(Endpoint(transcript="c" * n, tts=tts_wav(0.05)), SPEECH)
-    assert texts(msgs) == ["c" * 200]
+    assert texts(msgs) == ["c" * TRANSCRIPT_MAX_CHARS]
 
 
 def test_qa_022_multibyte_transcript():
     text = ("привіт" * 50)[:250]
     msgs = turn_msgs(Endpoint(transcript=text, tts=tts_wav(0.05)), SPEECH)
-    assert texts(msgs) == [text[:200]]
+    assert texts(msgs) == [text[:TRANSCRIPT_MAX_CHARS]]
     import json
 
     wire = json.dumps(

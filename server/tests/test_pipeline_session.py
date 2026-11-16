@@ -4,7 +4,7 @@ import asyncio
 
 from test_pipeline import SPEECH, Endpoint, pipeline_for, self_test_only, tts_wav
 
-from ota_server.protocol import MAX_CREDIT
+from ota_server.protocol import MAX_CREDIT, TRANSCRIPT_MAX_CHARS
 from ota_server.session import DeviceSession
 
 
@@ -47,7 +47,7 @@ def test_device_message_order():
     order = ["state thinking", "transcript", "state speaking", "reply.start", "audio"]
     assert kinds(sent) == [*order, "reply.end"]
     assert {"type": "transcript", "turn": 1, "text": "Jak się masz?"} in sent
-    assert all(len(text) <= 200 for text in transcripts(sent))
+    assert all(len(text) <= TRANSCRIPT_MAX_CHARS for text in transcripts(sent))
 
 
 def test_long_transcript_goes_whole_to_chat_and_cut_to_the_device():
@@ -55,7 +55,7 @@ def test_long_transcript_goes_whole_to_chat_and_cut_to_the_device():
     endpoint = Endpoint(transcript=text, tts=tts_wav(0.05))
     sent = session_turn(endpoint)
     assert endpoint.chats[0][-1]["content"] == text
-    assert transcripts(sent) == [text[:200]]
+    assert transcripts(sent) == [text[:TRANSCRIPT_MAX_CHARS]]
 
 
 def test_flagged_transcript_sends_no_transcript():
