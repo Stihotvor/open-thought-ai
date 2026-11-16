@@ -10,6 +10,7 @@
 #include "button.h"
 #include "config.h"
 #include "esp_heap_caps.h"
+#include "esp_timer.h"
 #include "esp_log.h"
 #include "face.h"
 #include "freertos/FreeRTOS.h"
@@ -181,6 +182,35 @@ static void log_heap(void)
              (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT));
 }
 
+// docs/delivery-plan.md asks for button -> silence <= 300 ms. Logs the time from the
+// press event to the first silent DMA buffer. The 30-40 ms button debounce comes on top.
+static int64_t s_press_at;
+
+static void log_barge_in(void *arg)
+{
+    (void)arg;
+    int64_t silent_at = audio_silent_at();
+    if (silent_at == 0) {
+        ESP_LOGW(TAG, "barge-in: still playing after 500 ms");
+    } else {
+        ESP_LOGI(TAG, "barge-in: press to silence %d ms (+ debounce)",
+                 (int)((silent_at - s_press_at) / 1000));
+    }
+}
+
+static void measure_barge_in(void)
+{
+    static esp_timer_handle_t timer;
+    if (timer == NULL) {
+        const esp_timer_create_args_t args = {.callback = log_barge_in, .name = "barge_in"};
+        ESP_ERROR_CHECK(esp_timer_create(&args, &timer));
+    }
+    s_press_at = esp_timer_get_time();
+    audio_watch_silence();
+    esp_timer_stop(timer);  // a second press inside 500 ms restarts the measurement
+    esp_timer_start_once(timer, 500 * 1000);
+}
+
 // The turn ends without a reply: back to idle with a local beep (docs/protocol.md).
 static app_state_t turn_failed(void)
 {
@@ -213,6 +243,7 @@ static app_state_t on_press(app_state_t state)
         case STATE_THINKING:
         case STATE_SPEAKING:
             // Barge-in: silence first, without a wait for the server, then a new turn.
+            measure_barge_in();
             player_flush();
             link_send_abort(s_turn);
             s_turn = -1;

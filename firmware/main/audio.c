@@ -5,6 +5,7 @@
 
 #include "board_pins.h"
 #include "driver/i2s_std.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 
 // Both chips use 32-bit slots. The INMP441 sends a signed 24-bit sample in the top bits
@@ -13,12 +14,18 @@
 
 static i2s_chan_handle_t s_tx;
 static volatile uint32_t s_underruns;  // DMA had no new output data (ISR increments)
+static volatile bool s_watch_silence;  // set by the app task, cleared by the ISR
+static volatile int64_t s_silent_at;   // esp_timer time of the first underrun after the watch
 
 static bool IRAM_ATTR on_send_overflow(i2s_chan_handle_t handle, i2s_event_data_t *event,
                                        void *ctx)
 {
     (void)handle; (void)event; (void)ctx;
     s_underruns++;
+    if (s_watch_silence) {
+        s_silent_at = esp_timer_get_time();
+        s_watch_silence = false;
+    }
     return false;
 }
 static i2s_chan_handle_t s_rx;
@@ -72,6 +79,17 @@ void audio_play(const int16_t *pcm, size_t samples)
         pcm += n;
         samples -= n;
     }
+}
+
+void audio_watch_silence(void)
+{
+    s_silent_at = 0;
+    s_watch_silence = true;
+}
+
+int64_t audio_silent_at(void)
+{
+    return s_silent_at;
 }
 
 uint32_t audio_take_underruns(void)

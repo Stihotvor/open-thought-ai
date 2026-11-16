@@ -19,6 +19,11 @@ void audio_play(const int16_t *pcm, size_t samples);
 // came in time. While nothing plays, every DMA buffer counts, so read it around playback.
 uint32_t audio_take_underruns(void);
 
+// Barge-in measurement: after a watch, the time (esp_timer_get_time) when the speaker
+// first ran dry, or 0 while it still plays.
+void audio_watch_silence(void);
+int64_t audio_silent_at(void);
+
 // Play a sine tone for `ms` milliseconds at the current volume.
 void audio_tone(int hz, int ms);
 
