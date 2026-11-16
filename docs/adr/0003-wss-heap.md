@@ -1,6 +1,6 @@
 # ADR 0003: wss:// on the ESP32-C3 SuperMini
 
-Status: proposed (2026-11-16). The spike code is on the local branch `spike/wss`.
+Status: accepted (2026-11-16). The spike code is on the local branch `spike/wss`.
 
 ## Context
 The device link uses `ws://`. On a shared LAN, anyone on the network can read the device token and the audio
@@ -35,4 +35,8 @@ most 3.3 KB. A server that sends larger TLS records breaks the link.
    buffer counts). This needs measurement and work in M6.
 
 ## Decision
-Open: the owner chooses an option.
+Option 1. The device keeps `ws://` on the LAN until M7 (public `wss://`).
+
+## Consequences
+- On a shared LAN, anyone on the network can read the device token and the audio. Use a trusted home network.
+- M7 starts from this spike: the mbedTLS savers, a pinned cert, and about 11 KB of RAM to win back.
