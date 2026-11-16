@@ -12,9 +12,10 @@ from model_env import ENDPOINTS
 
 from ota_server import pipeline as pipeline_module
 from ota_server.pipeline import SELF_TEST, TTS_CHUNK, VoicePipeline, system_prompt, tts_chunks
-from ota_server.protocol import BYTES_PER_SECOND, TurnError
+from ota_server.protocol import BYTES_PER_SECOND, SAMPLE_RATE, TurnError
 from ota_server.providers import CALL_CAPS, MAX_TTS_TEXT, MISTRAL_CORE, OPENAI_CORE
 from ota_server.ratelimit import TurnBudget
+from ota_server.reply import no_notify
 
 ENV = {
     **ENDPOINTS,
@@ -28,7 +29,17 @@ CLEAN = {name: False for name in [*MISTRAL_CORE, "health", "pii"]}  # Mistral sc
 OPENAI_CLEAN = {name: False for name in OPENAI_CORE}
 SELF_TEST_WORD = "zabić"  # in the harmful Polish self-test phrase
 CANARY = SELF_TEST["pl"][0]  # rides along in every moderation batch
-SPEECH = b"\x01\x00" * BYTES_PER_SECOND  # 1 s of device PCM
+
+
+def square(seconds: float, amplitude: int) -> bytes:
+    """Device PCM: a 200 Hz square wave, speech level for the VAD when loud enough."""
+    period = SAMPLE_RATE // 200
+    wave_ = [amplitude if i % period < period // 2 else -amplitude for i in range(period)]
+    return array("h", wave_ * int(seconds * 200)).tobytes()
+
+
+SPEECH = square(1, 3000)  # 1 s of device PCM above the VAD threshold
+SILENCE = b"\x00\x00" * BYTES_PER_SECOND  # 1 s
 FIRST, SECOND = "a" * 200 + ".", "b" * 200 + "."
 LONG = f"{FIRST} {SECOND}"
 DOSE_Q, DOSE_A = "How many pills can I take?", "Yes, take ten."
@@ -117,17 +128,17 @@ def pipeline_for(endpoint: Endpoint) -> VoicePipeline:
     return VoicePipeline(make_client(endpoint, ENV), "pl", "voice-1")
 
 
-async def drain(pipeline: VoicePipeline) -> bytes:
-    return b"".join([chunk.pcm async for chunk in pipeline(SPEECH, ())])
+async def drain(pipeline: VoicePipeline, pcm: bytes = SPEECH, notify=no_notify) -> bytes:
+    return b"".join([chunk.pcm async for chunk in pipeline(pcm, (), notify=notify)])
 
 
-def run(endpoint: Endpoint) -> bytes:
-    return asyncio.run(drain(pipeline_for(endpoint)))
+def run(endpoint: Endpoint, pcm: bytes = SPEECH, notify=no_notify) -> bytes:
+    return asyncio.run(drain(pipeline_for(endpoint), pcm, notify))
 
 
-def refused(endpoint: Endpoint) -> str:
+def refused(endpoint: Endpoint, pcm: bytes = SPEECH, notify=no_notify) -> str:
     with pytest.raises(TurnError) as err:
-        run(endpoint)
+        run(endpoint, pcm, notify)
     return err.value.code
 
 
@@ -223,8 +234,14 @@ def test_self_test_runs_once():
     assert endpoint.calls.count("moderations") == 1 + 2 * 2
 
 
-def test_empty_transcript_is_no_speech():
-    assert refused(Endpoint(transcript="  ")) == "no_speech"
+def test_empty_transcript_is_no_speech_without_notify():
+    notified: list[str] = []
+
+    async def notify(text: str) -> None:
+        notified.append(text)
+
+    assert refused(Endpoint(transcript="  "), notify=notify) == "no_speech"
+    assert notified == []
 
 
 @pytest.mark.parametrize(
@@ -430,3 +447,27 @@ def test_the_chat_call_gets_the_history():
 
     asyncio.run(turn())
     assert [m["content"] for m in endpoint.chats[0][1:]] == ["q1", "r1", "Jak się masz?"]
+
+
+@pytest.mark.parametrize("pcm", [SILENCE * 3, square(3, 300)], ids=["silence", "low-noise"])
+def test_silence_makes_no_provider_call(pcm):
+    endpoint = Endpoint()
+    assert refused(endpoint, pcm) == "no_speech"
+    assert endpoint.calls == []  # no self-test, no STT
+
+
+def test_odd_byte_count_is_internal():
+    endpoint = Endpoint()
+    assert refused(endpoint, SPEECH + b"\x00") == "internal"
+    assert endpoint.calls == []
+
+
+def test_stt_gets_trimmed_audio(monkeypatch):
+    sizes: list[int] = []
+    real = pipeline_module.pcm_to_wav
+    monkeypatch.setattr(
+        pipeline_module, "pcm_to_wav", lambda pcm: sizes.append(len(pcm)) or real(pcm)
+    )
+    run(Endpoint(), SILENCE + SPEECH + SILENCE)
+    assert len(sizes) == 1
+    assert BYTES_PER_SECOND <= sizes[0] <= 1.5 * BYTES_PER_SECOND

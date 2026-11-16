@@ -15,7 +15,10 @@ generator at the 60 s cap, which stops the remaining TTS calls.
 
 History: the session keeps what the device played and passes it in. The newest turns that
 fit in MAX_HISTORY_CHARS go to chat. "continue" works through it.
-Not yet here: the `transcript` message and VAD.
+
+VAD and transcript: `trim_speech` (vad.py) runs first, so silence or noise makes no
+provider call (`no_speech`), and STT gets only the speech span. Once the transcript passes
+moderation, `notify` gets the full text; the session sends it as the `transcript` message.
 """
 
 import asyncio
@@ -29,6 +32,7 @@ from .protocol import TurnError
 from .providers import MAX_TTS_TEXT, ModelClient, ProviderError, new_turn_budget
 from .ratelimit import CallCapExceeded, DeadlineExceeded, RateLimited, TurnBudget
 from .reply import History, Notify, ReplyChunk, no_notify
+from .vad import trim_speech
 
 log = logging.getLogger(__name__)
 
@@ -97,6 +101,19 @@ def tts_chunks(text: str) -> list[str]:
         else:
             current = f"{current} {sentence}" if current else sentence
     return [*chunks, current] if current else chunks
+
+
+async def speech_only(pcm: bytes) -> bytes:
+    """The speech span of a turn, in a thread like wav_to_pcm so audio pacing goes on.
+    Raise TurnError("no_speech") for silence or noise, "internal" for malformed PCM."""
+    try:
+        speech = await asyncio.to_thread(trim_speech, pcm)
+    except ValueError:
+        log.error("turn audio is not valid PCM")
+        raise TurnError("internal") from None
+    if speech is None:
+        raise TurnError("no_speech")
+    return speech
 
 
 class VoicePipeline:  # pylint: disable=too-few-public-methods  # a callable ReplySource
@@ -185,6 +202,7 @@ class VoicePipeline:  # pylint: disable=too-few-public-methods  # a callable Rep
     async def __call__(
         self, pcm: bytes, history: History, *, notify: Notify = no_notify
     ) -> AsyncGenerator[ReplyChunk]:
+        pcm = await speech_only(pcm)  # before any provider call, the self-test too
         await self.check_moderation()
         budget = new_turn_budget()
         stage = "stt"
@@ -197,6 +215,7 @@ class VoicePipeline:  # pylint: disable=too-few-public-methods  # a callable Rep
             await self.moderate(
                 "transcript", [*pieces, text] if len(pieces) > 1 else pieces, budget
             )
+            await notify(text)  # the full text: the session cuts it for the device
             stage = "chat"
             async with contextlib.aclosing(
                 self.client.chat(self.messages(text, history), budget)
