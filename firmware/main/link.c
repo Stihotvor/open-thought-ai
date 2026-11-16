@@ -30,8 +30,9 @@ static const char *TAG = "link";
 #define CREDIT_PERIOD_MS 20  // pending credit goes out when the queue is idle this long
 #define AUDIO_FRAME_BYTES (1 + LINK_AUDIO_SAMPLES * 2)  // [turn][PCM]
 // Mic audio waits here for the send task, so a slow send never stalls the mic (lost
-// samples). 1 s of audio, plus the 4-byte length of each frame.
-#define AUDIO_BUFFER_BYTES (10 * (AUDIO_FRAME_BYTES + 4))
+// samples). 2 s of audio, plus the 4-byte length of each frame: the 2 dBm radio
+// stalls a send for up to about 1.2 s.
+#define AUDIO_BUFFER_BYTES (20 * (AUDIO_FRAME_BYTES + 4))
 #define SLOW_SEND_MS 100     // a send slower than one audio frame is logged
 
 

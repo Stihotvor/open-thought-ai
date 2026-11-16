@@ -43,5 +43,5 @@ void link_send_credit(int bytes);
 
 // One audio frame of the turn: at most LINK_AUDIO_SAMPLES samples (100 ms).
 #define LINK_AUDIO_SAMPLES 1600
-// Never blocks: the frame waits in a 1 s buffer for the send task.
+// Never blocks: the frame waits in a 2 s buffer for the send task.
 void link_send_audio(int turn, const int16_t *pcm, size_t samples);
