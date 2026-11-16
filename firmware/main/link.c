@@ -9,6 +9,7 @@
 #include "esp_log.h"
 #include "esp_websocket_client.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/message_buffer.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
 #include "net.h"
@@ -27,11 +28,17 @@ static const char *TAG = "link";
 #define TX_DEPTH 8       // queued text messages
 #define TX_SIZE 128      // the longest message we send (tool.result) fits
 #define CREDIT_PERIOD_MS 20  // pending credit goes out when the queue is idle this long
+#define AUDIO_FRAME_BYTES (1 + LINK_AUDIO_SAMPLES * 2)  // [turn][PCM]
+// Mic audio waits here for the send task, so a slow send never stalls the mic (lost
+// samples). 1 s of audio, plus the 4-byte length of each frame.
+#define AUDIO_BUFFER_BYTES (10 * (AUDIO_FRAME_BYTES + 4))
+#define SLOW_SEND_MS 100     // a send slower than one audio frame is logged
 
 
 static esp_websocket_client_handle_t s_client;
 static link_handler_t s_handler;
 static QueueHandle_t s_tx;  // control messages: the send task owns the blocking network write
+static MessageBufferHandle_t s_audio;  // mic task writes, send task reads
 static portMUX_TYPE s_credit_lock = portMUX_INITIALIZER_UNLOCKED;
 static int s_credit_pending;  // audio credit not yet sent (under s_credit_lock)
 
@@ -56,12 +63,34 @@ static void send_json(const char *json)
     }
 }
 
+// Send all queued mic audio. It goes before any control message queued after it, so
+// listen.stop never overtakes the end of the speech.
+static void send_queued_audio(void)
+{
+    static uint8_t frame[AUDIO_FRAME_BYTES];  // send task only
+    size_t n;
+    while ((n = xMessageBufferReceive(s_audio, frame, sizeof(frame), 0)) > 0) {
+        if (!esp_websocket_client_is_connected(s_client)) {
+            continue;  // drop it: the server cancels the turn on disconnect
+        }
+        TickType_t start = xTaskGetTickCount();
+        if (esp_websocket_client_send_bin(s_client, (const char *)frame, (int)n, SEND_TIMEOUT) < 0) {
+            ESP_LOGW(TAG, "audio send failed");
+        }
+        int ms = (int)pdTICKS_TO_MS(xTaskGetTickCount() - start);
+        if (ms > SLOW_SEND_MS) {
+            ESP_LOGW(TAG, "slow audio send: %d ms", ms);
+        }
+    }
+}
+
 static void tx_task(void *arg)
 {
     (void)arg;
     char msg[TX_SIZE];
     for (;;) {
         bool have_msg = xQueueReceive(s_tx, msg, pdMS_TO_TICKS(CREDIT_PERIOD_MS)) == pdTRUE;
+        send_queued_audio();
         if (!have_msg) {
             taskENTER_CRITICAL(&s_credit_lock);
             int credit = s_credit_pending;
@@ -270,7 +299,8 @@ void link_start(const char *url, const char *token, link_handler_t handler)
 {
     s_handler = handler;
     s_tx = xQueueCreate(TX_DEPTH, TX_SIZE);
-    configASSERT(s_tx);
+    s_audio = xMessageBufferCreate(AUDIO_BUFFER_BYTES);
+    configASSERT(s_tx && s_audio);
     xTaskCreate(tx_task, "link_tx", 4096, NULL, 5, NULL);
 
     static char headers[160];  // the client keeps a pointer: static
@@ -325,12 +355,13 @@ void link_send_credit(int bytes)
 
 void link_send_audio(int turn, const int16_t *pcm, size_t samples)
 {
-    static uint8_t frame[1 + LINK_AUDIO_SAMPLES * 2];  // one caller: the mic task
+    static uint8_t frame[AUDIO_FRAME_BYTES];  // one caller: the mic task
     if (samples > LINK_AUDIO_SAMPLES || !esp_websocket_client_is_connected(s_client)) {
         return;
     }
     frame[0] = (uint8_t)turn;
     memcpy(frame + 1, pcm, samples * 2);  // the C3 is little-endian, as the protocol
-    esp_websocket_client_send_bin(s_client, (const char *)frame, (int)(1 + samples * 2),
-                                  SEND_TIMEOUT);
+    if (xMessageBufferSend(s_audio, frame, 1 + samples * 2, 0) == 0) {
+        ESP_LOGW(TAG, "audio buffer full: frame dropped");  // the link is too slow
+    }
 }
