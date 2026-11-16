@@ -12,10 +12,10 @@
 
 static const char *TAG = "player";
 
-#define JITTER_BYTES 12288       // docs/protocol.md: 12 KB, about 375 ms
+#define JITTER_BYTES (48 * 1024) // docs/protocol.md: 48 KB, about 1.5 s against Wi-Fi stalls
 #define CREDIT_STEP 3200         // give credit when this much buffer space is free again (100 ms)
 // Start (and restart after a gap) only with this much audio in the buffer: it rides out
-// late frames on a weak radio. Below the server start credit of 9600, so it always fills.
+// late frames on a weak radio. Below the server start credit (48000), so it always fills.
 #define PREBUFFER_BYTES 6400     // 200 ms
 #define CHUNK_SAMPLES AUDIO_FRAME_SAMPLES
 #define WAIT_MS 20               // the task checks for a flush at least this often

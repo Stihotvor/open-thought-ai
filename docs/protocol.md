@@ -30,10 +30,10 @@ One WebSocket connection between the device and the server.
 - Every server message and audio frame of a turn carries its `turn`. The device drops anything with a stale `turn`.
 
 ## Flow control (server → device audio)
-- Device jitter buffer: **12 KB** (~375 ms). I2S DMA: 2 × 1 KB.
-- The server paces audio at real time with a maximum lead of **300 ms**.
-- The device sends `audio.credit {bytes}` when its free buffer rises above 4 KB. The server never sends more than the granted credit. Start credit = 9 600 bytes, set again at each `turn.start`. Credit sent before `reply.start` counts.
-- The server caps the open credit at 12 KB (the jitter buffer). If the device gives no credit for 10 s, the server ends the reply with `reply.end {reason: error}`.
+- Device jitter buffer: **48 KB** (~1.5 s). It rides out Wi-Fi stalls of up to ~1.2 s, as seen on the 2 dBm SuperMini radio. I2S DMA: 90 ms (driver default).
+- The server paces audio at real time with a maximum lead of **1.5 s**.
+- The device sends `audio.credit {bytes}` when it has played 3.2 KB (100 ms) more. The server never sends more than the granted credit. Start credit = 48 000 bytes, set again at each `turn.start`. Credit sent before `reply.start` counts.
+- The server caps the open credit at 48 KB (the jitter buffer). If the device gives no credit for 10 s, the server ends the reply with `reply.end {reason: error}`.
 
 ## Messages
 | type | dir | fields | meaning |

@@ -16,7 +16,14 @@ from ota_server.config import Settings, get_settings
 from ota_server.endpoints import ConfigError
 from ota_server.main import create_app
 from ota_server.pipeline import VoicePipeline
-from ota_server.protocol import AUDIO_CHUNK, BYTES_PER_SECOND, Close, TurnError
+from ota_server.protocol import (
+    AUDIO_CHUNK,
+    BYTES_PER_SECOND,
+    MAX_CREDIT,
+    START_CREDIT,
+    Close,
+    TurnError,
+)
 from ota_server.ratelimit import TokenBucket
 from ota_server.reply import ReplyChunk
 
@@ -93,9 +100,9 @@ def test_oversized_text_frame_closes_4400(client):
 
 def test_echo_round_trip_with_credit(client):
     ws = connect(client)
-    turn = speak(ws, 0.5)
+    turn = speak(ws, 2.0)
     # Credit sent before reply.start must count. The start credit alone is too small.
-    ws.send_json({"type": "audio.credit", "bytes": 2688})  # up to the 12 KB device buffer
+    ws.send_json({"type": "audio.credit", "bytes": MAX_CREDIT - START_CREDIT})
     assert ws.receive_json() == {"type": "state", "turn": turn, "state": "thinking"}
     assert ws.receive_json() == {"type": "state", "turn": turn, "state": "speaking"}
     assert ws.receive_json() == {"type": "reply.start", "turn": turn}
@@ -105,11 +112,11 @@ def test_echo_round_trip_with_credit(client):
         if msg.get("bytes"):
             assert msg["bytes"][0] == turn
             received += msg["bytes"][1:]
-            if len(received) == 3 * AUDIO_CHUNK:  # the device played some: more credit
-                ws.send_json({"type": "audio.credit", "bytes": 6400})
+            if len(received) % (3 * AUDIO_CHUNK) == 0:  # the device played some: more credit
+                ws.send_json({"type": "audio.credit", "bytes": 3 * AUDIO_CHUNK})
         else:
             break
-    assert len(received) == int(0.5 * BYTES_PER_SECOND)
+    assert len(received) == int(2.0 * BYTES_PER_SECOND)
     assert '"reply.end"' in msg["text"] and '"done"' in msg["text"]
 
 
@@ -307,7 +314,7 @@ def test_chunks_stream_in_order_and_the_cap_stops_the_source(client, monkeypatch
 def test_a_device_without_credit_ends_the_reply(client, monkeypatch):
     monkeypatch.setattr(session_module, "CREDIT_TIMEOUT", 0.2)
     ws = connect(client)
-    turn = speak(ws, 0.5)  # echo: 16 000 bytes, start credit 9 600, no credit after it
+    turn = speak(ws, 2.0)  # echo: 64 000 bytes, more than the start credit, no credit after it
     msgs, received = reply_messages(ws)
     assert msgs[-1] == {"type": "reply.end", "turn": turn, "reason": "error"}
-    assert len(received) <= 9600
+    assert len(received) <= START_CREDIT

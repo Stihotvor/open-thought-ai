@@ -11,11 +11,6 @@
 // of its slot; the MAX98357A takes the top 16 bits we send.
 #define MIC_SHIFT 14  // 24-bit sample in a 32-bit slot, with some gain, to 16 bits
 
-// DMA holds 6 x 480 frames = 180 ms of output (default 90 ms): the player task can wait
-// that long behind Wi-Fi work before the speaker runs dry.
-#define DMA_DESC_NUM 6
-#define DMA_FRAME_NUM 480
-
 static i2s_chan_handle_t s_tx;
 static volatile uint32_t s_underruns;  // DMA had no new output data (ISR increments)
 
@@ -34,8 +29,6 @@ void audio_init(void)
     i2s_chan_config_t chan_config = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
     // Send silence when no new audio comes, instead of the last DMA buffers in a loop.
     chan_config.auto_clear_after_cb = true;
-    chan_config.dma_desc_num = DMA_DESC_NUM;
-    chan_config.dma_frame_num = DMA_FRAME_NUM;
     ESP_ERROR_CHECK(i2s_new_channel(&chan_config, &s_tx, &s_rx));
 
     i2s_std_config_t std_config = {

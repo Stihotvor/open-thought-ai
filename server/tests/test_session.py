@@ -7,7 +7,7 @@ import time
 import pytest
 
 from ota_server import session as session_module
-from ota_server.protocol import AUDIO_CHUNK, MAX_CREDIT
+from ota_server.protocol import AUDIO_CHUNK, MAX_CREDIT, MAX_LEAD_SECONDS
 from ota_server.reply import ReplyChunk
 from ota_server.session import CreditStalled, DeviceSession
 
@@ -33,12 +33,13 @@ def test_late_audio_is_paced_from_now():
         session.credit = MAX_CREDIT * 10
         late_clock = time.monotonic() - 5.0  # the device ran dry 5 s ago
         started = time.monotonic()
-        clock = await session.stream(1, b"\0" * AUDIO_CHUNK * 6, 0, late_clock)
+        clock = await session.stream(1, b"\0" * AUDIO_CHUNK * 20, 0, late_clock)
         return clock, late_clock, time.monotonic() - started
 
     clock, late_clock, took = asyncio.run(scenario())
     assert clock > late_clock + 4.5  # paced again, not sent as one 5 s burst
-    assert took >= 0.15  # 600 ms of audio, at most 300 ms ahead: about 200 ms of waits
+    # 2 s of audio, at most MAX_LEAD_SECONDS ahead: the rest waits for real time
+    assert took >= 2.0 - MAX_LEAD_SECONDS - 0.15
 
 
 def test_credit_is_capped_at_the_device_buffer():
