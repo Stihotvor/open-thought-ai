@@ -106,7 +106,9 @@ static void send_escaped(httpd_req_t *req, const char *s)
         }
     }
     out[n] = '\0';
-    httpd_resp_sendstr_chunk(req, out);
+    if (n > 0) {  // an empty chunk ends a chunked HTTP response: never send one
+        httpd_resp_sendstr_chunk(req, out);
+    }
 }
 
 // The form. Only the Wi-Fi name and the server URL are filled in again: the token and
@@ -132,7 +134,7 @@ static esp_err_t send_form(httpd_req_t *req, const char *message, const config_t
     httpd_resp_sendstr_chunk(req,
         "\"><p>Wi-Fi password<br><input name=wifi_pass type=password maxlength=64>"
         "<p>Server URL<br><input name=url maxlength=128 required "
-        "placeholder='ws://192.168.1.10:8000/ws' value=\"");
+        "placeholder='ws://192.168.1.10:8000/v1/device' value=\"");
     send_escaped(req, values->url);
     httpd_resp_sendstr_chunk(req,
         "\"><p>Device token (empty keeps the saved one)<br>"
@@ -193,11 +195,16 @@ static esp_err_t post_save(httpd_req_t *req)
         }
         return send_form(req, "Wrong PIN.", &EMPTY);
     }
-    bool parsed = form_value(body, "ssid", in.ssid, sizeof(in.ssid)) &&
-                  form_value(body, "wifi_pass", in.wifi_pass, sizeof(in.wifi_pass)) &&
-                  form_value(body, "url", in.url, sizeof(in.url)) &&
-                  form_value(body, "token", in.token, sizeof(in.token));
-    const char *error = parsed ? NULL : "A field is missing or too long.";
+    const char *error = NULL;
+    if (!form_value(body, "ssid", in.ssid, sizeof(in.ssid))) {
+        error = "Wi-Fi name is missing or too long.";
+    } else if (!form_value(body, "wifi_pass", in.wifi_pass, sizeof(in.wifi_pass))) {
+        error = "Wi-Fi password is missing or too long.";
+    } else if (!form_value(body, "url", in.url, sizeof(in.url))) {
+        error = "Server URL is missing or too long.";
+    } else if (!form_value(body, "token", in.token, sizeof(in.token))) {
+        error = "Device token is missing or too long.";
+    }
     if (!error) error = validate_ssid(in.ssid);
     if (!error) error = validate_wifi_pass(in.wifi_pass);
     if (!error) error = validate_url(in.url);
@@ -208,6 +215,7 @@ static esp_err_t post_save(httpd_req_t *req)
         error = "A device token is needed.";
     }
     if (error) {
+        ESP_LOGW(TAG, "form rejected: %s (body %d bytes)", error, (int)got);
         in.wifi_pass[0] = in.token[0] = '\0';
         return send_form(req, error, &in);
     }
@@ -246,12 +254,17 @@ void provision_start(void)
     httpd_register_uri_handler(server, &form);
     httpd_register_uri_handler(server, &save);
 
-    char line_ssid[22], line_pass[22], line_pin[22];
-    snprintf(line_ssid, sizeof(line_ssid), "WIFI %s", ssid);
-    snprintf(line_pass, sizeof(line_pass), "PASS %s", password);
-    snprintf(line_pin, sizeof(line_pin), "PIN  %s", s_pin);
-    const char *const lines[] = {"SETUP", line_ssid, line_pass, line_pin, "192.168.4.1",
-                                 "5 MIN"};
-    face_show_text(lines, 6);
+    // Scan to join: the standard Wi-Fi QR format. The SSID (OTA-XXXX) and the password
+    // alphabet (config.c) have no characters that need escapes (; , : \\ ").
+    char qr[64];
+    snprintf(qr, sizeof(qr), "WIFI:T:WPA;S:%s;P:%s;;", ssid, password);
+    char line_pin[FACE_QR_COLUMNS + 1], pass_1[FACE_QR_COLUMNS + 1], pass_2[FACE_QR_COLUMNS + 1];
+    snprintf(line_pin, sizeof(line_pin), "PIN %s", s_pin);
+    // The 12-character password in two halves, so it reads easily next to the code.
+    const int half = (int)strlen(password) / 2;
+    snprintf(pass_1, sizeof(pass_1), "%.*s", half, password);
+    snprintf(pass_2, sizeof(pass_2), "%s", password + half);
+    const char *const lines[] = {line_pin, "OPEN", "192.168.4.1", "", "PASS", pass_1, pass_2};
+    face_show_qr(qr, lines, 7);
     ESP_LOGI(TAG, "setup access point %s started for %d minutes", ssid, AP_MINUTES);
 }

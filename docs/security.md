@@ -16,6 +16,8 @@ Threat model: a home LAN with guests and IoT devices, family members including c
 ## Transport
 - MVP: LAN only. Compose binds ports to the LAN interface, never `0.0.0.0` on a public host.
 - `ws://` exposes the token and voice audio on the LAN. Accepted for the MVP. `wss://` (with a RAM spike test in M2) is required before any non-LAN use.
+  - Known effect (M2 review): a LAN attacker who sniffs the token can connect as the device. The server then replaces the real session with close 4000, and the device stops until it is set up again. A forged close frame can do the same without the token. `wss://` with server certificate checks closes both gaps.
+- Device input limits (M2): the device refuses JSON deeper than 4 levels before it parses, text frames over 1 KB, and messages with a bad turn id. It echoes a tool call id only when it needs no JSON escape. It logs server strings cut to 32 characters.
 - Token: ≥ 32 random bytes, hash stored on the server, "regenerate token" in the UI (then reprovision by the button gesture).
 - Auth failures throttled per IP (5 per minute) and logged.
 - Limits: text frame 1 KB, audio frame 3.2 KB, 30 s audio per turn, 5 s pre-auth and hello deadlines.

@@ -5,7 +5,7 @@
 flowchart LR
   subgraph Device[ESP32-C3 firmware]
     BTN[Button] --> APP[app_state]
-    MIC[audio_in I2S] --> LINK[ws_link]
+    MIC[audio_in I2S] --> LINK[link]
     LINK --> SPK[audio_out I2S]
     LINK --> FACE[face SSD1306]
     LINK <--> DT[tools]
@@ -49,9 +49,11 @@ flowchart LR
 | `net` | Wi-Fi owner: station with 1–60 s backoff, and the setup AP. |
 | `button` | 10 ms polling, 30 ms debounce, press and 5 s hold events. |
 | `audio` | One full-duplex I2S port (mic and amp share BCLK/WS): 16 kHz mono read in 20 ms frames, write with volume, test tone. |
-| `ws_link` | Protocol v1 client, reconnect with backoff 1–60 s. |
-| `face` | OLED faces per state. |
-| `tools` | Device tools: `set_volume`, `set_face`, `get_status`. |
+| `link` | Protocol v1 client (`esp_websocket_client`): bearer token, hello, ping 15 s, reconnect with backoff 1–60 s, stop on 4000/4401/4426. A send queue and task, so no audio task blocks on the network. |
+| `player` | 12 KB jitter buffer, playback task, `audio.credit` in 4 KB steps, flush on barge-in. |
+| `proto` | Pure checks for server input: JSON depth, turn, volume, tool id (host-tested). |
+| `face` | OLED faces per state, text screens, and the setup Wi-Fi QR code. |
+| `tools` | Device tools: `set_volume`, `set_face`, `get_status` (M4; until then `link` answers `unsupported`). |
 | `app_state` | State machine: setup, provisioning, offline, idle, listening, thinking, speaking, error. In `main.c`, one task with an event queue. |
 
 ## Server packages (Python 3.12)

@@ -19,3 +19,9 @@ void face_show(face_t face);
 #define FACE_TEXT_LINES 6
 #define FACE_TEXT_COLUMNS 21
 void face_show_text(const char *const lines[], int count);
+
+// A QR code of `qr_text` on the left half, and up to FACE_QR_LINES lines of up to
+// FACE_QR_COLUMNS characters on the right. Without room for the code, only the lines.
+#define FACE_QR_LINES 7
+#define FACE_QR_COLUMNS 11
+void face_show_qr(const char *qr_text, const char *const lines[], int count);

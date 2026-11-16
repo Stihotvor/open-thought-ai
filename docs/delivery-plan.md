@@ -36,7 +36,9 @@ Total M0–M6: 54–101 h.
 - Button with debounce.
 
 ### M2 Link + echo
-- Firmware `ws_link`: connect, hello, ping, backoff reconnect.
+Status (2026-11-16): device link, push-to-talk and echo work on the board, with smooth playback. The 2 dBm radio stalls the link for up to 1.2 s, so the mic and the reply each have a 1.5 s buffer (protocol v1: 48 KB credit). Free heap with the link up: 50.5 KB (largest block 40 KB, minimum 43.5 KB). `wss://` waits for M7 ([ADR 0003](adr/0003-wss-heap.md)): TLS works but leaves 29 KB minimum heap. Button to silence: 95–98 ms from the press event, plus 30–40 ms debounce, so about 135 ms (target ≤ 300 ms). Send stalls up to 1.35 s seen: the 1.5 s buffers still cover them. M2 has no open items.
+
+- Firmware `link`: connect, hello, ping, backoff reconnect.
 - Server skeleton: FastAPI, settings, gateway with token auth and session replace.
 - Echo mode: server returns captured PCM with `audio.credit` pacing.
 - Measure free heap with WS + audio buffers (target ≥ 40 KB).

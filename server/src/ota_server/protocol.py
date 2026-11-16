@@ -15,10 +15,10 @@ AUDIO_CHUNK = 3200  # PCM bytes per frame the server sends (100 ms)
 MAX_TURN_AUDIO = 30 * BYTES_PER_SECOND
 MIN_SPEECH = int(0.3 * BYTES_PER_SECOND)
 
-START_CREDIT = 9600
-MAX_CREDIT = 12 * 1024  # the device jitter buffer: credit above it is not real
+START_CREDIT = 48000  # 1.5 s: the device buffer fills ahead and rides out a Wi-Fi stall
+MAX_CREDIT = 48 * 1024  # the device jitter buffer: credit above it is not real
 CREDIT_TIMEOUT = 10.0  # seconds without enough credit: the device stalled, the reply ends
-MAX_LEAD_SECONDS = 0.3
+MAX_LEAD_SECONDS = 1.5  # matches the device buffer: a short lead cannot fill it
 HELLO_TIMEOUT = 5.0
 SPEECH_CAP = 60 * BYTES_PER_SECOND  # fixed 60 s reply cap: longer replies end with reason "cap"
 
