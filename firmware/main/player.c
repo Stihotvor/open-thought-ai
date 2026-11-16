@@ -13,7 +13,10 @@
 static const char *TAG = "player";
 
 #define JITTER_BYTES 12288       // docs/protocol.md: 12 KB, about 375 ms
-#define CREDIT_STEP 4096         // give credit when this much buffer space is free again
+#define CREDIT_STEP 3200         // give credit when this much buffer space is free again (100 ms)
+// Start (and restart after a gap) only with this much audio in the buffer: it rides out
+// late frames on a weak radio. Below the server start credit of 9600, so it always fills.
+#define PREBUFFER_BYTES 6400     // 200 ms
 #define CHUNK_SAMPLES AUDIO_FRAME_SAMPLES
 #define WAIT_MS 20               // the task checks for a flush at least this often
 
@@ -39,6 +42,8 @@ static void player_task(void *arg)
     size_t have = 0;          // bytes in `chunk`: an odd byte waits for its pair
     int consumed = 0;         // bytes played since the last credit
     uint32_t generation = 0;  // the generation this task has emptied the buffer for
+    bool playing = false;     // false = fill to PREBUFFER_BYTES first
+    int gaps = 0;             // times the buffer ran dry in this reply
     for (;;) {
         xSemaphoreTake(s_lock, portMAX_DELAY);
         if (generation != s_generation) {
@@ -46,14 +51,32 @@ static void player_task(void *arg)
             xStreamBufferReset(s_buffer);  // no send can run: the link task needs s_lock
             have = 0;
             consumed = 0;
+            playing = false;
+            gaps = 0;
         }
         uint32_t dropped = s_dropped;
         s_dropped = 0;
         bool accepting = s_turn >= 0;
         xSemaphoreGive(s_lock);
 
-        have += xStreamBufferReceive(s_buffer, bytes + have, sizeof(chunk) - have,
-                                     pdMS_TO_TICKS(WAIT_MS));
+        if (dropped > 0) {
+            ESP_LOGW(TAG, "jitter buffer full: %u bytes dropped", (unsigned)dropped);
+        }
+        if (!playing) {
+            if (xStreamBufferBytesAvailable(s_buffer) < PREBUFFER_BYTES && !s_ending) {
+                vTaskDelay(pdMS_TO_TICKS(WAIT_MS));
+                continue;
+            }
+            playing = true;
+        }
+
+        size_t got = xStreamBufferReceive(s_buffer, bytes + have, sizeof(chunk) - have,
+                                          pdMS_TO_TICKS(WAIT_MS));
+        if (got == 0 && !s_ending) {
+            playing = false;  // ran dry mid-reply: refill before the next sound
+            gaps++;
+        }
+        have += got;
         size_t samples = have / 2;
         if (samples > 0 && generation == s_generation) {  // skip a chunk a flush made stale
             audio_play(chunk, samples);
@@ -68,10 +91,12 @@ static void player_task(void *arg)
         }
         if (s_ending && have == 0 && xStreamBufferIsEmpty(s_buffer)) {
             s_ending = false;
+            if (gaps > 0) {
+                ESP_LOGW(TAG, "reply had %d gaps (late audio)", gaps);
+            }
+            gaps = 0;
+            playing = false;
             s_drained();
-        }
-        if (dropped > 0) {
-            ESP_LOGW(TAG, "jitter buffer full: %u bytes dropped", (unsigned)dropped);
         }
     }
 }
