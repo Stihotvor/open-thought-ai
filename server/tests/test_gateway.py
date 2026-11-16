@@ -25,7 +25,7 @@ from ota_server.protocol import (
     TurnError,
 )
 from ota_server.ratelimit import TokenBucket
-from ota_server.reply import ReplyChunk
+from ota_server.reply import Notify, ReplyChunk, no_notify
 
 TOKEN = "test-token-0123456789abcdef0123456789"
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
@@ -147,7 +147,7 @@ def test_turn_limit_survives_reconnect(client):
 
 
 def failing_source(error: Exception, chunks: int = 0):
-    async def source(pcm: bytes, _history):
+    async def source(pcm: bytes, _history, *, notify: Notify = no_notify):
         for _ in range(chunks):
             yield ReplyChunk(pcm[:AUDIO_CHUNK])
         raise error
@@ -203,7 +203,7 @@ def test_voice_pipeline_starts_with_all_roles(monkeypatch):
 
 
 def test_abort_while_thinking_ends_the_reply(client):
-    async def slow(pcm: bytes, _history):
+    async def slow(pcm: bytes, _history, *, notify: Notify = no_notify):
         await asyncio.Event().wait()  # never answers
         yield ReplyChunk(pcm)
 
@@ -273,7 +273,7 @@ def test_failure_after_audio_ends_the_reply_with_error(client):
 def test_abort_while_speaking_closes_the_source(client):
     closed = asyncio.Event()
 
-    async def endless(pcm: bytes, _history):
+    async def endless(pcm: bytes, _history, *, notify: Notify = no_notify):
         try:
             while True:
                 yield ReplyChunk(pcm[:AUDIO_CHUNK])
@@ -296,7 +296,7 @@ def test_chunks_stream_in_order_and_the_cap_stops_the_source(client, monkeypatch
     monkeypatch.setattr(session_module, "SPEECH_CAP", 2 * AUDIO_CHUNK)
     made = []
 
-    async def chunks(pcm: bytes, _history):
+    async def chunks(pcm: bytes, _history, *, notify: Notify = no_notify):
         for n in range(1, 10):
             made.append(n)
             yield ReplyChunk(bytes([n, 0]) * (AUDIO_CHUNK // 2))

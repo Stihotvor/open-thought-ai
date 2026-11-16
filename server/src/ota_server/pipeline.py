@@ -28,7 +28,7 @@ from .audio import AudioError, pcm_to_wav, wav_to_pcm
 from .protocol import TurnError
 from .providers import MAX_TTS_TEXT, ModelClient, ProviderError, new_turn_budget
 from .ratelimit import CallCapExceeded, DeadlineExceeded, RateLimited, TurnBudget
-from .reply import History, ReplyChunk
+from .reply import History, Notify, ReplyChunk, no_notify
 
 log = logging.getLogger(__name__)
 
@@ -182,7 +182,9 @@ class VoicePipeline:  # pylint: disable=too-few-public-methods  # a callable Rep
             # The session waits here while the device plays: that time is not TTS work.
             budget.extend(budget.clock() - paused)
 
-    async def __call__(self, pcm: bytes, history: History) -> AsyncGenerator[ReplyChunk]:
+    async def __call__(
+        self, pcm: bytes, history: History, *, notify: Notify = no_notify
+    ) -> AsyncGenerator[ReplyChunk]:
         await self.check_moderation()
         budget = new_turn_budget()
         stage = "stt"
