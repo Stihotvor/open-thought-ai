@@ -141,7 +141,9 @@ class DeviceSession:  # pylint: disable=too-many-instance-attributes  # one devi
         """The source's Notify for this turn: it sends the transcript while the turn is open."""
 
         async def notify(text: str) -> None:
-            if self.open_turn == turn:  # not after an abort or the turn's last message
+            # Not after an abort or the turn's last message. It does not stop a call after the
+            # first chunk: ReplySource requires `notify` before the first chunk.
+            if self.open_turn == turn:
                 await self.ws.send_json(
                     {"type": "transcript", "turn": turn, "text": text[:TRANSCRIPT_MAX_CHARS]}
                 )

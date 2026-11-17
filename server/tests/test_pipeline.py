@@ -1,131 +1,29 @@
 import asyncio
-import io
-import json
 import logging
-import wave
-from array import array
 
-import httpx
 import pytest
-from fake_endpoint import make_client
-from model_env import ENDPOINTS
+from fakes import (
+    CANARY,
+    CLEAN,
+    OPENAI_CLEAN,
+    SILENCE,
+    SPEECH,
+    Endpoint,
+    pipeline_for,
+    self_test_only,
+    square,
+)
 
 from ota_server import pipeline as pipeline_module
-from ota_server.pipeline import SELF_TEST, TTS_CHUNK, VoicePipeline, system_prompt, tts_chunks
-from ota_server.protocol import BYTES_PER_SECOND, SAMPLE_RATE, TurnError
-from ota_server.providers import CALL_CAPS, MAX_TTS_TEXT, MISTRAL_CORE, OPENAI_CORE
+from ota_server.pipeline import TTS_CHUNK, VoicePipeline, system_prompt, tts_chunks
+from ota_server.protocol import BYTES_PER_SECOND, TurnError
+from ota_server.providers import CALL_CAPS, MAX_TTS_TEXT
 from ota_server.ratelimit import TurnBudget
 from ota_server.reply import no_notify
 
-ENV = {
-    **ENDPOINTS,
-    "OTA_MODERATION_MODEL": "mod-m",
-    "OTA_CHAT_RATE": "100",
-    "OTA_STT_RATE": "100",
-    "OTA_TTS_RATE": "100",
-    "OTA_MODERATION_RATE": "100",
-}
-CLEAN = {name: False for name in [*MISTRAL_CORE, "health", "pii"]}  # Mistral schema
-OPENAI_CLEAN = {name: False for name in OPENAI_CORE}
-SELF_TEST_WORD = "zabić"  # in the harmful Polish self-test phrase
-CANARY = SELF_TEST["pl"][0]  # rides along in every moderation batch
-
-
-def square(seconds: float, amplitude: int) -> bytes:
-    """Device PCM: a 200 Hz square wave, speech level for the VAD when loud enough."""
-    period = SAMPLE_RATE // 200
-    wave_ = [amplitude if i % period < period // 2 else -amplitude for i in range(period)]
-    return array("h", wave_ * int(seconds * 200)).tobytes()
-
-
-SPEECH = square(1, 3000)  # 1 s of device PCM above the VAD threshold
-SILENCE = b"\x00\x00" * BYTES_PER_SECOND  # 1 s
 FIRST, SECOND = "a" * 200 + ".", "b" * 200 + "."
 LONG = f"{FIRST} {SECOND}"
 DOSE_Q, DOSE_A = "How many pills can I take?", "Yes, take ten."
-
-
-def tts_wav(seconds: float = 0.5, rate: int = 24000) -> bytes:
-    out = io.BytesIO()
-    with wave.open(out, "wb") as w:
-        w.setnchannels(1)
-        w.setsampwidth(2)
-        w.setframerate(rate)
-        w.writeframes(array("h", [300] * int(seconds * rate)).tobytes())
-    return out.getvalue()
-
-
-def sse(text: str) -> str:
-    chunk = json.dumps({"choices": [{"delta": {"content": text}}]})
-    return f"data: {chunk}\n\ndata: [DONE]\n\n"
-
-
-def self_test_only(text: str) -> bool:
-    return SELF_TEST_WORD in text
-
-
-class Endpoint:
-    """A fake OpenAI-compatible endpoint. `flag(text)` decides each moderation verdict.
-    Moderation calls are numbered: 1 is the self-test, 2 the transcript, 3 the reply.
-    `result`, `moderation_status` and `result_count_delta` apply from call `from_call` on,
-    so a retried 429 or a repeated self-test meets the same answer."""
-
-    def __init__(
-        self,
-        transcript="Jak się masz?",
-        reply="Dobrze. A ty?",
-        tts=None,
-        fail=None,
-        flag=self_test_only,
-        result=None,
-        moderation_status=None,
-        result_count_delta=0,
-        from_call=2,
-    ):
-        self.transcript, self.reply, self.tts, self.fail = transcript, reply, tts, fail or {}
-        self.flag, self.result, self.moderation_status = flag, result, moderation_status
-        self.result_count_delta, self.from_call = result_count_delta, from_call
-        self.calls: list[str] = []
-        self.moderated: list[list[str]] = []  # the inputs of each moderation call
-        self.chats: list[list[dict]] = []  # the messages of each chat call
-
-    def verdict(self, text: str) -> dict:
-        return {"categories": {**CLEAN, "selfharm": self.flag(text)}}
-
-    def moderation(self, req: httpx.Request) -> httpx.Response:
-        texts = json.loads(req.content)["input"]
-        self.moderated.append(texts)
-        aimed = len(self.moderated) >= self.from_call
-        if aimed and self.moderation_status:
-            return httpx.Response(self.moderation_status)
-        results = [self.verdict(t) for t in texts]
-        if aimed and self.result is not None:  # the canary keeps its true verdict
-            results = [
-                r if self_test_only(t) else self.result for t, r in zip(texts, results, strict=True)
-            ]
-        if aimed and self.result_count_delta < 0:
-            results = results[: self.result_count_delta]
-        if aimed and self.result_count_delta > 0:
-            results += results[:1] * self.result_count_delta
-        return httpx.Response(200, json={"results": results})
-
-    def __call__(self, req: httpx.Request) -> httpx.Response:
-        path = req.url.path
-        self.calls.append(path.rsplit("/", 1)[-1])
-        if path in self.fail:
-            return httpx.Response(self.fail[path])
-        if path.endswith("/moderations"):
-            return self.moderation(req)
-        if path.endswith("/audio/transcriptions"):
-            return httpx.Response(200, json={"text": self.transcript})
-        if path.endswith("/chat/completions"):
-            self.chats.append(json.loads(req.content)["messages"])
-            return httpx.Response(200, text=sse(self.reply))
-        return httpx.Response(200, content=self.tts if self.tts is not None else tts_wav())
-
-
-def pipeline_for(endpoint: Endpoint) -> VoicePipeline:
-    return VoicePipeline(make_client(endpoint, ENV), "pl", "voice-1")
 
 
 async def drain(pipeline: VoicePipeline, pcm: bytes = SPEECH, notify=no_notify) -> bytes:

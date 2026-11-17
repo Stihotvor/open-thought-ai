@@ -1,27 +1,10 @@
-import random
 import time
-from array import array
 
 import pytest
+from fakes import noise, silence, tone
 
-from ota_server.protocol import BYTES_PER_SECOND, SAMPLE_RATE
+from ota_server.protocol import BYTES_PER_SECOND
 from ota_server.vad import trim_speech
-
-
-def silence(ms: int) -> bytes:
-    return bytes(SAMPLE_RATE * ms // 1000 * 2)
-
-
-def tone(ms: int, amplitude: int = 8000) -> bytes:
-    """Square wave at 400 Hz (period of 40 samples)."""
-    n = SAMPLE_RATE * ms // 1000
-    return array("h", [amplitude if i % 40 < 20 else -amplitude for i in range(n)]).tobytes()
-
-
-def noise(ms: int, amplitude: int = 300) -> bytes:
-    rng = random.Random(1)
-    n = SAMPLE_RATE * ms // 1000
-    return array("h", [rng.randint(-amplitude, amplitude) for _ in range(n)]).tobytes()
 
 
 def test_speech_between_silences_is_trimmed():

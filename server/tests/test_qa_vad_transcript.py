@@ -1,46 +1,24 @@
 """QA cases for VAD and transcript (docs/design/vad-transcript/qa/cases.md), fake providers only."""
 
 import asyncio
-import random
+import json
 import time
-from array import array
 
 import pytest
-from test_pipeline import SILENCE, SPEECH, Endpoint, pipeline_for, square, tts_wav
+from fakes import SILENCE, SPEECH, Endpoint, ListSocket, noise, pipeline_for, silence, tone, tts_wav
 
+from ota_server import pipeline as p
 from ota_server.protocol import (
     BYTES_PER_SECOND,
     MAX_CREDIT,
     MAX_TURN_AUDIO,
-    SAMPLE_RATE,
     TRANSCRIPT_MAX_CHARS,
 )
 from ota_server.session import DeviceSession
 
 
-class Socket(list):
-    async def send_json(self, msg: dict) -> None:
-        self.append(msg)
-
-    async def send_bytes(self, data: bytes) -> None:
-        self.append(data)
-
-
-def sil(ms: int) -> bytes:
-    return bytes(SAMPLE_RATE * ms // 1000 * 2)
-
-
-def tone(ms: int, amp: int = 8000) -> bytes:
-    return square(ms / 1000, amp)
-
-
-def noise(ms: int, amp: int = 300) -> bytes:
-    rng = random.Random(1)
-    return array("h", [rng.randint(-amp, amp) for _ in range(SAMPLE_RATE * ms // 1000)]).tobytes()
-
-
 def make(endpoint: Endpoint, turn: int = 1) -> DeviceSession:
-    session = DeviceSession(Socket(), pipeline_for(endpoint))  # type: ignore[arg-type]
+    session = DeviceSession(ListSocket(), pipeline_for(endpoint))  # type: ignore[arg-type]
     session.credit, session.open_turn, session.turn = MAX_CREDIT, turn, turn
     return session
 
@@ -67,25 +45,24 @@ def stt_calls(endpoint: Endpoint) -> int:
 
 
 def test_qa_002_margin_kept(monkeypatch):
-    from ota_server import pipeline as p
 
     sizes: list[int] = []
     real = p.pcm_to_wav
     monkeypatch.setattr(p, "pcm_to_wav", lambda pcm: sizes.append(len(pcm)) or real(pcm))
-    turn_msgs(Endpoint(), sil(5000) + tone(1000) + sil(5000))
+    turn_msgs(Endpoint(), silence(5000) + tone(1000) + silence(5000))
     assert BYTES_PER_SECOND < sizes[0] <= 1.5 * BYTES_PER_SECOND
 
 
 @pytest.mark.parametrize(
     ("qa", "pcm"),
     [
-        ("003", sil(3000)),
+        ("003", silence(3000)),
         ("004", noise(3000)),
         ("005", noise(30000)),
-        ("006", sil(1000) + tone(20, 20000) + sil(2000)),
-        ("007", sil(1000) + tone(250) + sil(1000)),
-        ("010", tone(100) + sil(1000) + tone(100) + sil(500)),
-        ("012", sil(500) + tone(1000, 400) + sil(500)),
+        ("006", silence(1000) + tone(20, 20000) + silence(2000)),
+        ("007", silence(1000) + tone(250) + silence(1000)),
+        ("010", tone(100) + silence(1000) + tone(100) + silence(500)),
+        ("012", silence(500) + tone(1000, 400) + silence(500)),
         ("013", b""),
     ],
 )
@@ -99,10 +76,10 @@ def test_qa_no_speech(qa, pcm):
 @pytest.mark.parametrize(
     "pcm",
     [
-        sil(1000) + tone(400) + sil(1000),  # 008
-        tone(200) + sil(1000) + tone(200),  # 009
-        sil(1000) + tone(1000, 1500) + sil(1000),  # 011
-        sil(1000) + tone(1000, 700) + sil(1000),  # 041
+        silence(1000) + tone(400) + silence(1000),  # 008
+        tone(200) + silence(1000) + tone(200),  # 009
+        silence(1000) + tone(1000, 1500) + silence(1000),  # 011
+        silence(1000) + tone(1000, 700) + silence(1000),  # 041
     ],
     ids=["008", "009", "011", "041"],
 )
@@ -117,9 +94,9 @@ def test_qa_012_repeat_works_and_session_stays_open():
 
     async def go() -> list:
         session = make(endpoint)
-        await session.reply(1, sil(500) + tone(1000, 400) + sil(500))
+        await session.reply(1, silence(500) + tone(1000, 400) + silence(500))
         session.open_turn = 2
-        await session.reply(2, sil(500) + tone(1000) + sil(500))
+        await session.reply(2, silence(500) + tone(1000) + silence(500))
         return list(session.ws)
 
     msgs = asyncio.run(go())
@@ -159,7 +136,6 @@ def test_qa_022_multibyte_transcript():
     text = ("привіт" * 50)[:250]
     msgs = turn_msgs(Endpoint(transcript=text, tts=tts_wav(0.05)), SPEECH)
     assert texts(msgs) == [text[:TRANSCRIPT_MAX_CHARS]]
-    import json
 
     wire = json.dumps(
         {"type": "transcript", "turn": 1, "text": texts(msgs)[0]}, ensure_ascii=False
@@ -184,7 +160,6 @@ def test_qa_025_flagged_no_transcript_no_chat():
 
 def test_qa_026_027_039_abort_during_stt_then_new_turn(monkeypatch):
     """The late STT of the aborted turn sends nothing; the next turn gets its own transcript."""
-    from ota_server import pipeline as p
 
     delays = {"n": 0}
     real = p.VoicePipeline.__call__
@@ -209,7 +184,7 @@ def test_qa_026_027_039_abort_during_stt_then_new_turn(monkeypatch):
     monkeypatch.setattr(p.VoicePipeline, "__call__", slow_call)
 
     async def go() -> list:
-        session = DeviceSession(Socket(), pipe)  # type: ignore[arg-type]
+        session = DeviceSession(ListSocket(), pipe)  # type: ignore[arg-type]
         await session.handle_text({"type": "listen.start"})
         session.audio.extend(SPEECH)
         await session.handle_text({"type": "listen.stop", "turn": 1})
@@ -231,7 +206,7 @@ def test_qa_026_027_039_abort_during_stt_then_new_turn(monkeypatch):
 
 
 def test_qa_028_closed_socket_at_transcript_send():
-    class Closed(Socket):
+    class Closed(ListSocket):
         async def send_json(self, msg: dict) -> None:
             if msg["type"] == "transcript":
                 raise ConnectionError("closed")
@@ -259,7 +234,7 @@ def test_qa_029_transcript_before_llm_error_and_none_after():
 
 def test_qa_030_repeated_listen_stop_same_turn_is_ignored():
     async def go() -> list:
-        session = DeviceSession(Socket(), pipeline_for(Endpoint(tts=tts_wav(0.05))))  # type: ignore[arg-type]
+        session = DeviceSession(ListSocket(), pipeline_for(Endpoint(tts=tts_wav(0.05))))  # type: ignore[arg-type]
         await session.handle_text({"type": "listen.start"})
         session.audio.extend(SPEECH)
         await session.handle_text({"type": "listen.stop", "turn": 1})
@@ -304,9 +279,9 @@ def test_qa_038_no_stt_without_listen_stop():
     endpoint = Endpoint()
 
     async def go() -> None:
-        session = DeviceSession(Socket(), pipeline_for(endpoint))  # type: ignore[arg-type]
+        session = DeviceSession(ListSocket(), pipeline_for(endpoint))  # type: ignore[arg-type]
         await session.handle_text({"type": "listen.start"})
-        session.handle_audio(bytes([1]) + (tone(1000) + sil(5000))[:3200])
+        session.handle_audio(bytes([1]) + (tone(1000) + silence(5000))[:3200])
         await asyncio.sleep(0.3)
         assert session.reply_task is None
 
@@ -314,9 +289,9 @@ def test_qa_038_no_stt_without_listen_stop():
     assert endpoint.calls == []
 
 
-def test_qa_033_echo_one_second_no_transcript():
+def test_qa_033_echo_half_second_no_transcript():
     async def go() -> list:
-        session = DeviceSession(Socket())  # type: ignore[arg-type]
+        session = DeviceSession(ListSocket())  # type: ignore[arg-type]
         session.credit, session.open_turn = MAX_CREDIT, 1
         await session.reply(1, SILENCE[: BYTES_PER_SECOND // 2])
         return list(session.ws)

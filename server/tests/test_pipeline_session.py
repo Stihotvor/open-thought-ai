@@ -2,24 +2,17 @@
 
 import asyncio
 
-from test_pipeline import SPEECH, Endpoint, pipeline_for, self_test_only, tts_wav
+from fakes import SPEECH, Endpoint, ListSocket, pipeline_for, self_test_only, tts_wav
 
 from ota_server.protocol import MAX_CREDIT, TRANSCRIPT_MAX_CHARS
 from ota_server.session import DeviceSession
-
-
-class FakeSocket(list):
-    async def send_json(self, msg: dict | bytes) -> None:
-        self.append(msg)
-
-    send_bytes = send_json
 
 
 def session_turn(endpoint: Endpoint) -> list:
     """Run one voice turn through a DeviceSession: the messages the device gets."""
 
     async def scenario() -> list:
-        session = DeviceSession(FakeSocket(), pipeline_for(endpoint))  # type: ignore[arg-type]
+        session = DeviceSession(ListSocket(), pipeline_for(endpoint))  # type: ignore[arg-type]
         session.credit, session.open_turn = MAX_CREDIT, 1
         await session.reply(1, SPEECH)
         return list(session.ws)
