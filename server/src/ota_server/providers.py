@@ -127,7 +127,7 @@ async def _lines(resp: httpx.Response) -> AsyncGenerator[str]:
         yield pending.decode("utf-8", "replace")
 
 
-def _flagged(result: dict) -> bool:
+def _flagged(result: dict[str, Any]) -> bool:
     """One moderation result: flagged when "flagged" is true or any category outside
     ALLOWED_CATEGORIES is true. An unknown shape raises ValueError, so the turn fails closed."""
     categories = result.get("categories")
@@ -169,6 +169,23 @@ def _sse_delta(data: str) -> str | None:
     if content and not isinstance(content, str):
         raise ProviderError(CHAT)
     return content or None
+
+
+async def _sse_deltas(lines: AsyncGenerator[str], budget: TurnBudget) -> AsyncGenerator[str]:
+    """The text deltas of a chat SSE stream, up to the end marker, within the turn deadline."""
+    while True:
+        try:
+            line = await asyncio.wait_for(anext(lines), budget.left())
+        except StopAsyncIteration:
+            raise ProviderError(CHAT) from None  # closed before the end marker
+        except TimeoutError:
+            raise DeadlineExceeded() from None
+        data = _sse_data(line)
+        if data == SSE_DONE:
+            return
+        delta = None if data is None else _sse_delta(data)
+        if delta is not None:
+            yield delta
 
 
 class ModelClient:
@@ -308,7 +325,7 @@ class ModelClient:
         }
         return await self._post(TTS, "/audio/speech", budget, json=body)
 
-    async def chat(self, messages: list[dict], budget: TurnBudget) -> AsyncGenerator[str]:
+    async def chat(self, messages: list[dict[str, Any]], budget: TurnBudget) -> AsyncGenerator[str]:
         """Stream text deltas. A 429 is retried only before the first byte arrives.
 
         Callers must close the stream: `async with contextlib.aclosing(client.chat(...))`.
@@ -320,23 +337,10 @@ class ModelClient:
 
         resp = await self._limited(CHAT, budget, call)
         lines = _lines(resp)
+        deltas = _sse_deltas(lines, budget)
         total = 0
         try:
-            while True:
-                try:
-                    line = await asyncio.wait_for(anext(lines), budget.left())
-                except StopAsyncIteration:
-                    raise ProviderError(CHAT) from None  # closed before the end marker
-                except TimeoutError:
-                    raise DeadlineExceeded() from None
-                data = _sse_data(line)
-                if data is None:
-                    continue
-                if data == SSE_DONE:
-                    return
-                delta = _sse_delta(data)
-                if delta is None:
-                    continue
+            async for delta in deltas:
                 total += len(delta)
                 if total > MAX_CHAT_TEXT:
                     raise ProviderError(CHAT)
@@ -348,5 +352,6 @@ class ModelClient:
         except httpx.HTTPError:
             raise ProviderError(CHAT) from None
         finally:
+            await deltas.aclose()
             await lines.aclose()
             await resp.aclose()

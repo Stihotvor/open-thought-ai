@@ -32,7 +32,7 @@ def pcm_to_wav(pcm: bytes) -> bytes:
     return out.getvalue()
 
 
-def _samples(raw: bytes) -> array:
+def _samples(raw: bytes) -> array[int]:
     samples = array("h")
     samples.frombytes(raw[: len(raw) - len(raw) % 2])
     if sys.byteorder == "big":
@@ -40,14 +40,14 @@ def _samples(raw: bytes) -> array:
     return samples
 
 
-def _to_bytes(samples: array) -> bytes:
+def _to_bytes(samples: array[int]) -> bytes:
     if sys.byteorder == "big":
         samples = array("h", samples)
         samples.byteswap()
     return samples.tobytes()
 
 
-def _downmix(samples: array, channels: int) -> array:
+def _downmix(samples: array[int], channels: int) -> array[int]:
     if channels == 1:
         return samples
     frames = len(samples) // channels
@@ -57,7 +57,7 @@ def _downmix(samples: array, channels: int) -> array:
     )
 
 
-def resample(samples: array, src_rate: int, dst_rate: int) -> array:
+def resample(samples: array[int], src_rate: int, dst_rate: int) -> array[int]:
     """Linear interpolation from src_rate to dst_rate."""
     if src_rate == dst_rate or not samples:
         return samples

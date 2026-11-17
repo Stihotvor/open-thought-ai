@@ -5,6 +5,7 @@ import contextlib
 import hashlib
 import hmac
 import logging
+from typing import Any
 
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 
@@ -51,7 +52,7 @@ def token_ok(header: str | None, expected_sha256: str) -> bool:
     return hmac.compare_digest(digest, expected_sha256)
 
 
-async def read_hello(ws: WebSocket) -> dict:
+async def read_hello(ws: WebSocket) -> dict[str, Any]:
     raw = await asyncio.wait_for(ws.receive_text(), timeout=HELLO_TIMEOUT)
     msg = parse_text(raw)
     if msg["type"] != "hello":

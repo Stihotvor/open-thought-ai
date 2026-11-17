@@ -2,6 +2,7 @@
 
 import json
 from enum import IntEnum
+from typing import Any
 
 PROTO_VERSION = 1
 
@@ -43,7 +44,7 @@ class ProtocolError(Exception):
     """The peer broke protocol v1. The connection closes with code 4400."""
 
 
-def parse_text(raw: str) -> dict:
+def parse_text(raw: str) -> dict[str, Any]:
     if len(raw.encode()) > MAX_TEXT_FRAME:
         raise ProtocolError("text frame too large")
     try:

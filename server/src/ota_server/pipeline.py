@@ -26,6 +26,7 @@ import contextlib
 import logging
 import re
 from collections.abc import AsyncGenerator
+from typing import Any
 
 from .audio import AudioError, pcm_to_wav, wav_to_pcm
 from .protocol import TurnError
@@ -164,10 +165,10 @@ class VoicePipeline:  # pylint: disable=too-few-public-methods  # a callable Rep
             log.warning("moderation flagged the %s", side)
             raise TurnError("moderated")
 
-    def messages(self, text: str, history: History) -> list[dict]:
+    def messages(self, text: str, history: History) -> list[dict[str, Any]]:
         """The chat input: system prompt, the newest remembered turns that fit in
         MAX_HISTORY_CHARS, then the new question."""
-        past: list[dict] = []
+        past: list[dict[str, Any]] = []
         size = 0
         for question, reply in reversed(history):
             size += len(question) + len(reply)
