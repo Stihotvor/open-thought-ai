@@ -7,6 +7,7 @@ import time
 from collections import deque
 from collections.abc import AsyncGenerator
 from dataclasses import replace
+from typing import Any
 
 from fastapi import WebSocket
 
@@ -33,6 +34,8 @@ log = logging.getLogger(__name__)
 
 PREFETCH = 2  # reply chunks made ahead of playback: TTS runs while the device plays
 END = None  # the queue item after the last chunk
+# Chunks, then END, or the exception that ended the source.
+ReplyQueue = asyncio.Queue[ReplyChunk | Exception | None]
 
 
 class CreditStalled(Exception):
@@ -63,12 +66,12 @@ class DeviceSession:  # pylint: disable=too-many-instance-attributes  # one devi
         self.audio = bytearray()
         self.credit = 0
         self.credit_changed = asyncio.Event()
-        self.reply_task: asyncio.Task | None = None
+        self.reply_task: asyncio.Task[None] | None = None
         # The turn whose reply the device still waits for: set when the reply starts,
         # cleared by its last message. An abort then owes the device a reply.end.
         self.open_turn: int | None = None
 
-    async def handle_text(self, msg: dict) -> None:
+    async def handle_text(self, msg: dict[str, Any]) -> None:
         match msg["type"]:
             case "listen.start":
                 if self.turn_limit is not None and self.turn_limit.reserve() > 0:
@@ -119,7 +122,7 @@ class DeviceSession:  # pylint: disable=too-many-instance-attributes  # one devi
             await self.finish({"type": "error", "turn": turn, "code": "no_speech"})
             return
         await self.ws.send_json({"type": "state", "turn": turn, "state": "thinking"})
-        queue: asyncio.Queue = asyncio.Queue(maxsize=PREFETCH)
+        queue: ReplyQueue = asyncio.Queue(maxsize=PREFETCH)
         producer = asyncio.create_task(self.produce(pcm, history, queue, self.notifier(turn)))
         played: list[ReplyChunk] = []
         try:
@@ -151,7 +154,7 @@ class DeviceSession:  # pylint: disable=too-many-instance-attributes  # one devi
         return notify
 
     async def produce(
-        self, pcm: bytes, history: History, queue: asyncio.Queue, notify: Notify
+        self, pcm: bytes, history: History, queue: ReplyQueue, notify: Notify
     ) -> None:
         """Put each reply chunk on the queue, then END, or the exception that ended it."""
         try:
@@ -163,7 +166,7 @@ class DeviceSession:  # pylint: disable=too-many-instance-attributes  # one devi
         except Exception as exc:  # pylint: disable=broad-exception-caught  # play() reports it
             await queue.put(exc)
 
-    async def play(self, turn: int, queue: asyncio.Queue, played: list[ReplyChunk]) -> None:
+    async def play(self, turn: int, queue: ReplyQueue, played: list[ReplyChunk]) -> None:
         clock = time.monotonic()
         sent, reason, speaking = 0, "done", False  # speaking: reply.start was sent
         while (item := await queue.get()) is not END:
@@ -202,7 +205,7 @@ class DeviceSession:  # pylint: disable=too-many-instance-attributes  # one devi
         await self.ws.send_json({"type": "reply.start", "turn": turn})
         return True
 
-    async def finish(self, msg: dict) -> None:
+    async def finish(self, msg: dict[str, Any]) -> None:
         """Send the last message of a turn. After it, an abort owes the device nothing.
         The turn is closed before the send, so an abort during the send adds no second end.
         If that abort cancels the send itself, the device gets no end message: it already
@@ -210,7 +213,7 @@ class DeviceSession:  # pylint: disable=too-many-instance-attributes  # one devi
         self.open_turn = None
         await self.ws.send_json(msg)
 
-    async def send_quietly(self, msg: dict) -> None:
+    async def send_quietly(self, msg: dict[str, Any]) -> None:
         """Send and ignore any error: used on abort, when the socket may be closed already."""
         with contextlib.suppress(Exception):
             await self.ws.send_json(msg)
