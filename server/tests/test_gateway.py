@@ -3,11 +3,15 @@
 import asyncio
 import hashlib
 import json
+from collections.abc import AsyncGenerator, Iterator
 from contextlib import ExitStack
+from typing import Any
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from model_env import ENDPOINTS
+from starlette.testclient import WebSocketTestSession
 from starlette.websockets import WebSocketDisconnect
 
 from ota_server import gateway
@@ -25,49 +29,54 @@ from ota_server.protocol import (
     TurnError,
 )
 from ota_server.ratelimit import TokenBucket
-from ota_server.reply import Notify, ReplyChunk, no_notify
+from ota_server.reply import History, Notify, ReplyChunk, ReplySource, no_notify
 
 TOKEN = "test-token-0123456789abcdef0123456789"
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
 
 
+class DeviceClient(TestClient):
+    app: FastAPI  # create_app() builds it: tests reach app.state
+    sockets: ExitStack  # closes every socket that connect() opened, before the app stops
+
+
 @pytest.fixture
-def client():
+def client() -> Iterator[DeviceClient]:
     app = create_app()
     digest = hashlib.sha256(TOKEN.encode()).hexdigest()
     settings = Settings(device_id="test", device_token_sha256=digest)
     app.dependency_overrides[get_settings] = lambda: settings
     get_settings.cache_clear()
     gateway.slot = gateway.SessionSlot()  # no session left over from an earlier test
-    with TestClient(app) as c, ExitStack() as sockets:
-        c.sockets = sockets  # closes every socket that connect() opened, before the app stops
+    with DeviceClient(app) as c, ExitStack() as sockets:
+        c.sockets = sockets
         yield c
 
 
 @pytest.fixture(autouse=True)
-def env(monkeypatch):
+def env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OTA_DEVICE_ID", "test")
     monkeypatch.setenv("OTA_DEVICE_TOKEN_SHA256", hashlib.sha256(TOKEN.encode()).hexdigest())
 
 
-def connect(client):
+def connect(client: DeviceClient) -> WebSocketTestSession:
     ws = client.sockets.enter_context(client.websocket_connect("/v1/device", headers=AUTH))
     ws.send_json({"type": "hello", "proto": 1, "fw": "test", "device_id": "test"})
     assert ws.receive_json()["type"] == "hello"
     return ws
 
 
-def close_code(ws) -> int:
+def close_code(ws: WebSocketTestSession) -> int:
     with pytest.raises(WebSocketDisconnect) as exc:
         ws.receive_text()
     return exc.value.code
 
 
-def speak(ws, seconds: float) -> int:
+def speak(ws: WebSocketTestSession, seconds: float) -> int:
     ws.send_json({"type": "listen.start"})
     start = ws.receive_json()
     assert start["type"] == "turn.start"
-    turn = start["turn"]
+    turn: int = start["turn"]
     pcm = b"\x01\x00" * int(seconds * BYTES_PER_SECOND / 2)
     for i in range(0, len(pcm), AUDIO_CHUNK):
         ws.send_bytes(bytes([turn]) + pcm[i : i + AUDIO_CHUNK])
@@ -75,30 +84,30 @@ def speak(ws, seconds: float) -> int:
     return turn
 
 
-def test_bad_token_closes_4401(client):
+def test_bad_token_closes_4401(client: DeviceClient) -> None:
     with client.websocket_connect("/v1/device", headers={"Authorization": "Bearer nope"}) as ws:
         assert close_code(ws) == Close.BAD_TOKEN
 
 
-def test_wrong_proto_closes_4426(client):
+def test_wrong_proto_closes_4426(client: DeviceClient) -> None:
     with client.websocket_connect("/v1/device", headers=AUTH) as ws:
         ws.send_json({"type": "hello", "proto": 2})
         assert close_code(ws) == Close.BAD_VERSION
 
 
-def test_first_message_must_be_hello(client):
+def test_first_message_must_be_hello(client: DeviceClient) -> None:
     with client.websocket_connect("/v1/device", headers=AUTH) as ws:
         ws.send_json({"type": "listen.start"})
         assert close_code(ws) == Close.PROTOCOL
 
 
-def test_oversized_text_frame_closes_4400(client):
+def test_oversized_text_frame_closes_4400(client: DeviceClient) -> None:
     ws = connect(client)
     ws.send_text('{"type":"x","pad":"' + "a" * 2000 + '"}')
     assert close_code(ws) == Close.PROTOCOL
 
 
-def test_echo_round_trip_with_credit(client):
+def test_echo_round_trip_with_credit(client: DeviceClient) -> None:
     ws = connect(client)
     turn = speak(ws, 2.0)
     # Credit sent before reply.start must count. The start credit alone is too small.
@@ -120,13 +129,13 @@ def test_echo_round_trip_with_credit(client):
     assert '"reply.end"' in msg["text"] and '"done"' in msg["text"]
 
 
-def test_short_audio_gives_no_speech(client):
+def test_short_audio_gives_no_speech(client: DeviceClient) -> None:
     ws = connect(client)
     turn = speak(ws, 0.1)
     assert ws.receive_json() == {"type": "error", "turn": turn, "code": "no_speech"}
 
 
-def test_too_many_turn_starts_are_refused(client):
+def test_too_many_turn_starts_are_refused(client: DeviceClient) -> None:
     gateway.slot.turns = TokenBucket(rate=1 / 60, burst=2)  # 2 turns, then one per minute
     ws = connect(client)
     for _ in range(2):
@@ -136,7 +145,7 @@ def test_too_many_turn_starts_are_refused(client):
     assert ws.receive_json() == {"type": "error", "turn": 2, "code": "too_many_turns"}
 
 
-def test_turn_limit_survives_reconnect(client):
+def test_turn_limit_survives_reconnect(client: DeviceClient) -> None:
     gateway.slot.turns = TokenBucket(rate=1 / 60, burst=1)
     first = connect(client)
     first.send_json({"type": "listen.start"})
@@ -146,8 +155,10 @@ def test_turn_limit_survives_reconnect(client):
     assert second.receive_json()["code"] == "too_many_turns"
 
 
-def failing_source(error: Exception, chunks: int = 0):
-    async def source(pcm: bytes, _history, *, notify: Notify = no_notify):
+def failing_source(error: Exception, chunks: int = 0) -> ReplySource:
+    async def source(
+        pcm: bytes, _history: History, *, notify: Notify = no_notify
+    ) -> AsyncGenerator[ReplyChunk]:
         for _ in range(chunks):
             yield ReplyChunk(pcm[:AUDIO_CHUNK])
         raise error
@@ -159,7 +170,7 @@ def failing_source(error: Exception, chunks: int = 0):
     ("error", "code"),
     [(TurnError("stt_failed"), "stt_failed"), (RuntimeError("bug"), "internal")],
 )
-def test_failed_turn_sends_error_code(client, error, code):
+def test_failed_turn_sends_error_code(client: DeviceClient, error: Exception, code: str) -> None:
     client.app.state.reply_source = failing_source(error)
     ws = connect(client)
     turn = speak(ws, 0.5)
@@ -170,7 +181,7 @@ def test_failed_turn_sends_error_code(client, error, code):
 VOICE_ENV = {**ENDPOINTS, "OTA_MODERATION_MODEL": "mod-m", "OTA_PIPELINE": "voice"}
 
 
-def voice_env(monkeypatch, **extra):
+def voice_env(monkeypatch: pytest.MonkeyPatch, **extra: str) -> None:
     for name, value in {**VOICE_ENV, **extra}.items():
         monkeypatch.setenv(name, value)
     get_settings.cache_clear()
@@ -183,7 +194,9 @@ def voice_env(monkeypatch, **extra):
         ({"OTA_TTS_MODEL": ""}, "needs these roles: tts"),
     ],
 )
-def test_voice_pipeline_refuses_to_start(monkeypatch, extra, match):
+def test_voice_pipeline_refuses_to_start(
+    monkeypatch: pytest.MonkeyPatch, extra: dict[str, str], match: str
+) -> None:
     voice_env(monkeypatch, **extra)
     try:
         with pytest.raises(ConfigError, match=match), TestClient(create_app()):
@@ -192,7 +205,7 @@ def test_voice_pipeline_refuses_to_start(monkeypatch, extra, match):
         get_settings.cache_clear()
 
 
-def test_voice_pipeline_starts_with_all_roles(monkeypatch):
+def test_voice_pipeline_starts_with_all_roles(monkeypatch: pytest.MonkeyPatch) -> None:
     voice_env(monkeypatch)
     try:
         app = create_app()
@@ -202,8 +215,10 @@ def test_voice_pipeline_starts_with_all_roles(monkeypatch):
         get_settings.cache_clear()
 
 
-def test_abort_while_thinking_ends_the_reply(client):
-    async def slow(pcm: bytes, _history, *, notify: Notify = no_notify):
+def test_abort_while_thinking_ends_the_reply(client: DeviceClient) -> None:
+    async def slow(
+        pcm: bytes, _history: History, *, notify: Notify = no_notify
+    ) -> AsyncGenerator[ReplyChunk]:
         await asyncio.Event().wait()  # never answers
         yield ReplyChunk(pcm)
 
@@ -215,11 +230,12 @@ def test_abort_while_thinking_ends_the_reply(client):
     assert ws.receive_json() == {"type": "reply.end", "turn": turn, "reason": "abort"}
 
 
-def test_long_reply_ends_with_cap(client, monkeypatch):
+def test_long_reply_ends_with_cap(client: DeviceClient, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(session_module, "SPEECH_CAP", AUDIO_CHUNK)  # 100 ms for a fast test
     ws = connect(client)
     turn = speak(ws, 0.5)  # echo returns 500 ms
-    msgs, received = [], b""
+    msgs: list[str] = []
+    received = b""
     while True:
         msg = ws.receive()
         if msg.get("bytes"):
@@ -233,7 +249,7 @@ def test_long_reply_ends_with_cap(client, monkeypatch):
     assert len(received) == AUDIO_CHUNK  # cut exactly at the cap
 
 
-def test_30_s_of_audio_starts_the_reply(client):
+def test_30_s_of_audio_starts_the_reply(client: DeviceClient) -> None:
     ws = connect(client)
     ws.send_json({"type": "listen.start"})
     turn = ws.receive_json()["turn"]
@@ -243,14 +259,15 @@ def test_30_s_of_audio_starts_the_reply(client):
     assert ws.receive_json() == {"type": "state", "turn": turn, "state": "thinking"}
 
 
-def test_new_connection_replaces_old(client):
+def test_new_connection_replaces_old(client: DeviceClient) -> None:
     first = connect(client)
     connect(client)
     assert close_code(first) == Close.REPLACED
 
 
-def reply_messages(ws) -> tuple[list[dict], bytes]:
-    msgs, received = [], b""
+def reply_messages(ws: WebSocketTestSession) -> tuple[list[dict[str, Any]], bytes]:
+    msgs: list[dict[str, Any]] = []
+    received = b""
     while not msgs or msgs[-1]["type"] not in ("reply.end", "error"):
         msg = ws.receive()
         if msg.get("bytes"):
@@ -260,7 +277,7 @@ def reply_messages(ws) -> tuple[list[dict], bytes]:
     return msgs, received
 
 
-def test_failure_after_audio_ends_the_reply_with_error(client):
+def test_failure_after_audio_ends_the_reply_with_error(client: DeviceClient) -> None:
     client.app.state.reply_source = failing_source(TurnError("tts_failed"), chunks=3)
     ws = connect(client)
     turn = speak(ws, 0.5)
@@ -270,10 +287,12 @@ def test_failure_after_audio_ends_the_reply_with_error(client):
     assert len(received) == 3 * AUDIO_CHUNK  # queued chunks play before the error ends it
 
 
-def test_abort_while_speaking_closes_the_source(client):
+def test_abort_while_speaking_closes_the_source(client: DeviceClient) -> None:
     closed = asyncio.Event()
 
-    async def endless(pcm: bytes, _history, *, notify: Notify = no_notify):
+    async def endless(
+        pcm: bytes, _history: History, *, notify: Notify = no_notify
+    ) -> AsyncGenerator[ReplyChunk]:
         try:
             while True:
                 yield ReplyChunk(pcm[:AUDIO_CHUNK])
@@ -292,11 +311,15 @@ def test_abort_while_speaking_closes_the_source(client):
     assert closed.is_set()
 
 
-def test_chunks_stream_in_order_and_the_cap_stops_the_source(client, monkeypatch):
+def test_chunks_stream_in_order_and_the_cap_stops_the_source(
+    client: DeviceClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setattr(session_module, "SPEECH_CAP", 2 * AUDIO_CHUNK)
-    made = []
+    made: list[int] = []
 
-    async def chunks(pcm: bytes, _history, *, notify: Notify = no_notify):
+    async def chunks(
+        pcm: bytes, _history: History, *, notify: Notify = no_notify
+    ) -> AsyncGenerator[ReplyChunk]:
         for n in range(1, 10):
             made.append(n)
             yield ReplyChunk(bytes([n, 0]) * (AUDIO_CHUNK // 2))
@@ -311,7 +334,9 @@ def test_chunks_stream_in_order_and_the_cap_stops_the_source(client, monkeypatch
     assert len(made) <= 2 + session_module.PREFETCH + 2
 
 
-def test_a_device_without_credit_ends_the_reply(client, monkeypatch):
+def test_a_device_without_credit_ends_the_reply(
+    client: DeviceClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setattr(session_module, "CREDIT_TIMEOUT", 0.2)
     ws = connect(client)
     turn = speak(ws, 2.0)  # echo: 64 000 bytes, more than the start credit, no credit after it

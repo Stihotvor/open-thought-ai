@@ -5,6 +5,8 @@ import json
 import random
 import wave
 from array import array
+from collections.abc import Callable
+from typing import Any
 
 import httpx
 from fake_endpoint import make_client
@@ -66,24 +68,24 @@ class Endpoint:
 
     def __init__(
         self,
-        transcript="Jak się masz?",
-        reply="Dobrze. A ty?",
-        tts=None,
-        fail=None,
-        flag=self_test_only,
-        result=None,
-        moderation_status=None,
-        result_count_delta=0,
-        from_call=2,
-    ):
+        transcript: str = "Jak się masz?",
+        reply: str = "Dobrze. A ty?",
+        tts: bytes | None = None,
+        fail: dict[str, int] | None = None,
+        flag: Callable[[str], bool] = self_test_only,
+        result: dict[str, Any] | None = None,
+        moderation_status: int | None = None,
+        result_count_delta: int = 0,
+        from_call: int = 2,
+    ) -> None:
         self.transcript, self.reply, self.tts, self.fail = transcript, reply, tts, fail or {}
         self.flag, self.result, self.moderation_status = flag, result, moderation_status
         self.result_count_delta, self.from_call = result_count_delta, from_call
         self.calls: list[str] = []
         self.moderated: list[list[str]] = []  # the inputs of each moderation call
-        self.chats: list[list[dict]] = []  # the messages of each chat call
+        self.chats: list[list[dict[str, Any]]] = []  # the messages of each chat call
 
-    def verdict(self, text: str) -> dict:
+    def verdict(self, text: str) -> dict[str, Any]:
         return {"categories": {**CLEAN, "selfharm": self.flag(text)}}
 
     def moderation(self, req: httpx.Request) -> httpx.Response:
@@ -136,10 +138,10 @@ def noise(ms: int, amplitude: int = 300) -> bytes:
     return array("h", [rng.randint(-amplitude, amplitude) for _ in range(n)]).tobytes()
 
 
-class ListSocket(list):
+class ListSocket(list[Any]):
     """A fake WebSocket that keeps every sent message in order."""
 
-    async def send_json(self, msg: dict) -> None:
+    async def send_json(self, msg: dict[str, Any]) -> None:
         self.append(msg)
 
     async def send_bytes(self, data: bytes) -> None:
