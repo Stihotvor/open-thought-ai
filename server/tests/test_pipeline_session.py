@@ -1,6 +1,7 @@
 """A voice turn through DeviceSession with VoicePipeline: what the device gets, in order."""
 
 import asyncio
+from typing import Any
 
 from fakes import SPEECH, Endpoint, ListSocket, pipeline_for, self_test_only, tts_wav
 
@@ -8,10 +9,10 @@ from ota_server.protocol import MAX_CREDIT, TRANSCRIPT_MAX_CHARS
 from ota_server.session import DeviceSession
 
 
-def session_turn(endpoint: Endpoint) -> list:
+def session_turn(endpoint: Endpoint) -> list[Any]:
     """Run one voice turn through a DeviceSession: the messages the device gets."""
 
-    async def scenario() -> list:
+    async def scenario() -> list[Any]:
         session = DeviceSession(ListSocket(), pipeline_for(endpoint))  # type: ignore[arg-type]
         session.credit, session.open_turn = MAX_CREDIT, 1
         await session.reply(1, SPEECH)
@@ -20,7 +21,7 @@ def session_turn(endpoint: Endpoint) -> list:
     return asyncio.run(scenario())
 
 
-def kinds(sent: list) -> list[str]:
+def kinds(sent: list[Any]) -> list[str]:
     """Message kinds in order, with each run of audio frames as one "audio"."""
     out: list[str] = []
     for msg in sent:
@@ -31,11 +32,11 @@ def kinds(sent: list) -> list[str]:
     return out
 
 
-def transcripts(sent: list) -> list[str]:
+def transcripts(sent: list[Any]) -> list[str]:
     return [m["text"] for m in sent if isinstance(m, dict) and m["type"] == "transcript"]
 
 
-def test_device_message_order():
+def test_device_message_order() -> None:
     sent = session_turn(Endpoint(tts=tts_wav(0.05)))
     order = ["state thinking", "transcript", "state speaking", "reply.start", "audio"]
     assert kinds(sent) == [*order, "reply.end"]
@@ -43,7 +44,7 @@ def test_device_message_order():
     assert all(len(text) <= TRANSCRIPT_MAX_CHARS for text in transcripts(sent))
 
 
-def test_long_transcript_goes_whole_to_chat_and_cut_to_the_device():
+def test_long_transcript_goes_whole_to_chat_and_cut_to_the_device() -> None:
     text = "a" * 299 + "."
     endpoint = Endpoint(transcript=text, tts=tts_wav(0.05))
     sent = session_turn(endpoint)
@@ -51,7 +52,7 @@ def test_long_transcript_goes_whole_to_chat_and_cut_to_the_device():
     assert transcripts(sent) == [text[:TRANSCRIPT_MAX_CHARS]]
 
 
-def test_flagged_transcript_sends_no_transcript():
+def test_flagged_transcript_sends_no_transcript() -> None:
     endpoint = Endpoint(flag=lambda text: self_test_only(text) or "masz" in text)
     sent = session_turn(endpoint)
     assert {"type": "error", "turn": 1, "code": "moderated"} in sent

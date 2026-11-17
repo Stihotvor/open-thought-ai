@@ -1,4 +1,6 @@
 import asyncio
+from collections.abc import Awaitable, Callable, Coroutine
+from typing import Any
 
 import pytest
 
@@ -24,21 +26,23 @@ class FakeClock:
         self.now += seconds
 
 
-def run(coro):
+def run[T](coro: Coroutine[Any, Any, T]) -> T:
     return asyncio.run(coro)
 
 
-def make(rate=1.0, burst=1, deadline=8.0):
+def make(
+    rate: float = 1.0, burst: int = 1, deadline: float = 8.0
+) -> tuple[FakeClock, TokenBucket, TurnBudget]:
     clock = FakeClock()
     return clock, TokenBucket(rate, burst, clock), TurnBudget(clock=clock, deadline_s=deadline)
 
 
-def answers(*results):
+def answers(*results: object) -> tuple[Callable[[], Awaitable[object]], list[int]]:
     """A fake call: each item is a value to return or an exception to raise."""
     items = list(results)
-    calls = []
+    calls: list[int] = []
 
-    async def call():
+    async def call() -> object:
         calls.append(1)
         item = items.pop(0)
         if isinstance(item, Exception):
@@ -48,7 +52,7 @@ def answers(*results):
     return call, calls
 
 
-def test_bucket_reserve_returns_wait():
+def test_bucket_reserve_returns_wait() -> None:
     clock, bucket, _ = make(rate=2.0, burst=1)
     assert bucket.reserve() == 0
     assert bucket.reserve() == pytest.approx(0.5)
@@ -57,20 +61,20 @@ def test_bucket_reserve_returns_wait():
 
 
 @pytest.mark.parametrize("rate", [0, -1, float("nan"), float("inf")])
-def test_bucket_rejects_bad_rate(rate):
+def test_bucket_rejects_bad_rate(rate: float) -> None:
     with pytest.raises(ValueError):
         TokenBucket(rate, 1)
 
 
-def test_concurrent_callers_do_not_overdraw():
+def test_concurrent_callers_do_not_overdraw() -> None:
     clock, bucket, budget = make(rate=1.0, burst=1)
-    starts = []
+    starts: list[float] = []
 
-    async def call():
+    async def call() -> str:
         starts.append(clock.now)
         return "ok"
 
-    async def scenario():
+    async def scenario() -> None:
         await asyncio.gather(
             *(limited_call(call, bucket, budget, sleep=clock.sleep) for _ in range(3))
         )
@@ -80,14 +84,14 @@ def test_concurrent_callers_do_not_overdraw():
     assert starts[0] == 0 and starts[1] > 0 and starts[2] > starts[1]  # spaced, not a burst
 
 
-def test_success_without_retry():
+def test_success_without_retry() -> None:
     clock, bucket, budget = make()
     call, calls = answers("ok")
     assert run(limited_call(call, bucket, budget, sleep=clock.sleep)) == "ok"
     assert len(calls) == 1
 
 
-def test_429_backoff_then_success():
+def test_429_backoff_then_success() -> None:
     clock, bucket, budget = make(rate=10.0)
     call, calls = answers(Retryable429(), "ok")
     result = run(limited_call(call, bucket, budget, sleep=clock.sleep, rand=lambda: 0.5))
@@ -97,17 +101,17 @@ def test_429_backoff_then_success():
 
 
 @pytest.mark.parametrize(("r", "expected"), [(0.0, 0.375), (1.0, 0.625)])
-def test_jitter_stays_within_25_percent(r, expected):
+def test_jitter_stays_within_25_percent(r: float, expected: float) -> None:
     clock, bucket, budget = make(rate=10.0)
     call, _ = answers(Retryable429(), "ok")
     run(limited_call(call, bucket, budget, sleep=clock.sleep, rand=lambda: r))
     assert clock.now == pytest.approx(expected)
 
 
-def test_two_retries_then_rate_limited():
+def test_two_retries_then_rate_limited() -> None:
     clock, bucket, budget = make(rate=10.0)
     call, calls = answers(Retryable429(), Retryable429(), Retryable429())
-    seen = []
+    seen: list[int] = []
     with pytest.raises(RateLimited):
         run(
             limited_call(
@@ -118,7 +122,7 @@ def test_two_retries_then_rate_limited():
     assert seen == [0, 1, 2]
 
 
-def test_retry_after_longer_than_deadline_fails_at_once():
+def test_retry_after_longer_than_deadline_fails_at_once() -> None:
     clock, bucket, budget = make(deadline=8.0)
     call, calls = answers(Retryable429(retry_after=30), "ok")
     with pytest.raises(RateLimited):
@@ -127,7 +131,7 @@ def test_retry_after_longer_than_deadline_fails_at_once():
     assert clock.now == 0
 
 
-def test_token_wait_longer_than_deadline_fails_and_gives_token_back():
+def test_token_wait_longer_than_deadline_fails_and_gives_token_back() -> None:
     clock, bucket, budget = make(rate=0.1, burst=1, deadline=8.0)
     bucket.reserve()  # next token in 10 s, more than the deadline
     call, calls = answers("ok")
@@ -137,7 +141,7 @@ def test_token_wait_longer_than_deadline_fails_and_gives_token_back():
     assert bucket.tokens == pytest.approx(0)
 
 
-def test_expired_budget_raises_deadline():
+def test_expired_budget_raises_deadline() -> None:
     clock, bucket, budget = make(deadline=1.0)
     clock.now = 2.0
     call, calls = answers("ok")
@@ -146,7 +150,7 @@ def test_expired_budget_raises_deadline():
     assert calls == []
 
 
-def test_other_errors_are_not_retried():
+def test_other_errors_are_not_retried() -> None:
     clock, bucket, budget = make()
     call, calls = answers(ValueError("boom"))
     with pytest.raises(ValueError):
@@ -154,8 +158,8 @@ def test_other_errors_are_not_retried():
     assert len(calls) == 1
 
 
-def test_abort_cancels_backoff():
-    async def scenario():
+def test_abort_cancels_backoff() -> None:
+    async def scenario() -> list[int]:
         bucket = TokenBucket(10.0, 1)
         budget = TurnBudget()
         call, calls = answers(Retryable429(retry_after=5), "ok")
@@ -169,8 +173,8 @@ def test_abort_cancels_backoff():
     assert len(run(scenario())) == 1
 
 
-def test_abort_during_token_wait_gives_token_back():
-    async def scenario():
+def test_abort_during_token_wait_gives_token_back() -> None:
+    async def scenario() -> tuple[TokenBucket, list[int]]:
         bucket = TokenBucket(1.0, 1)
         bucket.reserve()  # next token in 1 s
         call, calls = answers("ok")
@@ -187,13 +191,13 @@ def test_abort_during_token_wait_gives_token_back():
     assert bucket.tokens == pytest.approx(0.05, abs=0.05)
 
 
-def test_cancel_never_exceeds_burst():
+def test_cancel_never_exceeds_burst() -> None:
     _, bucket, _ = make(burst=2)
     bucket.cancel()
     assert bucket.tokens == 2
 
 
-def test_call_caps_per_turn():
+def test_call_caps_per_turn() -> None:
     budget = TurnBudget(max_calls={"a": 2})
     budget.count_call("a")
     budget.count_call("a")
@@ -202,7 +206,7 @@ def test_call_caps_per_turn():
     budget.count_call("b")  # no cap for this kind
 
 
-def test_extend_moves_the_deadline_later():
+def test_extend_moves_the_deadline_later() -> None:
     now = [0.0]
     budget = TurnBudget(clock=lambda: now[0], deadline_s=8.0)
     now[0] = 10.0
