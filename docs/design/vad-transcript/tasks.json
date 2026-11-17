@@ -1,0 +1,46 @@
+{
+  "tasks": [
+    {
+      "id": "T1",
+      "title": "Add vad.py trim_speech with unit tests",
+      "size": "M",
+      "depends_on": [],
+      "done_when": "cd server && pytest tests/test_vad.py passes: 1 s silence + 1 s tone + 1 s silence trims to <= 1.5 s (M1); 3 s silence and 3 s noise (amp <= 300) return None (M2); 250 ms speech returns None, 400 ms returns audio (M3); 30 s audio runs in <= 50 ms, best of 3 runs (M4); odd byte count raises ValueError",
+      "files": [
+        "server/src/ota_server/vad.py",
+        "server/tests/test_vad.py"
+      ],
+      "agent": "py-coder"
+    },
+    {
+      "id": "T2",
+      "title": "Add notify port: Notify type, ReplySource Protocol, echo and fakes, session transcript send",
+      "size": "M",
+      "depends_on": [],
+      "done_when": "cd server && pytest tests/test_session.py passes, incl. a new test: a fake source calling notify('x') makes the device get a transcript {turn, text<=200 chars} message only while the turn is open, none after abort; a 300-char notify gives a 200-char transcript; echo sends no transcript; VoicePipeline.__call__ gets the keyword-only notify parameter with the no-op default (signature only) so it still matches ReplySource; echo tests unchanged; mypy and ruff report 0 errors",
+      "files": [
+        "server/src/ota_server/reply.py",
+        "server/src/ota_server/session.py",
+        "server/tests/test_session.py",
+        "server/tests/test_gateway.py",
+        "server/src/ota_server/pipeline.py"
+      ],
+      "agent": "py-coder"
+    },
+    {
+      "id": "T3",
+      "title": "Wire VAD and notify into pipeline, update docstring",
+      "size": "M",
+      "depends_on": [
+        "T1",
+        "T2"
+      ],
+      "done_when": "cd server && pytest passes, incl. new pipeline tests: silence/noise gives no_speech with 0 fake-STT calls (M2); ValueError gives internal; STT gets trimmed audio; device order is state thinking, transcript, state speaking, reply.start, audio, reply.end with text <= 200 (M5); transcript moderation flag gives error moderated and no transcript (E6); empty STT text gives no_speech and no notify (E5); a long STT text reaches chat in full (E4); full suite, ruff and mypy report 0 errors (M6)",
+      "files": [
+        "server/src/ota_server/pipeline.py",
+        "server/tests/test_pipeline.py"
+      ],
+      "agent": "py-coder"
+    }
+  ]
+}

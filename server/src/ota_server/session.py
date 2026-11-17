@@ -20,12 +20,13 @@ from .protocol import (
     MIN_SPEECH,
     SPEECH_CAP,
     START_CREDIT,
+    TRANSCRIPT_MAX_CHARS,
     ProtocolError,
     TurnError,
     split_audio,
 )
 from .ratelimit import TokenBucket
-from .reply import History, ReplyChunk, ReplySource
+from .reply import History, Notify, ReplyChunk, ReplySource, no_notify
 
 log = logging.getLogger(__name__)
 
@@ -38,7 +39,9 @@ class CreditStalled(Exception):
     """The device gave no audio credit for CREDIT_TIMEOUT seconds."""
 
 
-async def echo(pcm: bytes, _history: History) -> AsyncGenerator[ReplyChunk]:
+async def echo(
+    pcm: bytes, _history: History, *, notify: Notify = no_notify
+) -> AsyncGenerator[ReplyChunk]:
     yield ReplyChunk(pcm)
 
 
@@ -111,12 +114,13 @@ class DeviceSession:  # pylint: disable=too-many-instance-attributes  # one devi
         self.reply_task = asyncio.create_task(self.reply(self.turn, bytes(self.audio), history))
 
     async def reply(self, turn: int, pcm: bytes, history: History = ()) -> None:
+        # A cheap length pre-filter: MIN_SPEECH_MS in vad.py is the real speech check.
         if len(pcm) < MIN_SPEECH:
             await self.finish({"type": "error", "turn": turn, "code": "no_speech"})
             return
         await self.ws.send_json({"type": "state", "turn": turn, "state": "thinking"})
         queue: asyncio.Queue = asyncio.Queue(maxsize=PREFETCH)
-        producer = asyncio.create_task(self.produce(pcm, history, queue))
+        producer = asyncio.create_task(self.produce(pcm, history, queue, self.notifier(turn)))
         played: list[ReplyChunk] = []
         try:
             await self.play(turn, queue, played)
@@ -133,10 +137,25 @@ class DeviceSession:  # pylint: disable=too-many-instance-attributes  # one devi
         if texts:
             self.history.append((played[0].question, " ".join(texts)))
 
-    async def produce(self, pcm: bytes, history: History, queue: asyncio.Queue) -> None:
+    def notifier(self, turn: int) -> Notify:
+        """The source's Notify for this turn: it sends the transcript while the turn is open."""
+
+        async def notify(text: str) -> None:
+            # Not after an abort or the turn's last message. It does not stop a call after the
+            # first chunk: ReplySource requires `notify` before the first chunk.
+            if self.open_turn == turn:
+                await self.ws.send_json(
+                    {"type": "transcript", "turn": turn, "text": text[:TRANSCRIPT_MAX_CHARS]}
+                )
+
+        return notify
+
+    async def produce(
+        self, pcm: bytes, history: History, queue: asyncio.Queue, notify: Notify
+    ) -> None:
         """Put each reply chunk on the queue, then END, or the exception that ended it."""
         try:
-            source = self.reply_source(pcm, history)
+            source = self.reply_source(pcm, history, notify=notify)
             async with contextlib.aclosing(source) as chunks:
                 async for chunk in chunks:
                     await queue.put(chunk)

@@ -14,6 +14,7 @@ MAX_AUDIO_FRAME = 3201  # 1 byte turn id + 100 ms of PCM
 AUDIO_CHUNK = 3200  # PCM bytes per frame the server sends (100 ms)
 MAX_TURN_AUDIO = 30 * BYTES_PER_SECOND
 MIN_SPEECH = int(0.3 * BYTES_PER_SECOND)
+TRANSCRIPT_MAX_CHARS = 200  # docs/protocol.md `transcript`
 
 START_CREDIT = 48000  # 1.5 s: the device buffer fills ahead and rides out a Wi-Fi stall
 MAX_CREDIT = 48 * 1024  # the device jitter buffer: credit above it is not real

@@ -7,9 +7,9 @@ import time
 import pytest
 
 from ota_server import session as session_module
-from ota_server.protocol import AUDIO_CHUNK, MAX_CREDIT, MAX_LEAD_SECONDS
-from ota_server.reply import ReplyChunk
-from ota_server.session import CreditStalled, DeviceSession
+from ota_server.protocol import AUDIO_CHUNK, MAX_CREDIT, MAX_LEAD_SECONDS, TRANSCRIPT_MAX_CHARS
+from ota_server.reply import Notify, ReplyChunk, ReplySource, no_notify
+from ota_server.session import CreditStalled, DeviceSession, echo
 
 
 class FakeSocket:
@@ -97,7 +97,7 @@ def test_abort_during_the_last_message_adds_no_second_end():
 def spoken_reply(texts: list[str], **session_args) -> DeviceSession:
     """Run one reply of 100 ms chunks through a session with plenty of credit."""
 
-    async def source(pcm: bytes, history):
+    async def source(pcm: bytes, history, *, notify: Notify = no_notify):
         for text in texts:
             yield ReplyChunk(b"\0" * AUDIO_CHUNK, text, "question")
 
@@ -137,7 +137,7 @@ def test_history_turns_is_a_sliding_window():
 
 def test_an_aborted_reply_keeps_only_the_played_chunks():
     async def scenario() -> DeviceSession:
-        async def source(pcm: bytes, history):
+        async def source(pcm: bytes, history, *, notify: Notify = no_notify):
             yield ReplyChunk(b"\0" * AUDIO_CHUNK, "One.", "question")
             yield ReplyChunk(b"\0" * AUDIO_CHUNK * 50, "Long.", "question")
 
@@ -155,3 +155,70 @@ def test_an_aborted_reply_keeps_only_the_played_chunks():
 
 def test_echo_turns_leave_no_history():
     assert not spoken_reply([""]).history
+
+
+def reply_messages(source: ReplySource = echo) -> list[dict]:
+    """Run one reply with plenty of credit: the text messages the device gets."""
+
+    async def scenario() -> list[dict]:
+        socket = FakeSocket()
+        session = DeviceSession(socket, source)  # type: ignore[arg-type]
+        session.credit = MAX_CREDIT
+        session.open_turn = 1
+        await session.reply(1, b"\0" * AUDIO_CHUNK * 4)
+        return [m for m in socket.sent if isinstance(m, dict)]
+
+    return asyncio.run(scenario())
+
+
+def transcript_turn(text: str) -> list[dict]:
+    """Run one reply whose source calls notify(text), then yields reply audio."""
+
+    async def source(pcm: bytes, history, *, notify: Notify = no_notify):
+        await notify(text)
+        yield ReplyChunk(b"\0" * AUDIO_CHUNK, "Hi.", text)
+
+    return reply_messages(source)
+
+
+def test_transcript_is_sent_before_the_reply():
+    msgs = transcript_turn("hello")
+    assert {"type": "transcript", "turn": 1, "text": "hello"} in msgs
+    types = [m["type"] for m in msgs]
+    assert types.index("transcript") < types.index("reply.start")
+
+
+def test_transcript_text_is_truncated():
+    msgs = transcript_turn("a" * 300)
+    assert [m["text"] for m in msgs if m["type"] == "transcript"] == ["a" * TRANSCRIPT_MAX_CHARS]
+
+
+def test_no_transcript_after_abort():
+    async def scenario() -> list:
+        notifiers: list[Notify] = []
+        waiting = asyncio.Event()
+
+        async def source(pcm: bytes, history, *, notify: Notify = no_notify):
+            notifiers.append(notify)
+            waiting.set()
+            await asyncio.Event().wait()  # thinking until the abort
+            yield ReplyChunk(pcm)
+
+        socket = FakeSocket()
+        session = DeviceSession(socket, source)  # type: ignore[arg-type]
+        session.turn = session.open_turn = 1
+        session.reply_task = asyncio.create_task(session.reply(1, b"\0" * AUDIO_CHUNK * 4))
+        await waiting.wait()
+        await session.handle_text({"type": "abort", "turn": 1})
+        await notifiers[0]("x")  # a late call from the aborted turn
+        return socket.sent
+
+    sent = asyncio.run(scenario())
+    assert sent[-1] == {"type": "reply.end", "turn": 1, "reason": "abort"}
+    assert not [m for m in sent if m.get("type") == "transcript"]
+
+
+def test_echo_sends_no_transcript():
+    msgs = reply_messages()
+    assert msgs[-1] == {"type": "reply.end", "turn": 1, "reason": "done"}
+    assert "transcript" not in [m["type"] for m in msgs]

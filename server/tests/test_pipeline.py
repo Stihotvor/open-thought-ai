@@ -1,133 +1,42 @@
 import asyncio
-import io
-import json
 import logging
-import wave
-from array import array
 
-import httpx
 import pytest
-from fake_endpoint import make_client
-from model_env import ENDPOINTS
+from fakes import (
+    CANARY,
+    CLEAN,
+    OPENAI_CLEAN,
+    SILENCE,
+    SPEECH,
+    Endpoint,
+    pipeline_for,
+    self_test_only,
+    square,
+)
 
 from ota_server import pipeline as pipeline_module
-from ota_server.pipeline import SELF_TEST, TTS_CHUNK, VoicePipeline, system_prompt, tts_chunks
+from ota_server.pipeline import TTS_CHUNK, VoicePipeline, system_prompt, tts_chunks
 from ota_server.protocol import BYTES_PER_SECOND, TurnError
-from ota_server.providers import CALL_CAPS, MAX_TTS_TEXT, MISTRAL_CORE, OPENAI_CORE
+from ota_server.providers import CALL_CAPS, MAX_TTS_TEXT
 from ota_server.ratelimit import TurnBudget
+from ota_server.reply import no_notify
 
-ENV = {
-    **ENDPOINTS,
-    "OTA_MODERATION_MODEL": "mod-m",
-    "OTA_CHAT_RATE": "100",
-    "OTA_STT_RATE": "100",
-    "OTA_TTS_RATE": "100",
-    "OTA_MODERATION_RATE": "100",
-}
-CLEAN = {name: False for name in [*MISTRAL_CORE, "health", "pii"]}  # Mistral schema
-OPENAI_CLEAN = {name: False for name in OPENAI_CORE}
-SELF_TEST_WORD = "zabić"  # in the harmful Polish self-test phrase
-CANARY = SELF_TEST["pl"][0]  # rides along in every moderation batch
-SPEECH = b"\x01\x00" * BYTES_PER_SECOND  # 1 s of device PCM
 FIRST, SECOND = "a" * 200 + ".", "b" * 200 + "."
 LONG = f"{FIRST} {SECOND}"
 DOSE_Q, DOSE_A = "How many pills can I take?", "Yes, take ten."
 
 
-def tts_wav(seconds: float = 0.5, rate: int = 24000) -> bytes:
-    out = io.BytesIO()
-    with wave.open(out, "wb") as w:
-        w.setnchannels(1)
-        w.setsampwidth(2)
-        w.setframerate(rate)
-        w.writeframes(array("h", [300] * int(seconds * rate)).tobytes())
-    return out.getvalue()
+async def drain(pipeline: VoicePipeline, pcm: bytes = SPEECH, notify=no_notify) -> bytes:
+    return b"".join([chunk.pcm async for chunk in pipeline(pcm, (), notify=notify)])
 
 
-def sse(text: str) -> str:
-    chunk = json.dumps({"choices": [{"delta": {"content": text}}]})
-    return f"data: {chunk}\n\ndata: [DONE]\n\n"
+def run(endpoint: Endpoint, pcm: bytes = SPEECH, notify=no_notify) -> bytes:
+    return asyncio.run(drain(pipeline_for(endpoint), pcm, notify))
 
 
-def self_test_only(text: str) -> bool:
-    return SELF_TEST_WORD in text
-
-
-class Endpoint:
-    """A fake OpenAI-compatible endpoint. `flag(text)` decides each moderation verdict.
-    Moderation calls are numbered: 1 is the self-test, 2 the transcript, 3 the reply.
-    `result`, `moderation_status` and `result_count_delta` apply from call `from_call` on,
-    so a retried 429 or a repeated self-test meets the same answer."""
-
-    def __init__(
-        self,
-        transcript="Jak się masz?",
-        reply="Dobrze. A ty?",
-        tts=None,
-        fail=None,
-        flag=self_test_only,
-        result=None,
-        moderation_status=None,
-        result_count_delta=0,
-        from_call=2,
-    ):
-        self.transcript, self.reply, self.tts, self.fail = transcript, reply, tts, fail or {}
-        self.flag, self.result, self.moderation_status = flag, result, moderation_status
-        self.result_count_delta, self.from_call = result_count_delta, from_call
-        self.calls: list[str] = []
-        self.moderated: list[list[str]] = []  # the inputs of each moderation call
-        self.chats: list[list[dict]] = []  # the messages of each chat call
-
-    def verdict(self, text: str) -> dict:
-        return {"categories": {**CLEAN, "selfharm": self.flag(text)}}
-
-    def moderation(self, req: httpx.Request) -> httpx.Response:
-        texts = json.loads(req.content)["input"]
-        self.moderated.append(texts)
-        aimed = len(self.moderated) >= self.from_call
-        if aimed and self.moderation_status:
-            return httpx.Response(self.moderation_status)
-        results = [self.verdict(t) for t in texts]
-        if aimed and self.result is not None:  # the canary keeps its true verdict
-            results = [
-                r if self_test_only(t) else self.result for t, r in zip(texts, results, strict=True)
-            ]
-        if aimed and self.result_count_delta < 0:
-            results = results[: self.result_count_delta]
-        if aimed and self.result_count_delta > 0:
-            results += results[:1] * self.result_count_delta
-        return httpx.Response(200, json={"results": results})
-
-    def __call__(self, req: httpx.Request) -> httpx.Response:
-        path = req.url.path
-        self.calls.append(path.rsplit("/", 1)[-1])
-        if path in self.fail:
-            return httpx.Response(self.fail[path])
-        if path.endswith("/moderations"):
-            return self.moderation(req)
-        if path.endswith("/audio/transcriptions"):
-            return httpx.Response(200, json={"text": self.transcript})
-        if path.endswith("/chat/completions"):
-            self.chats.append(json.loads(req.content)["messages"])
-            return httpx.Response(200, text=sse(self.reply))
-        return httpx.Response(200, content=self.tts if self.tts is not None else tts_wav())
-
-
-def pipeline_for(endpoint: Endpoint) -> VoicePipeline:
-    return VoicePipeline(make_client(endpoint, ENV), "pl", "voice-1")
-
-
-async def drain(pipeline: VoicePipeline) -> bytes:
-    return b"".join([chunk.pcm async for chunk in pipeline(SPEECH, ())])
-
-
-def run(endpoint: Endpoint) -> bytes:
-    return asyncio.run(drain(pipeline_for(endpoint)))
-
-
-def refused(endpoint: Endpoint) -> str:
+def refused(endpoint: Endpoint, pcm: bytes = SPEECH, notify=no_notify) -> str:
     with pytest.raises(TurnError) as err:
-        run(endpoint)
+        run(endpoint, pcm, notify)
     return err.value.code
 
 
@@ -223,8 +132,14 @@ def test_self_test_runs_once():
     assert endpoint.calls.count("moderations") == 1 + 2 * 2
 
 
-def test_empty_transcript_is_no_speech():
-    assert refused(Endpoint(transcript="  ")) == "no_speech"
+def test_empty_transcript_is_no_speech_without_notify():
+    notified: list[str] = []
+
+    async def notify(text: str) -> None:
+        notified.append(text)
+
+    assert refused(Endpoint(transcript="  "), notify=notify) == "no_speech"
+    assert notified == []
 
 
 @pytest.mark.parametrize(
@@ -430,3 +345,27 @@ def test_the_chat_call_gets_the_history():
 
     asyncio.run(turn())
     assert [m["content"] for m in endpoint.chats[0][1:]] == ["q1", "r1", "Jak się masz?"]
+
+
+@pytest.mark.parametrize("pcm", [SILENCE * 3, square(3, 300)], ids=["silence", "low-noise"])
+def test_silence_makes_no_provider_call(pcm):
+    endpoint = Endpoint()
+    assert refused(endpoint, pcm) == "no_speech"
+    assert endpoint.calls == []  # no self-test, no STT
+
+
+def test_odd_byte_count_is_internal():
+    endpoint = Endpoint()
+    assert refused(endpoint, SPEECH + b"\x00") == "internal"
+    assert endpoint.calls == []
+
+
+def test_stt_gets_trimmed_audio(monkeypatch):
+    sizes: list[int] = []
+    real = pipeline_module.pcm_to_wav
+    monkeypatch.setattr(
+        pipeline_module, "pcm_to_wav", lambda pcm: sizes.append(len(pcm)) or real(pcm)
+    )
+    run(Endpoint(), SILENCE + SPEECH + SILENCE)
+    assert len(sizes) == 1
+    assert BYTES_PER_SECOND <= sizes[0] <= 1.5 * BYTES_PER_SECOND
