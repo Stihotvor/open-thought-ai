@@ -24,7 +24,7 @@ Chat fallback uses standard LiteLLM features.
 
 1. Set the proxy environment on the LiteLLM host. Put these names in the environment of the proxy, not in our `.env`: `MISTRAL_API_KEY`, `MISTRAL_API_BASE` (`https://api.mistral.ai/v1`), `GEMINI_API_KEY`, `OLLAMA_API_BASE` (for example `http://192.168.1.20:11434`), `SPEACHES_API_KEY`, `SPEACHES_API_BASE` (for example `http://192.168.1.20:8000/v1`), `CLOUD_TTS_API_KEY`, `CLOUD_TTS_API_BASE`, `LITELLM_MASTER_KEY` (make it with `openssl rand -hex 24`, start it with `sk-`) and `DATABASE_URL`.
 2. Copy [`docs/examples/litellm/config.yaml`](../examples/litellm/config.yaml) to the LiteLLM host as `config.yaml`. Change the Ollama model id to the model that you pulled. Do not increase `num_retries` or `timeout`.
-3. Start the proxy with a fixed LiteLLM release tag. For example: `docker run --detach --restart unless-stopped --name litellm --publish 4000:4000 --env-file litellm.env --volume ./config.yaml:/app/config.yaml ghcr.io/berriai/litellm:<tag> --config /app/config.yaml`. Then make one virtual key for each role (chat, STT, TTS): `curl -s http://192.168.1.30:4000/key/generate -H "Authorization: Bearer $LITELLM_MASTER_KEY" -H "Content-Type: application/json" -d '{"key_alias": "ota-chat"}'`. Do this again with `ota-stt` and `ota-tts`.
+3. Start the proxy with a fixed LiteLLM release tag. For example: `docker run --detach --restart unless-stopped --name litellm --publish 192.168.1.30:4000:4000 --env-file litellm.env --volume ./config.yaml:/app/config.yaml ghcr.io/berriai/litellm:<tag> --config /app/config.yaml`. Then, on the LiteLLM host itself, make one virtual key for each role (chat, STT, TTS): `curl -s http://localhost:4000/key/generate -H "Authorization: Bearer $LITELLM_MASTER_KEY" -H "Content-Type: application/json" -d '{"key_alias": "ota-chat"}'`. Do this again with `ota-stt` and `ota-tts`. Use the master key only on the LiteLLM host, so it never goes over the LAN.
 4. Set the role variables in the `.env` of the open-thought-ai server. Use the LiteLLM URL and a different virtual key for each role. Keep `OTA_CHAT_MODEL` and `OTA_STT_MODEL` at their defaults. Set `OTA_TTS_MODEL=tts`. See the block below.
 5. Check the proxy from the server host: `curl -s http://192.168.1.30:4000/v1/chat/completions -H "Authorization: Bearer <chat virtual key>" -H "Content-Type: application/json" -d '{"model": "mistral-small-latest", "messages": [{"role": "user", "content": "Say OK"}]}'`. The reply must contain a message.
 6. Restart the server with `docker compose up --detach server`. Speak one turn to the device. Then read `docker compose logs server` and make sure that the turn has no error code.
@@ -96,6 +96,9 @@ The host must be a private IP (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16` o
 Use the IP, not a host name. Otherwise the server does not start.
 
 ### Keys and rates
+Keep `litellm.env` out of git and readable only by its owner (`chmod 600 litellm.env`). It holds the master key and the provider keys.
+If the master key leaks, make a new one and new virtual keys.
+http:// on the LAN sends the virtual keys in clear text. Use a trusted LAN, or put a TLS reverse proxy in front of LiteLLM.
 A role with its own base URL must have its own key. The server does not start without it.
 Use one LiteLLM virtual key for each role. Then you can revoke or limit one role and keep the others.
 If roles share one key, give them the same `_RATE` and `_BURST` values.
@@ -108,5 +111,5 @@ Three chat groups at 2 s each stay inside the 8 s.
 If you increase these values, a turn can end before the fallback reaches the local model.
 
 ### Local model down
-If all chat groups fail, also the local model, the turn ends with `llm_failed`.
+If every chat group fails, including the local model, the turn ends with `llm_failed`.
 This is the same result as without LiteLLM. Start Ollama or LM Studio and try again.
