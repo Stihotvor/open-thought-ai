@@ -1,0 +1,6 @@
+{"tasks": [
+{"id":"T1","title":"Add pyyaml and types-PyYAML as dev dependencies","size":"S","depends_on":[],"done_when":"cd server && uv run python -c 'import yaml' exits 0 and uv.lock lists pyyaml and types-pyyaml","files":["server/pyproject.toml","server/uv.lock"],"agent":"python-lead"},
+{"id":"T2","title":"Write the example LiteLLM config with 7 model groups and fallbacks","size":"S","depends_on":[],"done_when":"docs/examples/litellm/config.yaml parses with yaml.safe_load, has num_retries 0, timeout 2, 3 fallback rules, and every api_key/api_base starts with os.environ/","files":["docs/examples/litellm/config.yaml"]},
+{"id":"T3","title":"Add the offline test for the example config (F1, F2, M1, M3, no-Gemini variant)","size":"M","depends_on":["T1","T2"],"done_when":"cd server && uv run pytest tests/test_litellm_example.py passes; full uv run pytest, ruff check and mypy report 0 errors (M1, M2, M3, M5)","files":["server/tests/test_litellm_example.py"],"agent":"python-lead"},
+{"id":"T4","title":"Write the LiteLLM fallback guide (6 steps, E1-E3, LAN rule, virtual keys, untested note)","size":"S","depends_on":["T2"],"done_when":"grep -c '^[1-6]\\. ' docs/guides/litellm-fallback.md is 6 and no 7th step exists (M4); the file mentions #26, OTA_ALLOW_INSECURE_MODEL_ENDPOINT, LM Studio, and the 8 s deadline","files":["docs/guides/litellm-fallback.md"]}
+]}
