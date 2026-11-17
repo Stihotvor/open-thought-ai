@@ -1,0 +1,72 @@
+# LiteLLM proxy config for Open Thought AI (issue #20).
+# Chat: Mistral -> Gemini -> local Ollama. STT and TTS: cloud -> local speaches.
+# Each tier is its own model group, because LiteLLM falls back between groups.
+# Secrets and URLs come from the environment of the LiteLLM proxy (os.environ/<NAME>).
+# Moderation is not here: the server sends it straight to Mistral.
+# See docs/guides/litellm-fallback.md.
+
+model_list:
+  # Chat, tier 1. The name matches the server default OTA_CHAT_MODEL.
+  - model_name: mistral-small-latest
+    litellm_params:
+      model: mistral/mistral-small-latest
+      api_key: os.environ/MISTRAL_API_KEY    # Mistral API key
+      api_base: os.environ/MISTRAL_API_BASE  # e.g. https://api.mistral.ai/v1
+
+  # Chat, tier 2. Remove this group and its fallback entry if you have no Gemini key.
+  - model_name: chat-gemini
+    litellm_params:
+      model: gemini/gemini-2.5-flash  # verify (issue #26)
+      api_key: os.environ/GEMINI_API_KEY  # Google AI Studio key
+
+  # Chat, tier 3: local Ollama. For LM Studio, see the guide.
+  - model_name: chat-local
+    litellm_params:
+      model: ollama_chat/llama3.1:8b         # any model you pulled in Ollama
+      api_base: os.environ/OLLAMA_API_BASE   # e.g. http://192.168.1.20:11434
+
+  # STT, tier 1. The name matches the server default OTA_STT_MODEL.
+  - model_name: voxtral-mini-latest
+    litellm_params:
+      model: mistral/voxtral-mini-latest  # verify (issue #26)
+      api_key: os.environ/MISTRAL_API_KEY
+      api_base: os.environ/MISTRAL_API_BASE
+    model_info:
+      mode: audio_transcription
+
+  # STT, tier 2: local speaches (docs/guides/speech-server.md).
+  - model_name: stt-local
+    litellm_params:
+      model: openai/Systran/faster-whisper-small  # verify (issue #26)
+      api_key: os.environ/SPEACHES_API_KEY    # any non-empty value if speaches has no key
+      api_base: os.environ/SPEACHES_API_BASE  # e.g. http://192.168.1.20:8000/v1
+    model_info:
+      mode: audio_transcription
+
+  # TTS, tier 1: a cloud OpenAI-compatible TTS. Set OTA_TTS_MODEL=tts on the server.
+  - model_name: tts
+    litellm_params:
+      model: openai/tts-1  # verify (issue #26)
+      api_key: os.environ/CLOUD_TTS_API_KEY    # cloud TTS provider key
+      api_base: os.environ/CLOUD_TTS_API_BASE  # cloud TTS base URL
+    model_info:
+      mode: audio_speech
+
+  # TTS, tier 2: local speaches with a Piper voice (PL/UK).
+  - model_name: tts-local
+    litellm_params:
+      model: openai/speaches-ai/piper-pl_PL-gosia-medium  # verify (issue #26)
+      api_key: os.environ/SPEACHES_API_KEY
+      api_base: os.environ/SPEACHES_API_BASE
+    model_info:
+      mode: audio_speech
+
+router_settings:
+  # No retries and 2 s per call: 3 chat groups x 2 s stay inside the 8 s turn deadline.
+  num_retries: 0
+  timeout: 2
+  # Fallback for /audio/* routes is not confirmed in the LiteLLM docs (issue #26).
+  fallbacks:
+    - mistral-small-latest: [chat-gemini, chat-local]
+    - voxtral-mini-latest: [stt-local]
+    - tts: [tts-local]
