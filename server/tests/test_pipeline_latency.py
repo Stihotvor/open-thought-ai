@@ -170,6 +170,9 @@ class NullClock:
     def first_sentence(self) -> None:
         pass
 
+    def chat_done(self) -> None:
+        pass
+
     async def timed[T](self, stage: str | None, step: Awaitable[T]) -> T:
         return await step
 

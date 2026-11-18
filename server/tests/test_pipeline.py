@@ -135,8 +135,11 @@ def test_question_with_reply_input_is_capped() -> None:
     endpoint = Endpoint(transcript="q" * 2000 + ".", reply="r" * 3000 + ".")
     run(endpoint)
     context = endpoint.moderated[-1][-2]
-    # The reply is one long sentence, cut for TTS at MAX_TTS_TEXT: the cuts join with a space.
-    assert context == "q" * 499 + ".\n" + ("r" * MAX_TTS_TEXT + " " + "r" * 2000)[:1500]
+    # The pair ends with the newest chunk: the last 1500 characters of the reply so far.
+    question, reply = context.split("\n")
+    assert question == "q" * 499 + "."
+    assert len(reply) == 1500
+    assert reply.endswith(".")  # the end of the newest chunk
 
 
 def test_self_test_runs_once() -> None:
@@ -452,4 +455,18 @@ def test_a_chat_error_after_sentence_1_is_llm_failed(monkeypatch: pytest.MonkeyP
     with pytest.raises(TurnError) as err:
         asyncio.run(turn())
     assert err.value.code == "llm_failed"
-    assert texts in ([], ["Dobrze."])  # sentence 1 may play before the error arrives
+    assert texts == ["Dobrze."]  # sentences before the error still play
+
+
+def test_a_long_reply_ends_cleanly_at_the_chunk_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(pipeline_module, "MAX_CHUNKS", 2)
+    pipeline = pipeline_for(Endpoint(reply="One. Two. " + "x" * TTS_CHUNK + "."))
+
+    async def turn() -> list[str]:
+        return [chunk.text async for chunk in pipeline(SPEECH, ())]
+
+    assert asyncio.run(turn()) == ["One.", "Two."]
+
+
+def test_the_moderation_cap_covers_every_chunk() -> None:
+    assert CALL_CAPS["moderation"] == pipeline_module.MAX_CHUNKS + 1  # + the transcript

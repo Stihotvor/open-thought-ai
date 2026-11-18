@@ -33,12 +33,13 @@ import asyncio
 import contextlib
 import logging
 import re
-from collections.abc import AsyncGenerator, Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine
 from typing import Any
 
 from .audio import AudioError, pcm_to_wav, wav_to_pcm
+from .endpoints import TTS
 from .protocol import TurnError
-from .providers import MAX_TTS_TEXT, ModelClient, ProviderError, new_turn_budget
+from .providers import CALL_CAPS, MAX_TTS_TEXT, ModelClient, ProviderError, new_turn_budget
 from .ratelimit import CallCapExceeded, DeadlineExceeded, RateLimited, TurnBudget
 from .reply import History, Notify, ReplyChunk, no_notify
 from .timing import StageTimer, format_line
@@ -46,7 +47,11 @@ from .vad import trim_speech
 
 log = logging.getLogger(__name__)
 
+# Wraps one step of a chunk ("moderation" or "tts") to time it, or not.
+type StepTimer = Callable[[str, Coroutine[Any, Any, Any]], Coroutine[Any, Any, Any]]
+
 LANGUAGE_NAMES = {"en": "English", "pl": "Polish", "uk": "Ukrainian"}
+MAX_CHUNKS = CALL_CAPS[TTS]  # reply chunks per turn; moderation has one call more
 TTS_CHUNK = 300  # characters: short sentences after the first are merged up to this length
 # The question-with-reply moderation input: the end of the question and the start of the
 # reply, short enough that padding cannot dilute it and the provider does not cut it.
@@ -102,15 +107,18 @@ def tts_chunks(text: str) -> list[str]:
     sentences = [p for s in SENTENCE_END.split(text.strip()) if s for p in _split_long(s)]
     if not sentences:
         return []
-    chunks = [sentences[0]]
-    current = ""
-    for sentence in sentences[1:]:
-        if current and len(current) + 1 + len(sentence) > TTS_CHUNK:
-            chunks.append(current)
-            current = sentence
-        else:
-            current = f"{current} {sentence}" if current else sentence
-    return [*chunks, current] if current else chunks
+    chunks, rest = [sentences[0]], sentences[1:]
+    while rest:
+        chunks.append(_merge(rest))
+    return chunks
+
+
+def _merge(ready: list[str]) -> str:
+    """Take sentences from the front of ready, joined up to TTS_CHUNK characters."""
+    chunk = ready.pop(0)
+    while ready and len(chunk) + 1 + len(ready[0]) <= TTS_CHUNK:
+        chunk = f"{chunk} {ready.pop(0)}"
+    return chunk
 
 
 async def speech_only(pcm: bytes) -> bytes:
@@ -138,9 +146,9 @@ def _safe[T](call: Callable[..., T], *args: Any) -> T | None:
 class TurnClock:
     """The stage times of one turn and its `turn.latency` line. No method raises.
 
-    Turn stages (vad .. mod_transcript, then chat_full) are the time since the previous
-    mark. chat_first_sentence is the time from the chat start to the first sentence end.
-    mod_s1 and tts1 run at the same time, so each is its own span from its own start."""
+    Turn stages (vad .. mod_transcript) are the time since the previous mark.
+    chat_first_sentence and chat_full are the time from the chat start. mod_s1 and tts1
+    run at the same time, so each is its own span from its own start."""
 
     def __init__(self, turn_id: int) -> None:
         self.turn_id = turn_id
@@ -168,13 +176,22 @@ class TurnClock:
         self._sentence_seen = True
         _safe(self._chat.mark, "chat_first_sentence")
 
+    def chat_done(self) -> None:
+        """chat_full: the time from the chat start to the end of the stream."""
+        if self._chat is not None:
+            full = _safe(self._chat.latency_ms)
+            if full is not None:
+                self._spans["chat_full"] = full
+
     async def timed[T](self, stage: str | None, step: Awaitable[T]) -> T:
         """Await step. With a stage name, store how long it took (only if it succeeds)."""
-        span = _safe(StageTimer) if stage else None
+        if stage is None:
+            return await step
+        span = _safe(StageTimer)
         if span is not None:
             _safe(span.start)
         result = await step
-        if span is not None and stage:
+        if span is not None:
             _safe(span.mark, stage)
             self._spans.update(span.stages)
         return result
@@ -207,38 +224,37 @@ class SentenceFeed:
     (fast first audio), then all sentences that are ready, merged up to TTS_CHUNK."""
 
     def __init__(self) -> None:
+        # One item per put (a sentence), then one end item: None, or the chat error.
         self._queue: asyncio.Queue[str | Exception | None] = asyncio.Queue()
         self._error: Exception | None = None
         self._ready: list[str] = []
         self._ended = False
-        self._first = True
+        self._first_to_go = True  # sentence 1 still goes out alone
 
     def put(self, sentence: str) -> None:
         for part in _split_long(sentence.strip()):
             self._queue.put_nowait(part)
 
     def end(self, error: Exception | None = None) -> None:
-        """The chat stream is over. With error, next() raises it at the next chunk."""
+        """The chat stream is over. With error, next() raises it once the sentences
+        before it are taken."""
         self._queue.put_nowait(error)
 
     async def next(self) -> str | None:
         """The next chunk, or None when the chat stream has ended and all are taken.
-        Raise the chat error once it arrived: the reply stops there."""
+        A chat error is raised after the sentences that came before it."""
         if not self._ready and not self._ended:
             self._take(await self._queue.get())
         while not self._queue.empty():
             self._take(self._queue.get_nowait())
-        if self._error is not None:
-            raise self._error
         if not self._ready:
+            if self._error is not None:
+                raise self._error
             return None
-        chunk = self._ready.pop(0)
-        if self._first:
-            self._first = False
-            return chunk
-        while self._ready and len(chunk) + 1 + len(self._ready[0]) <= TTS_CHUNK:
-            chunk = f"{chunk} {self._ready.pop(0)}"
-        return chunk
+        if self._first_to_go:
+            self._first_to_go = False
+            return self._ready.pop(0)
+        return _merge(self._ready)
 
     def _take(self, item: str | Exception | None) -> None:
         if isinstance(item, Exception):
@@ -261,9 +277,21 @@ async def staged[T](stage: str, step: Awaitable[T]) -> T:
         raise TurnError(STAGE_CODES[stage]) from None
 
 
+def _stage_timer(clock: TurnClock, index: int) -> StepTimer:
+    """The timing wrapper for chunk index: chunk 0 logs mod_s1 and tts1, others nothing."""
+    names = {"moderation": "mod_s1", "tts": "tts1"} if index == 0 else {}
+    return lambda step, awaitable: clock.timed(names.get(step), awaitable)
+
+
+def _cancel_quietly(task: asyncio.Task[Any]) -> None:
+    """Cancel a task nobody will await. Its result or error no longer matters, so it is
+    taken when the task ends: asyncio does not log it. The task is not awaited, so a
+    provider call or a TTS thread may finish its cleanup after the turn."""
+    task.add_done_callback(_retrieve)
+    task.cancel()
+
+
 def _retrieve(task: asyncio.Task[Any]) -> None:
-    """A done-callback: take the exception of a task nobody awaits, so asyncio does not
-    log it. Its error, if any, was already handled or does not matter any more."""
     if not task.cancelled():
         task.exception()
 
@@ -347,23 +375,22 @@ class VoicePipeline:  # pylint: disable=too-few-public-methods  # a callable Rep
         return pcm
 
     async def checked_audio(
-        self, chunk: str, pair: str, budget: TurnBudget, clock: TurnClock, first: bool
+        self,
+        chunk: str,
+        pair: str,
+        budget: TurnBudget,
+        timed: StepTimer,
     ) -> bytes:
         """Moderate a chunk (with the question-and-reply pair) and synthesize it at the same
-        time. The audio is returned only once moderation passed: a flag cancels the TTS."""
-        tts = asyncio.create_task(
-            clock.timed("tts1" if first else None, self.synthesize(chunk, budget))
-        )
+        time. The audio is returned only once moderation passed: a flag cancels the TTS.
+        timed(step_name, step) wraps each step, so the caller decides what is timed."""
+        tts: asyncio.Task[bytes] = asyncio.create_task(timed("tts", self.synthesize(chunk, budget)))
         try:
             await staged(
-                "moderation",
-                clock.timed(
-                    "mod_s1" if first else None, self.moderate("reply", [chunk, pair], budget)
-                ),
+                "moderation", timed("moderation", self.moderate("reply", [chunk, pair], budget))
             )
         except BaseException:
-            tts.add_done_callback(_retrieve)
-            tts.cancel()
+            _cancel_quietly(tts)
             raise
         return await staged("tts", tts)
 
@@ -379,17 +406,22 @@ class VoicePipeline:  # pylint: disable=too-few-public-methods  # a callable Rep
         A chat error goes to feed, and a half-finished last sentence is dropped."""
         try:
             async with contextlib.aclosing(self.client.chat(messages, budget)) as deltas:
-                rest = ""
+                tail = ""  # the unfinished sentence
                 async for delta in deltas:
-                    *done, rest = SENTENCE_END.split(rest + delta)
+                    # Only the new text can hold a new end (plus one character before it,
+                    # for an end split across deltas): no rescan of a long tail.
+                    if not SENTENCE_END.search(tail[-1:] + delta):
+                        tail += delta
+                        continue
+                    *done, tail = SENTENCE_END.split(tail + delta)
                     for sentence in done:
                         clock.first_sentence()
                         feed.put(sentence)
+            clock.chat_done()
+            feed.put(tail)
         except Exception as exc:  # pylint: disable=broad-exception-caught  # the turn maps it
-            feed.end(exc)
+            feed.end(exc)  # every error ends the feed, so the turn never waits forever
             return
-        clock.mark("chat_full")
-        feed.put(rest)
         feed.end()
 
     async def speak(
@@ -400,19 +432,24 @@ class VoicePipeline:  # pylint: disable=too-few-public-methods  # a callable Rep
         clock: TurnClock,
     ) -> AsyncGenerator[ReplyChunk]:
         """Yield each chunk as audio once it passed moderation, with its text for the
-        session history. A chat error stops the reply before the next chunk."""
+        session history. A chat error stops the reply after the sentences before it.
+        The reply ends at MAX_CHUNKS chunks, within the TTS and moderation call caps."""
         reply = ""
-        while (chunk := await staged("chat", feed.next())) is not None:
-            first = not reply
+        for index in range(MAX_CHUNKS):
+            chunk = await staged("chat", feed.next())
+            if chunk is None:
+                break
             reply = f"{reply} {chunk}".lstrip()
             # "Yes, take ten" is only harmful as the answer to a question: each chunk goes
-            # with the end of the question and the reply so far.
-            pair = f"{question[-PAIR_QUESTION:]}\n{reply[:PAIR_REPLY]}"
-            pcm = await self.checked_audio(chunk, pair, budget, clock, first)
+            # with the end of the question and the end of the reply so far (this chunk).
+            pair = f"{question[-PAIR_QUESTION:]}\n{reply[-PAIR_REPLY:]}"
+            pcm = await self.checked_audio(chunk, pair, budget, _stage_timer(clock, index))
             paused = budget.clock()
             yield ReplyChunk(pcm, chunk, question)
             # The session waits here while the device plays: that time is not TTS work.
             budget.extend(budget.clock() - paused)
+        else:
+            log.info("reply cut at %d chunks", MAX_CHUNKS)
         if not reply:
             raise TurnError("llm_failed")
 
@@ -465,6 +502,8 @@ class VoicePipeline:  # pylint: disable=too-few-public-methods  # a callable Rep
         clock.chat_started()
         await notify(text)  # the full text: the session cuts it for the device
         feed = SentenceFeed()
+        # The chat task never waits for playback (the feed has no size limit), so the
+        # turn deadline bounds only its own work.
         chat = asyncio.create_task(
             self.read_chat(self.messages(text, history), budget, feed, clock)
         )
@@ -473,5 +512,4 @@ class VoicePipeline:  # pylint: disable=too-few-public-methods  # a callable Rep
                 async for chunk in audio:
                     yield chunk
         finally:
-            chat.add_done_callback(_retrieve)
-            chat.cancel()
+            _cancel_quietly(chat)
