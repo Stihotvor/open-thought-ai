@@ -11,6 +11,7 @@ from typing import Any
 
 from fastapi import WebSocket
 
+from .hub.pending import PendingCalls
 from .protocol import (
     AUDIO_CHUNK,
     BYTES_PER_SECOND,
@@ -70,6 +71,7 @@ class DeviceSession:  # pylint: disable=too-many-instance-attributes  # one devi
         # The turn whose reply the device still waits for: set when the reply starts,
         # cleared by its last message. An abort then owes the device a reply.end.
         self.open_turn: int | None = None
+        self.pending = PendingCalls()  # tool calls that wait for the device's tool.result
 
     async def handle_text(self, msg: dict[str, Any]) -> None:
         match msg["type"]:
@@ -98,6 +100,8 @@ class DeviceSession:  # pylint: disable=too-many-instance-attributes  # one devi
                     raise ProtocolError("bad credit")
                 self.credit = min(self.credit + granted, MAX_CREDIT)
                 self.credit_changed.set()
+            case "tool.result":  # in every state: the reply task waits for it
+                self.pending.resolve(msg)
             case other:
                 log.info("ignored message type %s", other)
 
@@ -240,6 +244,11 @@ class DeviceSession:  # pylint: disable=too-many-instance-attributes  # one devi
             self.credit -= len(chunk)
             await self.ws.send_bytes(bytes([turn]) + chunk)
         return clock
+
+    async def close(self) -> None:
+        """The socket closed: end every waiting tool call, then the reply."""
+        self.pending.fail_all()
+        await self.cancel_reply()
 
     async def cancel_reply(self) -> None:
         task, self.reply_task = self.reply_task, None

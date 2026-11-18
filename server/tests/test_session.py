@@ -3,12 +3,13 @@
 import asyncio
 import logging
 import time
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from typing import Any, cast
 
 import pytest
 
 from ota_server import session as session_module
+from ota_server.hub.pending import DeviceResult, PendingClosed
 from ota_server.protocol import AUDIO_CHUNK, MAX_CREDIT, MAX_LEAD_SECONDS, TRANSCRIPT_MAX_CHARS
 from ota_server.reply import History, Notify, ReplyChunk, ReplySource, no_notify
 from ota_server.session import CreditStalled, DeviceSession, echo
@@ -236,3 +237,106 @@ def test_echo_sends_no_transcript() -> None:
     msgs = reply_messages()
     assert msgs[-1] == {"type": "reply.end", "turn": 1, "reason": "done"}
     assert "transcript" not in [m["type"] for m in msgs]
+
+
+async def no_send() -> None:
+    pass
+
+
+async def wait_until(check: Callable[[], bool]) -> None:
+    while not check():
+        await asyncio.sleep(0.001)
+
+
+async def endless(
+    pcm: bytes, history: History, *, notify: Notify = no_notify
+) -> AsyncGenerator[ReplyChunk]:
+    while True:
+        yield ReplyChunk(b"\0" * AUDIO_CHUNK)
+
+
+async def enter_state(session: DeviceSession, state: str) -> None:
+    """Put the session in the idle, listening or speaking state."""
+    if state in ("listening", "speaking"):
+        await session.handle_text({"type": "listen.start"})
+    if state == "speaking":
+        session.credit = MAX_CREDIT
+        session.reply_source = endless
+        session.audio.extend(b"\0" * AUDIO_CHUNK * 4)
+        await session.handle_text({"type": "listen.stop", "turn": session.turn})
+        sent = fake_ws(session).sent
+        await wait_until(lambda: {"type": "reply.start", "turn": session.turn} in sent)
+
+
+@pytest.mark.parametrize("state", ["idle", "listening", "speaking"])
+def test_tool_result_resolves_the_wait_in_every_state(state: str) -> None:
+    async def scenario() -> tuple[DeviceResult, int]:
+        session = new_session()
+        await enter_state(session, state)
+        waiter = asyncio.create_task(session.pending.wait_for(1, 1.0, no_send))
+        await wait_until(lambda: len(session.pending) == 1)
+        await session.handle_text({"type": "tool.result", "id": 1, "ok": True, "result": "30"})
+        result = await waiter
+        await session.cancel_reply()
+        return result, len(session.pending)
+
+    assert asyncio.run(scenario()) == (DeviceResult(True, "30"), 0)
+
+
+def test_unknown_and_answered_ids_are_ignored(caplog: pytest.LogCaptureFixture) -> None:
+    async def scenario() -> list[Any]:
+        session = new_session()
+        waiter = asyncio.create_task(session.pending.wait_for(1, 1.0, no_send))
+        await wait_until(lambda: len(session.pending) == 1)
+        await session.handle_text({"type": "tool.result", "id": 1, "ok": True})
+        await waiter
+        await session.handle_text({"type": "tool.result", "id": 99, "ok": True})
+        await session.handle_text({"type": "tool.result", "id": 1, "ok": True})
+        await session.handle_text({"type": "tool.result", "id": 7})  # malformed and unknown
+        await session.handle_text({"type": "listen.start"})
+        session.credit = MAX_CREDIT
+        session.audio.extend(b"\0" * AUDIO_CHUNK * 4)
+        await session.handle_text({"type": "listen.stop", "turn": session.turn})
+        assert session.reply_task is not None
+        await session.reply_task
+        return fake_ws(session).sent
+
+    with caplog.at_level(logging.INFO):
+        sent = asyncio.run(scenario())
+    assert caplog.text.count("tool.result") >= 3
+    assert sent[-1] == {"type": "reply.end", "turn": 1, "reason": "done"}
+
+
+def test_abort_cancels_the_wait_and_leaves_no_entry() -> None:
+    async def scenario() -> tuple[bool, int]:
+        session = new_session()
+
+        async def tool_source(
+            pcm: bytes, history: History, *, notify: Notify = no_notify
+        ) -> AsyncGenerator[ReplyChunk]:
+            await session.pending.wait_for(session.pending.new_id(), 30.0, no_send)
+            yield ReplyChunk(pcm)
+
+        session.reply_source = tool_source
+        session.turn = session.open_turn = 1
+        session.reply_task = asyncio.create_task(session.reply(1, b"\0" * AUDIO_CHUNK * 4))
+        await wait_until(lambda: len(session.pending) == 1)
+        task = session.reply_task
+        await session.handle_text({"type": "abort", "turn": 1})
+        return task.cancelled(), len(session.pending)
+
+    assert asyncio.run(scenario()) == (True, 0)
+
+
+def test_close_fails_every_wait_and_leaves_no_task() -> None:
+    async def scenario() -> tuple[list[Any], int]:
+        session = new_session()
+        waits = [asyncio.create_task(session.pending.wait_for(i, 30.0, no_send)) for i in (1, 2)]
+        await wait_until(lambda: len(session.pending) == 2)
+        await session.close()
+        results = await asyncio.gather(*waits, return_exceptions=True)
+        return results, len(asyncio.all_tasks()) - 1  # all but this task
+
+    results, left = asyncio.run(scenario())
+    assert all(isinstance(r, PendingClosed) for r in results)
+    assert left == 0

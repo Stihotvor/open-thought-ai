@@ -108,4 +108,4 @@ async def device_endpoint(ws: WebSocket, settings: Settings = Depends(get_settin
         pass
     finally:
         slot.release(ws)  # first, so a failure below cannot keep the slot
-        await session.cancel_reply()
+        await session.close()
