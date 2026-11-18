@@ -11,6 +11,7 @@ from fakes import SILENCE, SPEECH, Endpoint, ListSocket, noise, pipeline_for, si
 
 from ota_server import pipeline as p
 from ota_server.audio import pcm_to_wav
+from ota_server.hub.types import ToolContext
 from ota_server.protocol import (
     BYTES_PER_SECOND,
     MAX_CREDIT,
@@ -175,7 +176,12 @@ def test_qa_026_027_039_abort_during_stt_then_new_turn(monkeypatch: pytest.Monke
     pipe = pipeline_for(endpoint)
 
     async def slow_call(
-        self: p.VoicePipeline, pcm: bytes, history: History, *, notify: Notify
+        self: p.VoicePipeline,
+        pcm: bytes,
+        history: History,
+        *,
+        notify: Notify,
+        tools: ToolContext | None = None,
     ) -> AsyncGenerator[ReplyChunk]:
         delays["n"] += 1
         if delays["n"] == 1:
@@ -184,11 +190,11 @@ def test_qa_026_027_039_abort_during_stt_then_new_turn(monkeypatch: pytest.Monke
                 await asyncio.sleep(0.4)  # STT "returns" after the abort
                 await notify(text)
 
-            async for chunk in real(self, pcm, history, notify=late):
+            async for chunk in real(self, pcm, history, notify=late, tools=tools):
                 yield chunk
         else:
             endpoint.transcript = "second"
-            async for chunk in real(self, pcm, history, notify=notify):
+            async for chunk in real(self, pcm, history, notify=notify, tools=tools):
                 yield chunk
 
     monkeypatch.setattr(p.VoicePipeline, "__call__", slow_call)

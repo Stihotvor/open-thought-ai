@@ -11,6 +11,8 @@ from typing import Any
 
 from fastapi import WebSocket
 
+from .hub.device_source import DeviceSource
+from .hub.hub import McpHub
 from .hub.pending import PendingCalls
 from .hub.types import ToolContext
 from .protocol import (
@@ -167,13 +169,17 @@ class DeviceSession:  # pylint: disable=too-many-instance-attributes  # one devi
     ) -> None:
         """Put each reply chunk on the queue, then END, or the exception that ended it."""
         try:
-            source = self.reply_source(pcm, history, notify=notify)
+            source = self.reply_source(pcm, history, notify=notify, tools=self.turn_tools())
             async with contextlib.aclosing(source) as chunks:
                 async for chunk in chunks:
                     await queue.put(chunk)
             await queue.put(END)
         except Exception as exc:  # pylint: disable=broad-exception-caught  # play() reports it
             await queue.put(exc)
+
+    def turn_tools(self) -> ToolContext:
+        """A new hub per turn: its CallCtx, so the call cap, lives for one turn (D5, D7)."""
+        return McpHub([DeviceSource(self.ws.send_json, self.pending)]).turn_context()
 
     async def play(self, turn: int, queue: ReplyQueue, played: list[ReplyChunk]) -> None:
         clock = time.monotonic()
