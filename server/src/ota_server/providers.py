@@ -27,7 +27,8 @@ log = logging.getLogger(__name__)
 
 CONNECT_TIMEOUT = 3.0
 MIN_TIMEOUT = 0.01  # seconds; httpx needs a positive timeout
-CALL_CAPS = {CHAT: 4, STT: 2, TTS: 20, MODERATION: 2}  # per turn; one cap per client method
+CALL_CAPS = {CHAT: 4, STT: 2, TTS: 20, MODERATION: 21}  # per turn; one cap per client method
+# MODERATION: the transcript, then one call per TTS chunk.
 MAX_BODY = 8 * 1024 * 1024  # bytes, any response
 MAX_UPLOAD = 4 * 1024 * 1024  # bytes, STT input
 MAX_TTS_TEXT = 1000  # characters per TTS call

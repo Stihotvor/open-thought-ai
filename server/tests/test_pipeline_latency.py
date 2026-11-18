@@ -3,13 +3,16 @@
 import asyncio
 import logging
 import time
+from collections.abc import AsyncIterator, Awaitable
+from typing import Any
 
 import pytest
 from fakes import SPEECH, Endpoint, pipeline_for
 
 from ota_server import pipeline as pipeline_module
-from ota_server.pipeline import TurnClock, VoicePipeline
+from ota_server.pipeline import SentenceFeed, TurnClock, VoicePipeline
 from ota_server.protocol import BYTES_PER_SECOND, TurnError
+from ota_server.providers import new_turn_budget
 from ota_server.timing import StageTimer, TurnTiming, parse_line
 
 GOOD_STAGES = {
@@ -18,7 +21,7 @@ GOOD_STAGES = {
     "mod_transcript",
     "chat_first_sentence",
     "chat_full",
-    "mod_reply",
+    "mod_s1",
     "tts1",
 }
 
@@ -164,7 +167,19 @@ class NullClock:
     def chat_started(self) -> None:
         pass
 
-    def chat_text(self, text: str, delta: str) -> None:
+    def first_sentence(self) -> None:
+        pass
+
+    def chat_done(self) -> None:
+        pass
+
+    async def timed[T](self, stage: str | None, step: Awaitable[T]) -> T:
+        return await step
+
+    def fail(self, code: str) -> None:
+        pass
+
+    def closed(self) -> None:
         pass
 
     def first_audio(self) -> None:
@@ -195,31 +210,61 @@ def test_overhead_is_one_ms_or_less(monkeypatch: pytest.MonkeyPatch) -> None:
     assert (timed_best - plain_best) * 1000 <= 1
 
 
-def clock_line(deltas: list[str], caplog: pytest.LogCaptureFixture) -> TurnTiming:
+def chat_sentences(
+    deltas: list[str], monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> tuple[list[str], TurnTiming]:
+    """Run read_chat on the deltas. Return the feed chunks and the clock line."""
+    pipeline = pipeline_for(Endpoint())
+
+    async def chat(messages: Any, budget: Any) -> AsyncIterator[str]:
+        for delta in deltas:
+            yield delta
+
+    monkeypatch.setattr(pipeline.client, "chat", chat)
     clock = TurnClock(1)
     clock.chat_started()
-    text = ""
-    for delta in deltas:
-        text += delta
-        clock.chat_text(text, delta)
+    feed = SentenceFeed()
+
+    async def read() -> list[str]:
+        await pipeline.read_chat([], new_turn_budget(), feed, clock)
+        return [chunk async for chunk in chunks(feed)]
+
+    sentences = asyncio.run(read())
     caplog.clear()
     clock.log()
     [line] = lines(caplog)
-    return line
+    return sentences, line
+
+
+async def chunks(feed: SentenceFeed) -> AsyncIterator[str]:
+    while (chunk := await feed.next()) is not None:
+        yield chunk
 
 
 @pytest.mark.parametrize(
-    ("deltas", "seen"),
+    ("deltas", "sentences", "seen"),
     [
-        (["Hi", ". ", "there"], True),
-        (["Hi.", " there"], True),  # the end is split across two deltas
-        (["Hi", " there", " friend"], False),
+        (["Hi", ". ", "there"], ["Hi.", "there"], True),
+        (["Hi.", " there"], ["Hi.", "there"], True),  # the end is split across two deltas
+        (["Hi", " there", " friend"], ["Hi there friend"], False),
     ],
 )
-def test_first_sentence_scan_reads_the_new_tail(
-    deltas: list[str], seen: bool, caplog: pytest.LogCaptureFixture
+def test_chat_is_cut_into_sentences(
+    deltas: list[str],
+    sentences: list[str],
+    seen: bool,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
-    assert ("chat_first_sentence" in clock_line(deltas, caplog).stages) is seen
+    got, line = chat_sentences(deltas, monkeypatch, caplog)
+    assert got == sentences
+    assert ("chat_first_sentence" in line.stages) is seen
+
+
+def test_mod_s1_and_tts1_are_logged(caplog: pytest.LogCaptureFixture) -> None:
+    turns(Endpoint(reply="Dobrze. A ty?"))
+    [line] = lines(caplog)
+    assert {"mod_s1", "tts1"} <= set(line.stages)
 
 
 def test_closed_keeps_the_latency(caplog: pytest.LogCaptureFixture) -> None:

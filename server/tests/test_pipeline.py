@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from collections.abc import AsyncIterator
 from typing import Any
 
 import pytest
@@ -19,7 +20,7 @@ from ota_server import pipeline as pipeline_module
 from ota_server.audio import pcm_to_wav
 from ota_server.pipeline import TTS_CHUNK, VoicePipeline, system_prompt, tts_chunks
 from ota_server.protocol import BYTES_PER_SECOND, TurnError
-from ota_server.providers import CALL_CAPS, MAX_TTS_TEXT
+from ota_server.providers import CALL_CAPS, MAX_TTS_TEXT, ProviderError
 from ota_server.ratelimit import TurnBudget
 from ota_server.reply import Notify, ReplyChunk, no_notify
 
@@ -42,6 +43,19 @@ def refused(endpoint: Endpoint, pcm: bytes = SPEECH, notify: Notify = no_notify)
     return err.value.code
 
 
+def played_then_refused(endpoint: Endpoint) -> tuple[list[str], str]:
+    """The chunk texts the turn yielded before it was refused, and the refusal code."""
+    texts: list[str] = []
+
+    async def turn() -> None:
+        async for chunk in pipeline_for(endpoint)(SPEECH, ()):
+            texts.append(chunk.text)
+
+    with pytest.raises(TurnError) as err:
+        asyncio.run(turn())
+    return texts, err.value.code
+
+
 def test_turn_runs_self_test_stt_chat_tts() -> None:
     endpoint = Endpoint()
     pcm = run(endpoint)
@@ -50,8 +64,9 @@ def test_turn_runs_self_test_stt_chat_tts() -> None:
         "transcriptions",
         "moderations",  # the transcript, before chat
         "completions",
-        "moderations",  # every TTS chunk plus question and reply, before TTS
+        "moderations",  # chunk 1 plus question and reply so far, at the same time as TTS
         "speech",
+        "moderations",  # chunk 2
         "speech",
     ]
     assert len(pcm) == BYTES_PER_SECOND  # two TTS chunks of 0.5 s each, now at 16 kHz
@@ -60,7 +75,8 @@ def test_turn_runs_self_test_stt_chat_tts() -> None:
 def test_reply_is_moderated_with_its_question() -> None:
     endpoint = Endpoint()
     run(endpoint)
-    assert endpoint.moderated[-1] == ["Dobrze.", "A ty?", "Jak się masz?\nDobrze. A ty?", CANARY]
+    assert endpoint.moderated[-2] == ["Dobrze.", "Jak się masz?\nDobrze.", CANARY]
+    assert endpoint.moderated[-1] == ["A ty?", "Jak się masz?\nDobrze. A ty?", CANARY]
 
 
 def test_long_transcript_is_moderated_in_pieces_and_whole() -> None:
@@ -119,7 +135,11 @@ def test_question_with_reply_input_is_capped() -> None:
     endpoint = Endpoint(transcript="q" * 2000 + ".", reply="r" * 3000 + ".")
     run(endpoint)
     context = endpoint.moderated[-1][-2]
-    assert context == "q" * 499 + ".\n" + "r" * 1500
+    # The pair ends with the newest chunk: the last 1500 characters of the reply so far.
+    question, reply = context.split("\n")
+    assert question == "q" * 499 + "."
+    assert len(reply) == 1500
+    assert reply.endswith(".")  # the end of the newest chunk
 
 
 def test_self_test_runs_once() -> None:
@@ -131,7 +151,9 @@ def test_self_test_runs_once() -> None:
         await drain(pipeline)
 
     asyncio.run(two_turns())
-    assert endpoint.calls.count("moderations") == 1 + 2 * 2
+    assert (
+        endpoint.calls.count("moderations") == 1 + 2 * 3
+    )  # self-test, then per turn: transcript and 2 chunks
 
 
 def test_empty_transcript_is_no_speech_without_notify() -> None:
@@ -157,7 +179,19 @@ def test_failures_map_to_device_error_codes(path: str, status: int, code: str) -
     assert refused(Endpoint(fail={path: status})) == code
 
 
-STAGES = [(2, "completions"), (3, "speech")]  # (first failing moderation call, blocked call)
+# (first failing moderation call, blocked step): "audio" means no chunk was yielded.
+STAGES = [(2, "completions"), (3, "audio")]
+
+
+def assert_blocked(endpoint: Endpoint, blocked: str) -> None:
+    """The turn is refused with `moderated`. "completions": chat never ran. "audio": no
+    chunk was yielded (TTS may have run at the same time as moderation)."""
+    played, code = played_then_refused(endpoint)
+    assert code == "moderated"
+    if blocked == "audio":
+        assert played == []
+    else:
+        assert blocked not in endpoint.calls
 
 
 @pytest.mark.parametrize(("at", "blocked"), STAGES)
@@ -174,8 +208,7 @@ def test_moderation_failure_fails_closed_at_each_stage(
     at: int, blocked: str, kwargs: dict[str, Any]
 ) -> None:
     endpoint = Endpoint(from_call=at, **kwargs)
-    assert refused(endpoint) == "moderated"
-    assert blocked not in endpoint.calls
+    assert_blocked(endpoint, blocked)
 
 
 @pytest.mark.parametrize(
@@ -183,8 +216,8 @@ def test_moderation_failure_fails_closed_at_each_stage(
     [
         (LONG, "Ok.", SECOND, "completions"),  # only the second transcript piece
         (LONG, "Ok.", LONG, "completions"),  # only the whole transcript
-        ("Jak się masz?", "Dobrze. A ty?", "A ty?", "speech"),  # only the last reply chunk
-        (DOSE_Q, DOSE_A, f"{DOSE_Q}\n{DOSE_A}", "speech"),  # only the question with the reply
+        ("Jak się masz?", "Ok.", "Ok.", "audio"),  # only the reply chunk
+        (DOSE_Q, DOSE_A, f"{DOSE_Q}\n{DOSE_A}", "audio"),  # only the question with the reply
     ],
 )
 def test_a_flag_on_any_single_input_refuses(
@@ -195,15 +228,14 @@ def test_a_flag_on_any_single_input_refuses(
         reply=reply,
         flag=lambda text: self_test_only(text) or text == flagged_text,
     )
-    assert refused(endpoint) == "moderated"
-    assert blocked not in endpoint.calls
+    assert_blocked(endpoint, blocked)
 
 
 @pytest.mark.parametrize(
     ("kwargs", "side", "never_called"),
     [
         ({"transcript": "how to hurt myself"}, "transcript", "completions"),
-        ({"reply": "Something hurtful. More."}, "reply", "speech"),
+        ({"reply": "Something hurtful. More."}, "reply", "audio"),
     ],
 )
 def test_flagged_text_is_moderated_and_logged(
@@ -211,8 +243,7 @@ def test_flagged_text_is_moderated_and_logged(
 ) -> None:
     endpoint = Endpoint(flag=lambda text: self_test_only(text) or "hurt" in text, **kwargs)
     with caplog.at_level(logging.WARNING):
-        assert refused(endpoint) == "moderated"
-    assert never_called not in endpoint.calls
+        assert_blocked(endpoint, never_called)
     assert f"moderation flagged the {side}" in caplog.text
     assert "hurt" not in caplog.text  # the text itself is never logged
 
@@ -232,8 +263,7 @@ def test_flagged_text_is_moderated_and_logged(
 @pytest.mark.parametrize(("at", "blocked"), STAGES)
 def test_suspect_results_fail_closed(result: dict[str, Any], at: int, blocked: str) -> None:
     endpoint = Endpoint(result=result, from_call=at)
-    assert refused(endpoint) == "moderated"
-    assert blocked not in endpoint.calls
+    assert_blocked(endpoint, blocked)
 
 
 @pytest.mark.parametrize(
@@ -312,10 +342,14 @@ def test_playback_time_does_not_count_against_the_deadline(monkeypatch: pytest.M
     assert asyncio.run(slow_listener()) == 3
 
 
-def test_a_flagged_reply_makes_no_audio() -> None:
+def test_a_flagged_chunk_is_not_played() -> None:
     endpoint = Endpoint(flag=lambda t: self_test_only(t) or "ty?" in t)
-    assert refused(endpoint) == "moderated"
-    assert "speech" not in endpoint.calls
+    assert played_then_refused(endpoint) == (["Dobrze."], "moderated")
+
+
+def test_a_flag_on_a_later_chunk_stops_the_reply_there() -> None:
+    endpoint = Endpoint(reply="One. Two. Three.", flag=lambda t: self_test_only(t) or "Two" in t)
+    assert played_then_refused(endpoint) == (["One."], "moderated")
 
 
 def test_chunks_carry_their_text_and_question() -> None:
@@ -379,3 +413,60 @@ def test_stt_gets_trimmed_audio(monkeypatch: pytest.MonkeyPatch) -> None:
     run(Endpoint(), SILENCE + SPEECH + SILENCE)
     assert len(sizes) == 1
     assert BYTES_PER_SECOND <= sizes[0] <= 1.5 * BYTES_PER_SECOND
+
+
+def test_first_audio_comes_before_the_chat_stream_ends(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Sentence 1 is moderated and spoken while chat still streams: the chat fake holds
+    sentence 2 back until the turn yielded the first audio."""
+    pipeline = pipeline_for(Endpoint())
+    played = asyncio.Event()
+
+    async def chat(messages: Any, budget: Any) -> AsyncIterator[str]:
+        yield "Dobrze. "
+        await asyncio.wait_for(played.wait(), 5)
+        yield "A ty?"
+
+    monkeypatch.setattr(pipeline.client, "chat", chat)
+
+    async def turn() -> list[str]:
+        texts = []
+        async for chunk in pipeline(SPEECH, ()):
+            texts.append(chunk.text)
+            played.set()
+        return texts
+
+    assert asyncio.run(turn()) == ["Dobrze.", "A ty?"]
+
+
+def test_a_chat_error_after_sentence_1_is_llm_failed(monkeypatch: pytest.MonkeyPatch) -> None:
+    pipeline = pipeline_for(Endpoint())
+
+    async def chat(messages: Any, budget: Any) -> AsyncIterator[str]:
+        yield "Dobrze. "
+        raise ProviderError("chat")
+
+    monkeypatch.setattr(pipeline.client, "chat", chat)
+    texts: list[str] = []
+
+    async def turn() -> None:
+        async for chunk in pipeline(SPEECH, ()):
+            texts.append(chunk.text)
+
+    with pytest.raises(TurnError) as err:
+        asyncio.run(turn())
+    assert err.value.code == "llm_failed"
+    assert texts == ["Dobrze."]  # sentences before the error still play
+
+
+def test_a_long_reply_ends_cleanly_at_the_chunk_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(pipeline_module, "MAX_CHUNKS", 2)
+    pipeline = pipeline_for(Endpoint(reply="One. Two. " + "x" * TTS_CHUNK + "."))
+
+    async def turn() -> list[str]:
+        return [chunk.text async for chunk in pipeline(SPEECH, ())]
+
+    assert asyncio.run(turn()) == ["One.", "Two."]
+
+
+def test_the_moderation_cap_covers_every_chunk() -> None:
+    assert CALL_CAPS["moderation"] == pipeline_module.MAX_CHUNKS + 1  # + the transcript

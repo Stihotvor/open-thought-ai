@@ -100,22 +100,22 @@ The stage names describe what the code does today. The budget rows come from `do
 | `vad` | Upload tail + VAD end (0.2 s) | server VAD end |
 | `stt` | STT (1.2 s) | |
 | `mod_transcript` | no budget row | moderation of the STT text |
-| `chat_first_sentence` | LLM to first sentence (2.0 s) | passive: the pipeline waits for the full reply |
+| `chat_first_sentence` | LLM to first sentence (2.0 s) | time from the chat start to the first sentence end |
 | `chat_full` | no budget row | the full chat reply |
-| `mod_reply` | Moderation of sentence 1 (0.5 s) | covers the whole reply, not sentence 1 |
+| `mod_s1` | Moderation of sentence 1 (0.5 s) | runs at the same time as `tts1` |
 | `tts1` | TTS of sentence 1 + resample (0.8 s) | |
 | `selftest` | no budget row | first turn only, so it is in the warm-up |
 | Network + device buffer | 0.3 s | not measured: no device in the run |
 | `latency_ms (total)` | p50 target 5 s | |
 
-- "Missing" counts ok turns that have no time for the stage. For example, a reply with no first sentence has no chat and TTS times.
+- "Missing" counts ok turns that have no time for the stage. For example, a reply with no sentence end has no `chat_first_sentence` time.
 - The "not measured" rows are not in `latency_ms`. Remember this when you compare p50 with the 5 s target.
 - The line under the table says if p50 `latency_ms` meets or misses the target, for each language.
 
-### The streaming-saving line
-- The line "Time per-sentence streaming could save" shows `chat_full - chat_first_sentence`.
-- This is the time that per-sentence streaming could save. The pipeline does not stream sentences today.
-- If p50 misses the target and this gap is large, streaming is the first fix to look at.
+### The chat-overlap line
+- The line "Chat time after sentence 1, which overlaps audio" shows `chat_full - chat_first_sentence`.
+- The pipeline streams per sentence, so this chat time runs while sentence 1 is moderated and played.
+- First sound waits for `chat_first_sentence`, then the longer of `mod_s1` and `tts1`.
 
 ### WER
 - WER compares the STT text with the phrase text. It is a side number. It does not fail the run.

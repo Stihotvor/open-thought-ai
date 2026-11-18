@@ -43,7 +43,7 @@ EXPECTED_EN = {
     "mod_transcript": (200, 285),
     "chat_first_sentence": (1500, 1950),
     "chat_full": (2750, 3850),
-    "mod_reply": (550, 685),
+    "mod_s1": (550, 685),
     "tts1": (850, 985),
 }
 EXPECTED_PL = {
@@ -52,7 +52,7 @@ EXPECTED_PL = {
     "mod_transcript": (200, 245),
     "chat_first_sentence": (2000, 2180),
     "chat_full": (3000, 3360),
-    "mod_reply": (500, 545),
+    "mod_s1": (500, 545),
     "tts1": (800, 845),
 }
 
@@ -146,13 +146,13 @@ def test_budget_footnote_notes_and_not_measured() -> None:
         "vad": "0.2 s",
         "stt": "1.2 s",
         "chat_first_sentence": "2.0 s",
-        "mod_reply": "0.5 s",
+        "mod_s1": "0.5 s",
         "tts1": "0.8 s",
     }
     for stage, budget in budgets.items():
         row = next(line for line in report.splitlines() if line.startswith(f"| {stage} |"))
         assert budget in row
-    assert "per-sentence streaming" in report
+    assert "streams per sentence" in report
     assert "synthetic" in report and "Piper" in report
     upload = next(line for line in report.splitlines() if line.startswith("| Upload tail"))
     network = next(line for line in report.splitlines() if line.startswith("| Network + device"))
@@ -167,7 +167,7 @@ def test_streaming_gap() -> None:
     summary = summarize("\n".join(lines), None)[0]
     assert pair(summary.saving) == (2000, 2000)
     report = build_report("\n".join(lines), None)
-    row = next(line for line in report.splitlines() if "streaming could save" in line)
+    row = next(line for line in report.splitlines() if "overlaps audio" in line)
     assert "2000" in row
 
 
