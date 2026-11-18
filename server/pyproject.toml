@@ -39,10 +39,12 @@ select = ["E", "F", "I", "B", "UP", "SIM"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["scripts"]  # tests import the scripts as modules
 
 [tool.mypy]
 python_version = "3.12"
 strict = true
+mypy_path = "scripts"
 warn_unused_ignores = true
 warn_redundant_casts = true
 
