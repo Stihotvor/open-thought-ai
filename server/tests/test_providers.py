@@ -13,8 +13,13 @@ from model_env import ENDPOINTS
 from ota_server.endpoints import ConfigError, load_roles
 from ota_server.providers import (
     MAX_CHAT_TEXT,
+    MAX_TOOL_ARG_CHARS,
+    MAX_TOOL_INDEXES,
     ModelClient,
     ProviderError,
+    TextDelta,
+    ToolCallRequest,
+    ToolCallsDone,
     make_buckets,
     make_http_client,
     new_turn_budget,
@@ -329,3 +334,120 @@ def test_chat_stream_hits_deadline() -> None:
     client = client_with(lambda req: httpx.Response(200, stream=SlowStream()))
     with pytest.raises(DeadlineExceeded):
         asyncio.run(collect(client, TurnBudget(deadline_s=0.2)))
+
+
+# --- chat_turn with tools ---
+
+TOOLS = [{"type": "function", "function": {"name": "set_light", "parameters": {}}}]
+
+
+def tool_chunk(index: Any, **fields: Any) -> str:
+    call: dict[str, Any] = {"index": index}
+    if "id" in fields:
+        call["id"] = fields.pop("id")
+    if fields:
+        call["function"] = fields
+    return "data: " + json.dumps({"choices": [{"delta": {"tool_calls": [call]}}]})
+
+
+def stream(*lines: str) -> str:
+    return "\n\n".join([*lines, "data: [DONE]"]) + "\n\n"
+
+
+async def collect_turn(
+    client: ModelClient, tools: list[dict[str, Any]] | None = None, tool_choice: str | None = None
+) -> list[TextDelta | ToolCallsDone]:
+    turn = client.chat_turn(
+        [{"role": "user", "content": "hi"}], new_turn_budget(), tools, tool_choice
+    )
+    async with contextlib.aclosing(turn) as items:
+        return [item async for item in items]
+
+
+def turn_of(text: str) -> list[TextDelta | ToolCallsDone]:
+    return asyncio.run(collect_turn(client_with(lambda req: httpx.Response(200, text=text))))
+
+
+def test_chat_turn_sends_tools_field() -> None:
+    bodies: list[dict[str, Any]] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(req.content))
+        return httpx.Response(200, text=sse("ok"))
+
+    client = client_with(handler)
+    asyncio.run(collect_turn(client, TOOLS, "none"))
+    asyncio.run(collect_turn(client))
+    assert bodies[0]["tools"] == TOOLS
+    assert bodies[0]["tool_choice"] == "none"
+    assert "tools" not in bodies[1]
+    assert "tool_choice" not in bodies[1]
+
+
+def test_chat_turn_text_then_tool_calls() -> None:
+    text = stream(
+        sse("Ok.").removesuffix("\n\ndata: [DONE]\n\n"),
+        tool_chunk(0, id="call_1", name="set_light"),
+        tool_chunk(0, arguments='{"on": '),
+        tool_chunk(0, arguments="true}"),
+    )
+    call = ToolCallRequest(id="call_1", name="set_light", arguments='{"on": true}')
+    assert turn_of(text) == [TextDelta("Ok."), ToolCallsDone((call,))]
+
+
+def test_chat_turn_two_calls_ordered_by_index() -> None:
+    text = stream(
+        tool_chunk(1, id="b", name="two"),
+        tool_chunk(0, id="a", name="one"),
+        tool_chunk(1, arguments="{}"),
+        tool_chunk(0, arguments="[]"),
+    )
+    done = turn_of(text)[-1]
+    assert isinstance(done, ToolCallsDone)
+    assert done.calls == (ToolCallRequest("a", "one", "[]"), ToolCallRequest("b", "two", "{}"))
+
+
+def test_chat_turn_too_many_indexes_fails() -> None:
+    lines = [tool_chunk(i, id=f"c{i}", name="n") for i in range(MAX_TOOL_INDEXES + 1)]
+    with pytest.raises(ProviderError) as err:
+        turn_of(stream(*lines))
+    assert err.value.role == "chat"
+
+
+def test_chat_turn_too_long_arguments_fail() -> None:
+    half = MAX_TOOL_ARG_CHARS // 2
+    text = stream(
+        tool_chunk(0, id="a", name="n", arguments="x" * half),
+        tool_chunk(1, id="b", name="n", arguments="x" * (MAX_TOOL_ARG_CHARS - half + 1)),
+    )
+    with pytest.raises(ProviderError) as err:
+        turn_of(text)
+    assert err.value.role == "chat"
+
+
+@pytest.mark.parametrize(
+    "lines",
+    [
+        [tool_chunk("x", id="a", name="n")],
+        [tool_chunk(-1, id="a", name="n")],
+        [tool_chunk(True, id="a", name="n")],
+        [tool_chunk(0, id="a", arguments="{}")],  # no name at the end
+        [tool_chunk(0, name="n", arguments="{}")],  # no id at the end
+        [tool_chunk(0, id="a", name="n", arguments=5)],
+        ['data: {"choices": [{"delta": {"tool_calls": ["x"]}}]}'],
+        ['data: {"choices": [{"delta": {"tool_calls": {"index": 0}}}]}'],
+        ['data: {"choices": [{"delta": {"tool_calls": [{"index": 0, "function": "f"}]}}]}'],
+    ],
+)
+def test_chat_turn_broken_delta_fails(lines: list[str]) -> None:
+    with pytest.raises(ProviderError) as err:
+        turn_of(stream(*lines))
+    assert err.value.role == "chat"
+
+
+def test_chat_with_tool_calls_stream_fails() -> None:
+    text = stream(tool_chunk(0, id="a", name="n", arguments="{}"))
+    client = client_with(lambda req: httpx.Response(200, text=text))
+    with pytest.raises(ProviderError) as err:
+        asyncio.run(collect(client))
+    assert err.value.role == "chat"
