@@ -30,8 +30,7 @@ from typing import Any
 
 from .audio import AudioError, wav_to_pcm
 from .config import model_env
-from .endpoints import ConfigError
-from .main import voice_roles
+from .endpoints import ConfigError, voice_roles
 from .pipeline import LANGUAGE_NAMES, VoicePipeline
 from .pipeline import log as pipeline_log
 from .protocol import TurnError
@@ -60,17 +59,21 @@ def new_run_id() -> str:
     return f"{datetime.now(UTC):%Y%m%dT%H%M%SZ}-{secrets.token_hex(2)}"
 
 
+def _parse_last(line: str) -> dict[str, Any] | None:
+    """The record of the last line, or None with a warning when the line is damaged."""
+    try:
+        record: dict[str, Any] = json.loads(line)
+    except json.JSONDecodeError:
+        log.warning("%s: the damaged last line is dropped", RUN_FILE)
+        return None
+    return record
+
+
 def _parse_lines(lines: list[str]) -> list[dict[str, Any]]:
     """JSON objects of the lines. Only the last line may be damaged: it is skipped."""
-    records: list[dict[str, Any]] = []
-    for index, line in enumerate(lines):
-        try:
-            records.append(json.loads(line))
-        except json.JSONDecodeError:
-            if index < len(lines) - 1:
-                raise
-            log.warning("%s: the damaged last line is skipped", RUN_FILE)
-    return records
+    records: list[dict[str, Any]] = [json.loads(line) for line in lines[:-1]]
+    last = _parse_last(lines[-1]) if lines else None
+    return records if last is None else [*records, last]
 
 
 def read_records(path: Path) -> list[dict[str, Any]]:
@@ -82,22 +85,20 @@ def read_records(path: Path) -> list[dict[str, Any]]:
 
 
 def drop_damaged_tail(path: Path) -> None:
-    """Remove a damaged last line, so new records start on a clean line."""
+    """Cut a damaged last line off in place, so new records start on a clean line."""
     if not path.exists():
         return
-    text = path.read_text(encoding="utf-8")
-    body, _, last = text.rstrip("\n").rpartition("\n")
-    if not last.strip():
-        return
-    try:
-        json.loads(last)
-    except json.JSONDecodeError:
-        log.warning("%s: the damaged last line is dropped", RUN_FILE)
-        path.write_text(body + "\n" if body else "", encoding="utf-8")
-        return
-    if not text.endswith("\n"):
-        with path.open("a", encoding="utf-8") as f:
-            f.write("\n")
+    with path.open("r+b") as f:
+        data = f.read()
+        body = data.rstrip(b"\n")
+        start = body.rfind(b"\n") + 1  # just after the last good newline
+        last = body[start:]
+        if not last.strip():
+            return
+        if _parse_last(last.decode("utf-8", errors="replace")) is None:
+            f.truncate(start)
+        elif not data.endswith(b"\n"):
+            f.write(b"\n")  # the file position is at the end after read()
 
 
 def done_ids(records: Sequence[dict[str, Any]], lang: str) -> set[str]:

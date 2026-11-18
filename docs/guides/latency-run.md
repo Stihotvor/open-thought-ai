@@ -51,7 +51,7 @@ Run all commands from the repo root. The run reads `.env` from the current direc
    - Set `OTA_CHAT_*`, `OTA_STT_*`, `OTA_TTS_*` and `OTA_MODERATION_*` as for the real server. See `.env.example`.
    - Voice mode needs all four roles. Without one, the run stops with `config error`.
    - The run uses one TTS voice from `OTA_TTS_VOICE`. Set the voice for each language on the command line (step 4). Variables on the command line win over `.env`.
-   - If your TTS model id is different for each voice (Piper on speaches), also set `OTA_TTS_MODEL` on the command line.
+   - Piper on speaches can use a different TTS model id for each voice. In that case, also set `OTA_TTS_MODEL` on the command line.
 
 4. Run each language with `latency_run`. Use one output folder for all three languages.
 
@@ -80,7 +80,7 @@ Run all commands from the repo root. The run reads `.env` from the current direc
 
 6. Save the report.
    - Keep the report as `docs/research/m3-latency-<date>.md`. Use the date of the run, for example `m3-latency-2026-11-20.md`.
-   - Add one line on top: the endpoints and models for each role, the speaches host (CPU or GPU) and the pause.
+   - Add one line on top of the report. Write the endpoints and models for each role. Also write the speaches host (CPU or GPU) and the pause.
    - Do not add `run.jsonl` or the log files to git.
 
 ## Read the report

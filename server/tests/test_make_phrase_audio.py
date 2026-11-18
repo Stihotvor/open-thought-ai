@@ -1,6 +1,7 @@
 """T4: make_phrase_audio with a fake speaches (httpx.MockTransport). No network."""
 
 import io
+import json
 import wave
 from pathlib import Path
 
@@ -70,3 +71,32 @@ def test_one_file_per_phrase_and_language(tmp_path: Path) -> None:
     for lang in ("en", "pl", "uk"):
         assert len(list((tmp_path / lang).glob("*.wav"))) == 30
     assert fake.speech_calls == 90
+
+
+@pytest.mark.parametrize("bad_id", ["../p01", "p 01", "", "p01/x"])
+def test_bad_phrase_id_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], bad_id: str
+) -> None:
+    path = tmp_path / "phrases.json"
+    path.write_text(json.dumps({"phrases": [{"id": bad_id, "en": "a", "pl": "b", "uk": "c"}]}))
+    fake = FakeSpeaches()
+    code = main(["--out", str(tmp_path / "out"), "--phrases", str(path)], client=fake.client())
+    assert code == 1
+    assert "phrase id" in capsys.readouterr().err
+    assert fake.speech_calls == 0
+    assert not (tmp_path / "out").exists()
+
+
+def test_voice_options_are_used(tmp_path: Path) -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200)
+        seen.append(json.loads(request.content)["voice"])
+        return httpx.Response(200, content=wav_bytes())
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    args = ["--out", str(tmp_path), "--phrases", str(one_phrase_file(tmp_path)), "--voice-pl", "x"]
+    assert main(args, client=client) == 0
+    assert seen == ["en_US-amy-medium", "x", "uk_UA-ukrainian_tts-medium"]

@@ -9,6 +9,7 @@ Usage (from server/): python scripts/make_phrase_audio.py [--base-url URL] [--ou
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -26,6 +27,7 @@ VOICES = {  # Piper voices served by speaches as speaches-ai/piper-<voice>; veri
     "uk": "uk_UA-ukrainian_tts-medium",
 }
 TIMEOUT = 120.0  # seconds; the first call may load the model
+PHRASE_ID = re.compile(r"[A-Za-z0-9_-]+")  # the id is a file name: no path parts
 
 
 class ScriptError(Exception):
@@ -39,7 +41,9 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--phrases", type=Path, default=PHRASES, help="phrase JSON file")
     for lang, voice in VOICES.items():
         parser.add_argument(f"--voice-{lang}", default=voice, help=f"Piper voice for {lang}")
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    args.voices = {lang: vars(args)[f"voice_{lang}"] for lang in VOICES}
+    return args
 
 
 def health_url(base_url: str) -> str:
@@ -60,6 +64,9 @@ def check_health(client: httpx.Client, base_url: str) -> None:
 def load_phrases(path: Path) -> list[dict[str, str]]:
     data = json.loads(path.read_text(encoding="utf-8"))
     phrases: list[dict[str, str]] = data["phrases"]
+    for phrase in phrases:
+        if not PHRASE_ID.fullmatch(str(phrase["id"])):
+            raise ScriptError(f"phrase id {phrase['id']!r} must match {PHRASE_ID.pattern}")
     return phrases
 
 
@@ -81,9 +88,9 @@ def synthesize(client: httpx.Client, base_url: str, text: str, voice: str) -> by
 
 def write_all(client: httpx.Client, args: argparse.Namespace) -> int:
     count = 0
+    voices: dict[str, str] = args.voices
     for phrase in load_phrases(args.phrases):
-        for lang in VOICES:
-            voice: str = getattr(args, f"voice_{lang}")
+        for lang, voice in voices.items():
             target = args.out / lang / f"{phrase['id']}.wav"
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(synthesize(client, args.base_url, phrase[lang], voice))

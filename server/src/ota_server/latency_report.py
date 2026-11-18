@@ -28,13 +28,17 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from ota_server.timing import STAGES
+from .timing import STAGES
 
 TARGET_MS = 5000
 OK = "ok"
 METHOD = 'linear interpolation between closest ranks (statistics.quantiles, method="inclusive")'
+UPLOAD_TAIL = "Upload tail"  # row label of the stage the server cannot measure
+# statistics.quantiles(n=100) gives 99 cut points: index i is percentile i + 1.
+P50_CUT = 49
+P95_CUT = 94
 BUDGET = {
-    "vad": "0.2 s (Upload tail + VAD end)",
+    "vad": f"0.2 s ({UPLOAD_TAIL} + VAD end)",
     "stt": "1.2 s",
     "chat_first_sentence": "2.0 s",
     "mod_reply": "0.5 s",
@@ -110,7 +114,7 @@ def percentiles(values: Sequence[float]) -> tuple[float | None, float | None]:
     if len(values) == 1:
         return float(values[0]), float(values[0])
     cuts = statistics.quantiles(values, n=100, method="inclusive")
-    return cuts[49], cuts[94]
+    return cuts[P50_CUT], cuts[P95_CUT]
 
 
 def stat(values: Sequence[float], missing: int = 0) -> StageStat:
@@ -225,7 +229,7 @@ def stage_table(summary: LanguageSummary) -> list[str]:
     lines = [
         "| Stage | n | Missing | p50 ms | p95 ms | Budget ¹ |",
         "|---|---|---|---|---|---|",
-        "| Upload tail | - | - | not measured | not measured | part of " + BUDGET["vad"] + " |",
+        f"| {UPLOAD_TAIL} | - | - | not measured | not measured | part of {BUDGET['vad']} |",
     ]
     for name in STAGES:
         lines.append(stat_row(name, summary.stages[name], BUDGET.get(name, NO_BUDGET)))

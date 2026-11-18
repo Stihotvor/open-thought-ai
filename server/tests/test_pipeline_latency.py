@@ -8,7 +8,7 @@ import pytest
 from fakes import SPEECH, Endpoint, pipeline_for
 
 from ota_server import pipeline as pipeline_module
-from ota_server.pipeline import VoicePipeline
+from ota_server.pipeline import TurnClock, VoicePipeline
 from ota_server.protocol import BYTES_PER_SECOND, TurnError
 from ota_server.timing import StageTimer, TurnTiming, parse_line
 
@@ -164,7 +164,7 @@ class NullClock:
     def chat_started(self) -> None:
         pass
 
-    def chat_text(self, text: str) -> None:
+    def chat_text(self, text: str, delta: str) -> None:
         pass
 
     def first_audio(self) -> None:
@@ -193,3 +193,40 @@ def test_overhead_is_one_ms_or_less(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(pipeline_module, "TurnClock", NullClock)
         plain_best = min(plain_best, fastest_turn(plain, 3))
     assert (timed_best - plain_best) * 1000 <= 1
+
+
+def clock_line(deltas: list[str], caplog: pytest.LogCaptureFixture) -> TurnTiming:
+    clock = TurnClock(1)
+    clock.chat_started()
+    text = ""
+    for delta in deltas:
+        text += delta
+        clock.chat_text(text, delta)
+    caplog.clear()
+    clock.log()
+    [line] = lines(caplog)
+    return line
+
+
+@pytest.mark.parametrize(
+    ("deltas", "seen"),
+    [
+        (["Hi", ". ", "there"], True),
+        (["Hi.", " there"], True),  # the end is split across two deltas
+        (["Hi", " there", " friend"], False),
+    ],
+)
+def test_first_sentence_scan_reads_the_new_tail(
+    deltas: list[str], seen: bool, caplog: pytest.LogCaptureFixture
+) -> None:
+    assert ("chat_first_sentence" in clock_line(deltas, caplog).stages) is seen
+
+
+def test_closed_keeps_the_latency(caplog: pytest.LogCaptureFixture) -> None:
+    clock = TurnClock(1)
+    clock.first_audio()
+    clock.closed()
+    caplog.clear()
+    clock.log()
+    [line] = lines(caplog)
+    assert (line.code, line.latency_ms is not None) == ("closed", True)

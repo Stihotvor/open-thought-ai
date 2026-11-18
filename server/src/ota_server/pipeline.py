@@ -156,9 +156,12 @@ class TurnClock:
         if self._chat is not None:
             _safe(self._chat.start)
 
-    def chat_text(self, text: str) -> None:
-        """Note the first time the chat text so far has a sentence end."""
-        if self._sentence_seen or self._chat is None or not SENTENCE_END.search(text):
+    def chat_text(self, text: str, delta: str) -> None:
+        """Note the first time the chat text so far has a sentence end. Only the new tail
+        is searched: delta, and one character before it for an end split across deltas."""
+        if self._sentence_seen or self._chat is None:
+            return
+        if not SENTENCE_END.search(text[max(0, len(text) - len(delta) - 1) :]):
             return
         self._sentence_seen = True
         _safe(self._chat.mark, "chat_first_sentence")
@@ -166,6 +169,10 @@ class TurnClock:
     def fail(self, code: str) -> None:
         """A failed turn logs its code and no latency."""
         self.code, self.latency_ms = code, None
+
+    def closed(self) -> None:
+        """The session closed or cancelled the turn: the latency stays."""
+        self.code = "closed"
 
     def first_audio(self) -> None:
         if self.latency_ms is None and self._turn is not None:
@@ -275,7 +282,7 @@ class VoicePipeline:  # pylint: disable=too-few-public-methods  # a callable Rep
         text = ""
         async for delta in deltas:
             text += delta
-            clock.chat_text(text)
+            clock.chat_text(text, delta)
         return text.strip()
 
     async def __call__(
@@ -296,7 +303,7 @@ class VoicePipeline:  # pylint: disable=too-few-public-methods  # a callable Rep
             clock.fail("internal")
             raise
         except BaseException:  # the session closed or cancelled the turn: latency stays
-            clock.code = "closed"
+            clock.closed()
             raise
         finally:
             clock.log()

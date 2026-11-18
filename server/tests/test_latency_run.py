@@ -14,7 +14,7 @@ from fakes import ENV, SPEECH, Endpoint
 from ota_server import latency_run
 from ota_server.audio import pcm_to_wav
 from ota_server.latency_report import parse_records
-from ota_server.latency_run import RunConfig, read_records, run
+from ota_server.latency_run import RunConfig, drop_damaged_tail, read_records, run
 from ota_server.pipeline import SELF_TEST, VoicePipeline
 
 IDS = ("p01", "p02", "p03")
@@ -265,3 +265,34 @@ def test_damaged_middle_line_stops_the_run(tmp_path: Path) -> None:
     (cfg.out / "run.jsonl").write_text("{bad\n" + json.dumps(done("p01")) + "\n", "utf-8")
     with pytest.raises(json.JSONDecodeError):
         harness(cfg, endpoint())
+
+
+def test_drop_damaged_tail_truncates_in_place(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    path = tmp_path / "run.jsonl"
+    good = json.dumps(done("p01")) + "\n"
+    path.write_bytes(good.encode() + b'{"phrase_id": "\xc5')  # cut inside a UTF-8 character
+    inode = path.stat().st_ino
+    with caplog.at_level(logging.WARNING, logger="ota_server.latency_run"):
+        drop_damaged_tail(path)
+    assert path.read_text(encoding="utf-8") == good
+    assert path.stat().st_ino == inode
+    assert caplog.text.count("damaged last line") == 1
+
+
+def test_drop_damaged_tail_only_line(tmp_path: Path) -> None:
+    path = tmp_path / "run.jsonl"
+    path.write_text('{"run": "o', encoding="utf-8")
+    drop_damaged_tail(path)
+    assert path.read_bytes() == b""
+
+
+def test_read_records_skips_damaged_last_line(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    path = tmp_path / "run.jsonl"
+    path.write_text(json.dumps(done("p01")) + '\n{"run', encoding="utf-8")
+    with caplog.at_level(logging.WARNING, logger="ota_server.latency_run"):
+        assert [r["phrase_id"] for r in read_records(path)] == ["p01"]
+    assert "damaged last line" in caplog.text

@@ -1,13 +1,13 @@
 """FastAPI app factory. Run: uvicorn ota_server.main:app"""
 
 import logging
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
 
 from fastapi import FastAPI
 
 from .config import Settings, get_settings, model_env
-from .endpoints import CHAT, MODERATION, STT, TTS, ConfigError, RoleConfig, load_roles
+from .endpoints import voice_roles
 from .gateway import router
 from .pipeline import VoicePipeline
 from .providers import ModelClient, make_http_client
@@ -15,18 +15,6 @@ from .reply import ReplySource
 from .session import echo
 
 log = logging.getLogger(__name__)
-
-VOICE_ROLES = (STT, MODERATION, CHAT, TTS)  # no voice without moderation
-
-
-def voice_roles(env: Mapping[str, str]) -> dict[str, RoleConfig]:
-    """Check that the voice pipeline may start, and return its model roles.
-    Raises ConfigError when a role is missing, moderation included."""
-    roles = load_roles(env)
-    missing = [role for role in VOICE_ROLES if role not in roles]
-    if missing:
-        raise ConfigError(f"the voice pipeline needs these roles: {', '.join(missing)}")
-    return roles
 
 
 async def start_reply_source(settings: Settings, stack: AsyncExitStack) -> ReplySource:
