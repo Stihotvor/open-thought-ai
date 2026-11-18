@@ -9,10 +9,10 @@ Hours are human hours with AI help (estimates).
 | M0.5 | Hardware review (EDA agent) | `docs/hardware.md` approved, pins fixed | 3–6 |
 | M1 | Firmware bring-up | Wi-Fi via SoftAP, tone plays, face shows, mic level logged | 8–15 |
 | M2 | Link + echo | Speech goes to server and plays back | 6–10 |
-| M3 | Voice pipeline | EN/PL/UK round trip, latency p50 ≤ 5 s measured | 10–20 |
+| M3 | Voice pipeline | EN/PL/UK round trip in code and tests (live run moved to M6) | 10–20 |
 | M4 | MCP hub | Device tool + one n8n MCP tool work, risky tool asks to confirm | 10–18 |
 | M5 | Web UI + Postgres | Settings, MCP servers, tools, history, retention in UI | 6–12 |
-| M6 | Hardening | Abort ≤ 300 ms, 24 h soak, CI green, heap ≥ 40 KB | 8–15 |
+| M6 | Hardening | Abort ≤ 300 ms, 24 h soak, CI green, heap ≥ 40 KB, live latency p50 ≤ 5 s | 8–15 |
 | M7 | Later | Qdrant memory, server wake word, public `wss://` | 6–12 |
 
 Total M0–M6: 54–101 h.
@@ -89,3 +89,4 @@ Status (2026-11-16): device link, push-to-talk and echo work on the board, with 
 - Reconnect tests, server restart test.
 - Unit tests (pytest), firmware build in CI (GitHub Actions).
 - 24 h soak script and report.
+- Owner tests moved from M3 (2026-11-18): the live latency run ([guide](guides/latency-run.md), p50 ≤ 5 s for EN, PL and UK) and the board test of the device error sounds (#25).
