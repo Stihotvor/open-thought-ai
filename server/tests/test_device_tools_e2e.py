@@ -160,7 +160,7 @@ def test_no_tool_result_times_out(monkeypatch: pytest.MonkeyPatch) -> None:
     [(outcome, waited)] = outcomes
     assert outcome.code == "tool_timeout"
     assert 1.8 <= waited <= 2.2
-    assert "tool_timeout" in tool_messages(endpoint.chats[1])[0]
+    assert "the device did not answer in time" in tool_messages(endpoint.chats[1])[0]
     assert ends(socket) == [{"type": "reply.end", "turn": 1, "reason": "done"}]
 
 

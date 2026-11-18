@@ -93,3 +93,19 @@ def test_fail_all_raises_pending_closed() -> None:
         return results
 
     assert all(isinstance(r, PendingClosed) for r in asyncio.run(scenario()))
+
+
+def test_a_blocking_send_ends_as_timeout() -> None:
+    async def stuck() -> None:
+        await asyncio.Event().wait()
+
+    async def scenario() -> float:
+        loop = asyncio.get_running_loop()
+        start = loop.time()
+        with pytest.raises(TimeoutError):  # the outer 1 s guard only fires if send is outside
+            await asyncio.wait_for(pending.wait_for(1, 0.05, stuck), 1.0)
+        return loop.time() - start
+
+    pending = PendingCalls()
+    assert asyncio.run(scenario()) < 0.5
+    assert len(pending) == 0

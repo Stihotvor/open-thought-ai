@@ -38,7 +38,8 @@ import logging
 from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine
 from typing import Any
 
-from .agent import LANGUAGE_NAMES as LANGUAGE_NAMES  # re-exported: the prompt is in agent.py
+# LANGUAGE_NAMES and system_prompt are re-exported: the prompt is in agent.py
+from .agent import LANGUAGE_NAMES as LANGUAGE_NAMES
 from .agent import SENTENCE_END, read_chat
 from .agent import system_prompt as system_prompt
 from .audio import AudioError, pcm_to_wav, wav_to_pcm

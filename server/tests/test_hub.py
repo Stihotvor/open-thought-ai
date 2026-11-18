@@ -2,9 +2,12 @@
 
 import asyncio
 import json
+import logging
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any
+
+import pytest
 
 from ota_server.hub.device_source import FACES, DeviceSource
 from ota_server.hub.hub import McpHub
@@ -89,6 +92,7 @@ def test_timeout() -> None:
     elapsed = time.monotonic() - start
     assert outcome.ok is False
     assert outcome.code == "tool_timeout"
+    assert "the device did not answer in time" in outcome.text
     assert 1.8 <= elapsed <= 2.2
     assert len(send.frames) == 1
 
@@ -171,3 +175,15 @@ def test_run_never_raises_on_source_bug() -> None:
     outcome = run(hub, "device__get_status", {})
     assert outcome.ok is False
     assert outcome.code == "internal"
+
+
+def test_one_info_line_per_call_without_args_or_results(caplog: pytest.LogCaptureFixture) -> None:
+    hub, _ = make_hub(FakePending(DeviceResult(True, "secret-result")))
+    with caplog.at_level(logging.INFO, logger="ota_server.hub.hub"):
+        run(hub, "device__set_volume", {"level": 37})
+        run(hub, "device__nope", {})
+    lines = [r.getMessage() for r in caplog.records if r.name == "ota_server.hub.hub"]
+    assert len(lines) == 2
+    assert "device__set_volume" in lines[0] and "True" in lines[0]
+    assert "device__nope" in lines[1] and "unknown_tool" in lines[1]
+    assert not any("37" in line or "secret-result" in line for line in lines)

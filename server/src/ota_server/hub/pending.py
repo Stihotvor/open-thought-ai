@@ -55,13 +55,14 @@ class PendingCalls:
     async def wait_for(
         self, call_id: int, timeout: float, send: Callable[[], Awaitable[None]]
     ) -> DeviceResult:
-        """Register call_id, run send(), then wait up to timeout seconds for the result.
-        Raises TimeoutError on expiry and PendingClosed after fail_all()."""
+        """Register call_id, run send(), then wait for the result; send and wait share one
+        timeout. Raises TimeoutError on expiry and PendingClosed after fail_all()."""
         future: asyncio.Future[DeviceResult] = asyncio.get_running_loop().create_future()
         self._waiting[call_id] = future
         try:
-            await send()
-            return await asyncio.wait_for(future, timeout)
+            async with asyncio.timeout(timeout):
+                await send()
+                return await future
         finally:
             self._waiting.pop(call_id, None)  # also on cancel or a failed send
             if future.done() and not future.cancelled():
@@ -73,7 +74,7 @@ class PendingCalls:
         future = None
         if isinstance(call_id, int) and not isinstance(call_id, bool):
             future = self._waiting.pop(call_id, None)
-        if future is None or future.done():
+        if future is None:
             log.info("ignored tool.result for unknown id %r", call_id)
             return False
         future.set_result(parse_result(msg))

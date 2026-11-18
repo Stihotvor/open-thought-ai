@@ -68,7 +68,7 @@ class DeviceSource:
             log.warning(
                 "device tool %s (id %d) timed out after %.1f s", tool, call_id, self.timeout
             )
-            return ToolOutcome(False, "tool_timeout", "tool_timeout")
+            return ToolOutcome(False, "the device did not answer in time", "tool_timeout")
         except PendingClosed:
             return ToolOutcome(False, "device disconnected", "device_closed")
         except Exception:
