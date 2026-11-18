@@ -268,12 +268,12 @@ All cases use a fake chat endpoint, a fake device socket and fake tools. No boar
 - When the turn runs
 - Then the server sends `error {code: llm_failed}`
 
-### QA-039 Broken tool_calls delta
-- Covers: F4
+### QA-039 Broken JSON arguments in a tool call
+- Covers: E2, F4
 - Type: failure
 - Given the fake chat stream sends a `tool_calls` delta whose arguments are `{"level": 3` and then ends
 - When the turn runs
-- Then the server sends `error {code: llm_failed}` and no `tool.call` goes out
+- Then no `tool.call` goes out, the LLM gets an `invalid_args` error result, and the turn goes on to a spoken reply
 
 ### QA-040 Too many tool-call indexes in a stream
 - Covers: F4, D8
