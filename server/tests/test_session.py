@@ -10,6 +10,7 @@ import pytest
 
 from ota_server import session as session_module
 from ota_server.hub.pending import DeviceResult, PendingClosed
+from ota_server.hub.types import ToolContext
 from ota_server.protocol import AUDIO_CHUNK, MAX_CREDIT, MAX_LEAD_SECONDS, TRANSCRIPT_MAX_CHARS
 from ota_server.reply import History, Notify, ReplyChunk, ReplySource, no_notify
 from ota_server.session import CreditStalled, DeviceSession, echo
@@ -105,7 +106,7 @@ def spoken_reply(texts: list[str], **session_args: Any) -> DeviceSession:
     """Run one reply of 100 ms chunks through a session with plenty of credit."""
 
     async def source(
-        pcm: bytes, history: History, *, notify: Notify = no_notify
+        pcm: bytes, history: History, *, notify: Notify = no_notify, tools: Any = None
     ) -> AsyncGenerator[ReplyChunk]:
         for text in texts:
             yield ReplyChunk(b"\0" * AUDIO_CHUNK, text, "question")
@@ -147,7 +148,7 @@ def test_history_turns_is_a_sliding_window() -> None:
 def test_an_aborted_reply_keeps_only_the_played_chunks() -> None:
     async def scenario() -> DeviceSession:
         async def source(
-            pcm: bytes, history: History, *, notify: Notify = no_notify
+            pcm: bytes, history: History, *, notify: Notify = no_notify, tools: Any = None
         ) -> AsyncGenerator[ReplyChunk]:
             yield ReplyChunk(b"\0" * AUDIO_CHUNK, "One.", "question")
             yield ReplyChunk(b"\0" * AUDIO_CHUNK * 50, "Long.", "question")
@@ -186,7 +187,7 @@ def transcript_turn(text: str) -> list[dict[str, Any]]:
     """Run one reply whose source calls notify(text), then yields reply audio."""
 
     async def source(
-        pcm: bytes, history: History, *, notify: Notify = no_notify
+        pcm: bytes, history: History, *, notify: Notify = no_notify, tools: Any = None
     ) -> AsyncGenerator[ReplyChunk]:
         await notify(text)
         yield ReplyChunk(b"\0" * AUDIO_CHUNK, "Hi.", text)
@@ -212,7 +213,7 @@ def test_no_transcript_after_abort() -> None:
         waiting = asyncio.Event()
 
         async def source(
-            pcm: bytes, history: History, *, notify: Notify = no_notify
+            pcm: bytes, history: History, *, notify: Notify = no_notify, tools: Any = None
         ) -> AsyncGenerator[ReplyChunk]:
             notifiers.append(notify)
             waiting.set()
@@ -239,6 +240,14 @@ def test_echo_sends_no_transcript() -> None:
     assert "transcript" not in [m["type"] for m in msgs]
 
 
+def test_echo_ignores_tools() -> None:
+    async def chunks(**kwargs: Any) -> list[ReplyChunk]:
+        return [chunk async for chunk in echo(b"pcm", (), **kwargs)]
+
+    tools = cast(ToolContext, object())
+    assert asyncio.run(chunks()) == asyncio.run(chunks(tools=tools)) == [ReplyChunk(b"pcm")]
+
+
 async def no_send() -> None:
     pass
 
@@ -249,7 +258,7 @@ async def wait_until(check: Callable[[], bool]) -> None:
 
 
 async def endless(
-    pcm: bytes, history: History, *, notify: Notify = no_notify
+    pcm: bytes, history: History, *, notify: Notify = no_notify, tools: Any = None
 ) -> AsyncGenerator[ReplyChunk]:
     while True:
         yield ReplyChunk(b"\0" * AUDIO_CHUNK)
@@ -312,7 +321,7 @@ def test_abort_cancels_the_wait_and_leaves_no_entry() -> None:
         session = new_session()
 
         async def tool_source(
-            pcm: bytes, history: History, *, notify: Notify = no_notify
+            pcm: bytes, history: History, *, notify: Notify = no_notify, tools: Any = None
         ) -> AsyncGenerator[ReplyChunk]:
             await session.pending.wait_for(session.pending.new_id(), 30.0, no_send)
             yield ReplyChunk(pcm)

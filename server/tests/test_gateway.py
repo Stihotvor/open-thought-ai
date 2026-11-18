@@ -160,7 +160,7 @@ def test_turn_limit_survives_reconnect(client: DeviceClient) -> None:
 
 def failing_source(error: Exception, chunks: int = 0) -> ReplySource:
     async def source(
-        pcm: bytes, _history: History, *, notify: Notify = no_notify
+        pcm: bytes, _history: History, *, notify: Notify = no_notify, tools: Any = None
     ) -> AsyncGenerator[ReplyChunk]:
         for _ in range(chunks):
             yield ReplyChunk(pcm[:AUDIO_CHUNK])
@@ -220,7 +220,7 @@ def test_voice_pipeline_starts_with_all_roles(monkeypatch: pytest.MonkeyPatch) -
 
 def test_abort_while_thinking_ends_the_reply(client: DeviceClient) -> None:
     async def slow(
-        pcm: bytes, _history: History, *, notify: Notify = no_notify
+        pcm: bytes, _history: History, *, notify: Notify = no_notify, tools: Any = None
     ) -> AsyncGenerator[ReplyChunk]:
         await asyncio.Event().wait()  # never answers
         yield ReplyChunk(pcm)
@@ -294,7 +294,7 @@ def test_abort_while_speaking_closes_the_source(client: DeviceClient) -> None:
     closed = asyncio.Event()
 
     async def endless(
-        pcm: bytes, _history: History, *, notify: Notify = no_notify
+        pcm: bytes, _history: History, *, notify: Notify = no_notify, tools: Any = None
     ) -> AsyncGenerator[ReplyChunk]:
         try:
             while True:
@@ -321,7 +321,7 @@ def test_chunks_stream_in_order_and_the_cap_stops_the_source(
     made: list[int] = []
 
     async def chunks(
-        pcm: bytes, _history: History, *, notify: Notify = no_notify
+        pcm: bytes, _history: History, *, notify: Notify = no_notify, tools: Any = None
     ) -> AsyncGenerator[ReplyChunk]:
         for n in range(1, 10):
             made.append(n)

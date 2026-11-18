@@ -12,6 +12,7 @@ from typing import Any
 from fastapi import WebSocket
 
 from .hub.pending import PendingCalls
+from .hub.types import ToolContext
 from .protocol import (
     AUDIO_CHUNK,
     BYTES_PER_SECOND,
@@ -44,7 +45,11 @@ class CreditStalled(Exception):
 
 
 async def echo(
-    pcm: bytes, _history: History, *, notify: Notify = no_notify
+    pcm: bytes,
+    _history: History,
+    *,
+    notify: Notify = no_notify,
+    tools: ToolContext | None = None,
 ) -> AsyncGenerator[ReplyChunk]:
     yield ReplyChunk(pcm)
 
