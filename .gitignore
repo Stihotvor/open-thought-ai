@@ -7,3 +7,6 @@ __pycache__/
 .ruff_cache/
 .pytest_cache/
 .coverage
+
+# latency-run phrase audio (make_phrase_audio.py); never committed
+latency-audio/

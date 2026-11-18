@@ -21,6 +21,7 @@ log = logging.getLogger(__name__)
 
 CHAT, STT, TTS, MODERATION, EMBEDDINGS = "chat", "stt", "tts", "moderation", "embeddings"
 ROLES = (CHAT, STT, TTS, MODERATION, EMBEDDINGS)
+VOICE_ROLES = (STT, MODERATION, CHAT, TTS)  # no voice without moderation
 INSECURE_FLAG = "OTA_ALLOW_INSECURE_MODEL_ENDPOINT"
 MAX_BURST = 100
 DEFAULT_RATE = "1"  # calls per second
@@ -147,4 +148,14 @@ def load_roles(env: Mapping[str, str]) -> dict[str, RoleConfig]:
             rate=_number(role, "rate", env.get(prefix + "RATE", DEFAULT_RATE), float),
             burst=burst,
         )
+    return roles
+
+
+def voice_roles(env: Mapping[str, str]) -> dict[str, RoleConfig]:
+    """Check that the voice pipeline may start, and return its model roles.
+    Raises ConfigError when a role is missing, moderation included."""
+    roles = load_roles(env)
+    missing = [role for role in VOICE_ROLES if role not in roles]
+    if missing:
+        raise ConfigError(f"the voice pipeline needs these roles: {', '.join(missing)}")
     return roles

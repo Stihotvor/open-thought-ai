@@ -19,13 +19,17 @@ fit in MAX_HISTORY_CHARS go to chat. "continue" works through it.
 VAD and transcript: `trim_speech` (vad.py) runs first, so silence or noise makes no
 provider call (`no_speech`), and STT gets only the speech span. Once the transcript passes
 moderation, `notify` gets the full text; the session sends it as the `transcript` message.
+
+Timing: each turn logs one info line `turn.latency ...` (timing.py) with its code, the
+time to the first audio chunk and the time of each stage. No text goes in the line, and a
+timing error never breaks a turn.
 """
 
 import asyncio
 import contextlib
 import logging
 import re
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from typing import Any
 
 from .audio import AudioError, pcm_to_wav, wav_to_pcm
@@ -33,6 +37,7 @@ from .protocol import TurnError
 from .providers import MAX_TTS_TEXT, ModelClient, ProviderError, new_turn_budget
 from .ratelimit import CallCapExceeded, DeadlineExceeded, RateLimited, TurnBudget
 from .reply import History, Notify, ReplyChunk, no_notify
+from .timing import StageTimer, format_line
 from .vad import trim_speech
 
 log = logging.getLogger(__name__)
@@ -117,6 +122,73 @@ async def speech_only(pcm: bytes) -> bytes:
     return speech
 
 
+def _safe[T](call: Callable[..., T], *args: Any) -> T | None:
+    """Run a timing call. An error is logged, never raised (F1)."""
+    try:
+        return call(*args)
+    except Exception:  # pylint: disable=broad-exception-caught  # timing must not break a turn
+        log.exception("timing failed")
+        return None
+
+
+class TurnClock:
+    """The stage times of one turn and its `turn.latency` line. No method raises.
+
+    Each turn stage is the time since the previous mark. The two chat stages share one
+    origin (the mod_transcript mark): chat_first_sentence is the time to the first sentence
+    end, chat_full the time to the whole reply, so their difference is what streaming saves."""
+
+    def __init__(self, turn_id: int) -> None:
+        self.turn_id = turn_id
+        self.code = "ok"
+        self.latency_ms: int | None = None
+        self._turn = _safe(StageTimer)
+        self._chat = _safe(StageTimer)
+        self._sentence_seen = False
+        if self._turn is not None:
+            _safe(self._turn.start)
+
+    def mark(self, stage: str) -> None:
+        if self._turn is not None:
+            _safe(self._turn.mark, stage)
+
+    def chat_started(self) -> None:
+        if self._chat is not None:
+            _safe(self._chat.start)
+
+    def chat_text(self, text: str, delta: str) -> None:
+        """Note the first time the chat text so far has a sentence end. Only the new tail
+        is searched: delta, and one character before it for an end split across deltas."""
+        if self._sentence_seen or self._chat is None:
+            return
+        if not SENTENCE_END.search(text[max(0, len(text) - len(delta) - 1) :]):
+            return
+        self._sentence_seen = True
+        _safe(self._chat.mark, "chat_first_sentence")
+
+    def fail(self, code: str) -> None:
+        """A failed turn logs its code and no latency."""
+        self.code, self.latency_ms = code, None
+
+    def closed(self) -> None:
+        """The session closed or cancelled the turn: the latency stays."""
+        self.code = "closed"
+
+    def first_audio(self) -> None:
+        if self.latency_ms is None and self._turn is not None:
+            self.latency_ms = _safe(self._turn.latency_ms)
+
+    def _line(self) -> str:
+        stages = {**(self._chat.stages if self._chat else {})}
+        stages.update(self._turn.stages if self._turn else {})
+        return format_line(self.turn_id, self.code, self.latency_ms, stages)
+
+    def log(self) -> None:
+        line = _safe(self._line)
+        if line is not None:
+            log.info("%s", line)
+
+
 class VoicePipeline:  # pylint: disable=too-few-public-methods  # a callable ReplySource
     """A ReplySource for DeviceSession: device PCM in, reply PCM out."""
 
@@ -125,6 +197,7 @@ class VoicePipeline:  # pylint: disable=too-few-public-methods  # a callable Rep
         self.language = language
         self.voice = voice
         self.moderation_checked = False
+        self.turns = 0  # the id of the latest turn in the turn.latency line
 
     async def check_moderation(self) -> None:
         """Run the self-test once. Raise TurnError("moderated") until it passes."""
@@ -185,14 +258,17 @@ class VoicePipeline:  # pylint: disable=too-few-public-methods  # a callable Rep
         ]
 
     async def speak(
-        self, question: str, chunks: list[str], budget: TurnBudget
+        self, question: str, chunks: list[str], budget: TurnBudget, clock: TurnClock | None = None
     ) -> AsyncGenerator[ReplyChunk]:
-        """Yield each chunk as audio, with its text for the session history."""
-        for chunk in chunks:
+        """Yield each chunk as audio, with its text for the session history.
+        `clock` gets the tts1 mark once the first chunk is ready."""
+        for index, chunk in enumerate(chunks):
             wav = await self.client.speak(chunk, self.voice, budget)
             # A thread, so the event loop keeps running (it gets GIL time slices). The thread
             # cannot be cancelled, so check the deadline once it is done.
             pcm = await asyncio.to_thread(wav_to_pcm, wav)
+            if index == 0 and clock is not None:
+                clock.mark("tts1")
             if budget.left() <= 0:
                 raise DeadlineExceeded()
             paused = budget.clock()
@@ -200,15 +276,52 @@ class VoicePipeline:  # pylint: disable=too-few-public-methods  # a callable Rep
             # The session waits here while the device plays: that time is not TTS work.
             budget.extend(budget.clock() - paused)
 
+    @staticmethod
+    async def _reply(deltas: AsyncIterator[str], clock: TurnClock) -> str:
+        """The whole chat reply. Notes the first sentence end on the way."""
+        text = ""
+        async for delta in deltas:
+            text += delta
+            clock.chat_text(text, delta)
+        return text.strip()
+
     async def __call__(
         self, pcm: bytes, history: History, *, notify: Notify = no_notify
     ) -> AsyncGenerator[ReplyChunk]:
+        """One turn, and its turn.latency line however it ends."""
+        self.turns += 1
+        clock = TurnClock(self.turns)
+        try:
+            async with contextlib.aclosing(self._turn(pcm, history, notify, clock)) as chunks:
+                async for chunk in chunks:
+                    clock.first_audio()
+                    yield chunk
+        except TurnError as err:
+            clock.fail(err.code)
+            raise
+        except Exception:
+            clock.fail("internal")
+            raise
+        except BaseException:  # the session closed or cancelled the turn: latency stays
+            clock.closed()
+            raise
+        finally:
+            clock.log()
+
+    async def _turn(
+        self, pcm: bytes, history: History, notify: Notify, clock: TurnClock
+    ) -> AsyncGenerator[ReplyChunk]:
         speech = await speech_only(pcm)  # before any provider call, the self-test too
+        clock.mark("vad")
+        selftest = not self.moderation_checked
         await self.check_moderation()
+        if selftest:
+            clock.mark("selftest")
         budget = new_turn_budget()
         stage = "stt"
         try:
             text = (await self.client.transcribe(pcm_to_wav(speech), self.language, budget)).strip()
+            clock.mark("stt")
             if not text:
                 raise TurnError("no_speech")
             stage = "moderation"
@@ -216,12 +329,15 @@ class VoicePipeline:  # pylint: disable=too-few-public-methods  # a callable Rep
             await self.moderate(
                 "transcript", [*pieces, text] if len(pieces) > 1 else pieces, budget
             )
+            clock.mark("mod_transcript")
+            clock.chat_started()
             await notify(text)  # the full text: the session cuts it for the device
             stage = "chat"
             async with contextlib.aclosing(
                 self.client.chat(self.messages(text, history), budget)
             ) as deltas:
-                reply = "".join([delta async for delta in deltas]).strip()
+                reply = await self._reply(deltas, clock)
+            clock.mark("chat_full")
             if not reply:
                 raise TurnError("llm_failed")
             chunks = tts_chunks(reply)
@@ -230,8 +346,9 @@ class VoicePipeline:  # pylint: disable=too-few-public-methods  # a callable Rep
             # harmful as the answer to a question.
             pair = f"{text[-PAIR_QUESTION:]}\n{reply[:PAIR_REPLY]}"
             await self.moderate("reply", [*chunks, pair], budget)
+            clock.mark("mod_reply")
             stage = "tts"
-            async with contextlib.aclosing(self.speak(text, chunks, budget)) as audio:
+            async with contextlib.aclosing(self.speak(text, chunks, budget, clock)) as audio:
                 async for chunk in audio:
                     yield chunk
         except RateLimited:
