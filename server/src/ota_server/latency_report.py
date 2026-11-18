@@ -41,7 +41,7 @@ BUDGET = {
     "vad": f"0.2 s ({UPLOAD_TAIL} + VAD end)",
     "stt": "1.2 s",
     "chat_first_sentence": "2.0 s",
-    "mod_reply": "0.5 s",
+    "mod_s1": "0.5 s",
     "tts1": "0.8 s",
 }
 NO_BUDGET = "no budget row"
@@ -251,7 +251,7 @@ def target_line(summary: LanguageSummary) -> str:
 def saving_line(summary: LanguageSummary) -> str:
     gap = summary.saving
     return (
-        f"Time per-sentence streaming could save (chat_full - chat_first_sentence): "
+        f"Chat time after sentence 1, which overlaps audio (chat_full - chat_first_sentence): "
         f"p50 {fmt_ms(gap.p50)} ms, p95 {fmt_ms(gap.p95)} ms, n {gap.n}."
     )
 
@@ -306,9 +306,8 @@ def render(summaries: Sequence[LanguageSummary]) -> str:
     for summary in summaries:
         lines += language_section(summary)
     lines.append(
-        "¹ The budget assumes per-sentence streaming (docs/architecture.md). The pipeline "
-        "waits for the full chat reply, so chat_first_sentence is passive and "
-        "mod_reply covers the whole reply."
+        "¹ The pipeline streams per sentence (docs/architecture.md). mod_s1 and tts1 run "
+        "at the same time, so the first sound waits for the longer of the two, not their sum."
     )
     return "\n".join(lines) + "\n"
 

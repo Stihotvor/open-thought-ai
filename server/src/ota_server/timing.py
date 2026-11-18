@@ -22,7 +22,7 @@ STAGES = (
     "mod_transcript",
     "chat_first_sentence",
     "chat_full",
-    "mod_reply",
+    "mod_s1",
     "tts1",
     "selftest",
 )
