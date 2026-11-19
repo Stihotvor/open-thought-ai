@@ -26,7 +26,7 @@ The user chose Path 3 at G1 on 2026-11-18. The design takes these reviewer chang
 
 ## Amendments after the architect code review (PR #62)
 - D3a: `wrap` is the first (outermost) step: `wrap, resolve, limit, validate, terminal`. Every outcome, rejections included, gets the untrusted prefix and the 2000-character cap (M6).
-- D4a: `ToolSource` declares `timeout`. The hub terminal applies `asyncio.timeout(source.timeout)` as an outer guard, so #28 sources can set longer timeouts.
+- D4a: `ToolSource` declares `timeout`. The hub terminal applies `asyncio.timeout(source.timeout + GUARD_GRACE)` (0.5 s) as an outer guard. The source timeout fires first, and #28 sources can set longer timeouts.
 - D7a: the session builds one `McpHub` in `__init__` and calls `turn_context()` for each turn. The call cap stays per turn (D5). #28 sources and the #30 confirm hold state that lives longer than one turn.
 - D13: a source name must not contain `__`, and each full tool name must match `^[a-zA-Z0-9_-]{1,64}$`.
 - Deferred to #31: `limit` counts invalid and unknown calls too. Deferred to #30: `CallCtx` gets a session id and a turn id.
