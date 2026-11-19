@@ -1,0 +1,101 @@
+{
+  "tasks": [
+    {
+      "id": "T1",
+      "title": "MCP port, hooks and config loader with Settings field",
+      "size": "M",
+      "depends_on": [],
+      "done_when": "cd server && pytest tests/test_mcp_config.py passes: valid http, sse and stdio entries load; bad JSON, bad entry, duplicate name, name failing D13 or with '__', URL with user info or query, timeout outside 1-60 are skipped with a logged error and good entries survive (E6); no OTA_MCP_SERVERS_FILE gives 0 servers; default ConnectionPolicy returns no headers and default ToolFilter admits all; ruff and mypy report 0 errors; env on an http or sse entry skips that entry; OTA_MCP_SERVERS_FILE sets Settings.mcp_servers_file",
+      "files": [
+        "server/src/ota_server/mcp/__init__.py",
+        "server/src/ota_server/mcp/port.py",
+        "server/src/ota_server/mcp/hooks.py",
+        "server/src/ota_server/mcp/config.py",
+        "server/src/ota_server/config.py",
+        "server/tests/test_mcp_config.py"
+      ],
+      "agent": "py-coder"
+    },
+    {
+      "id": "T2",
+      "title": "McpSource: allowlist, naming, result mapping, timeout and cancel policy",
+      "size": "M",
+      "depends_on": [
+        "T1"
+      ],
+      "done_when": "cd server && pytest tests/test_mcp_source.py passes over a FakeConnection with no SDK: unlisted tool hidden (E2); allowlist name missing on server logs a warning (E3); names are <server>__<tool> and names failing D13 are dropped; isError gives generic error text without the raw body (E4); image and resource parts become [image] and [resource] (E5); a call over timeout returns an error outcome within timeout + 0.5 s and a later call succeeds (F1, M2, D6); any Exception gives an error outcome and CancelledError from the caller is re-raised (F5, D5a); ToolFilter.admit false hides a tool; ruff and mypy report 0 errors",
+      "files": [
+        "server/src/ota_server/mcp/source.py",
+        "server/tests/test_mcp_source.py"
+      ],
+      "agent": "py-coder"
+    },
+    {
+      "id": "T3",
+      "title": "SdkConnection adapter, mcp==1.30.0 pin and fake servers for http, sse and stdio",
+      "size": "M",
+      "depends_on": [
+        "T1"
+      ],
+      "done_when": "cd server && pytest tests/test_mcp_adapters.py passes: for each of http, sse and stdio a FastMCP fake server on 127.0.0.1 (or a stdio child script in server/tests) lists tools and one call_tool returns the correct result, 3 of 3 (M1); the stdio child env holds the SDK safe set plus entry env and no OTA_*, MCP_SECRET_* or model key (T7); ConnectionPolicy.before_connect runs before connect and ConnectionDenied blocks it; close() leaves 0 stdio children, also when the 5 s stop deadline passes (M4); pyproject.toml and uv.lock pin mcp==1.30.0; ruff and mypy report 0 errors; with STOP_TIMEOUT patched small and a blocking transport_factory, close() cancels the owner and the child PID is gone (os.kill(pid, 0) raises ProcessLookupError)",
+      "files": [
+        "server/src/ota_server/mcp/adapters.py",
+        "server/pyproject.toml",
+        "server/uv.lock",
+        "server/tests/test_mcp_adapters.py",
+        "server/tests/mcp_fakes.py",
+        "server/tests/mcp_stdio_server.py"
+      ],
+      "agent": "py-coder"
+    },
+    {
+      "id": "T4",
+      "title": "SdkConnection reconnect: lock, generation counter and one retry",
+      "size": "M",
+      "depends_on": [
+        "T2",
+        "T3"
+      ],
+      "done_when": "cd server && pytest tests/test_mcp_reconnect.py passes: http fake server restart gives 1 reconnect and 1 successful call (M3); stdio child exit gives 1 restart and 1 successful call (F3); two concurrent failed calls cause 1 reconnect (D7); a failed reconnect returns an error outcome and the session survives (F2); a hung server reconnect ends within 5 s; two concurrent calls on one http connection both get their own result (E7); a call after a timeout needs no reconnect; ruff and mypy report 0 errors; a failed reconnect returns an error outcome, and after the server restarts the next call succeeds through a new reconnect; RECONNECT_TIMEOUT covers old-owner stop plus new open",
+      "files": [
+        "server/src/ota_server/mcp/adapters.py",
+        "server/tests/test_mcp_reconnect.py"
+      ],
+      "agent": "py-coder"
+    },
+    {
+      "id": "T5",
+      "title": "McpRegistry: parallel start with 5 s deadline and shutdown",
+      "size": "M",
+      "depends_on": [
+        "T2",
+        "T3"
+      ],
+      "done_when": "cd server && pytest tests/test_mcp_registry.py passes: with one server down and one up the registry starts, logs a warning and lists only the tools of the up server (E1); the 5 s connect deadline holds for a hung server; shutdown closes all sessions and leaves child PID gone (os.kill(pid, 0) raises ProcessLookupError within 3 s) (F4, M4); ruff and mypy report 0 errors",
+      "files": [
+        "server/src/ota_server/mcp/registry.py",
+        "server/tests/test_mcp_registry.py"
+      ],
+      "agent": "py-coder"
+    },
+    {
+      "id": "T6",
+      "title": "Wire mcp_sources into lifespan, gateway and session; e2e test and gate",
+      "size": "M",
+      "depends_on": [
+        "T4",
+        "T5"
+      ],
+      "done_when": "cd server && pytest tests/test_mcp_e2e.py passes: with a fake http MCP server and a fake chat, a voice turn calls <server>__<tool> and the user hears the final reply, and device tools still work when the MCP server is down (B1, B2, E1); no OTA_MCP_SERVERS_FILE gives unchanged behavior; app shutdown leaves 0 stdio children; server/scripts/gate.sh passes with ruff 0 findings, mypy 0 errors, all tests green and coverage >= 90 % (M5, T10)",
+      "files": [
+        "server/src/ota_server/main.py",
+        "server/src/ota_server/gateway.py",
+        "server/src/ota_server/session.py",
+        "server/tests/test_mcp_e2e.py",
+        "server/tests/test_session.py",
+        "server/tests/test_gateway.py"
+      ],
+      "agent": "py-coder"
+    }
+  ]
+}
