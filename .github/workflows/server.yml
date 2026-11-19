@@ -2,7 +2,6 @@ name: server
 
 on:
   pull_request:
-  push:
     branches: [main]
 
 permissions:
@@ -11,22 +10,11 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: server
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: "3.12"
           enable-cache: true
-      - name: Install project with dev dependencies
-        run: uv sync --locked
-      - name: Lint
-        run: uv run ruff check .
-      - name: Format
-        run: uv run ruff format --check .
-      - name: Types
-        run: uv run mypy src tests
-      - name: Tests with coverage
-        run: uv run pytest --cov --cov-report=term-missing
+      - name: Quality gate (same script as local and pre-push)
+        run: server/scripts/gate.sh
