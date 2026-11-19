@@ -1,0 +1,62 @@
+# QA results: device tools (issue #27)
+
+Run: `pytest` in server/: 462 passed. New files: server/tests/test_qa_device_tools.py (26 tests), server/tests/test_qa_device_tools_failures.py (20 tests), shared fakes in server/tests/qa_device_support.py. Coverage of `ota_server/hub/*`, `agent.py`: 100 %; total 97 %.
+Summary: 54 pass, 3 partial, 0 fail, 0 not-automated.
+
+- QA-001 pass: test_qa_001_volume_by_voice
+- QA-002 pass: test_qa_002_status_question
+- QA-003 pass: test_qa_003_face_change
+- QA-004 pass: test_qa_004_tool_list_for_the_chat_model
+- QA-005 pass: test_qa_005_extra_tool_source
+- QA-006 pass: test_qa_006_no_confirm
+- QA-007 pass: test_qa_007_unknown_tool_name
+- QA-008 pass: test_qa_008_name_without_namespace
+- QA-009 pass: test_qa_009_level_above_range
+- QA-010 pass: test_qa_010_missing_required_field
+- QA-011 pass: test_qa_011_wrong_type_and_unknown_face
+- QA-012 pass: test_qa_012_negative_level
+- QA-013 pass: test_qa_013_boundary_levels
+- QA-014 pass: test_qa_014_unknown_result_id
+- QA-015 pass: test_qa_015_duplicate_result
+- QA-016 pass (existing): test_session.py::test_tool_result_resolves_the_wait_in_every_state
+- QA-017 pass: test_qa_017_malformed_result_with_waiting_id
+- QA-018 pass: test_qa_018_wrong_types_in_result
+- QA-019 pass: test_qa_019_malformed_result_unknown_id
+- QA-020 pass: test_qa_020_five_calls
+- QA-021 pass: test_qa_021_six_calls
+- QA-022 pass: test_qa_022_cap_counts_across_rounds
+- QA-023 pass: test_qa_023_cap_resets_on_next_turn
+- QA-024 pass (existing): test_device_tools_e2e.py::test_abort_during_the_wait
+- QA-025 pass (existing): test_device_tools_e2e.py::test_late_result_after_abort_is_ignored
+- QA-026 pass (existing): test_device_tools_e2e.py::test_late_result_after_abort_is_ignored (ids differ), test_pending.py::test_ids_are_unique_and_start_at_1
+- QA-027 pass: test_qa_027_tool_call_with_no_text
+- QA-028 pass: test_qa_028_text_before_a_tool_call_is_spoken
+- QA-029 pass: test_qa_029_half_sentence_before_a_tool_call
+- QA-030 pass: test_qa_030_echo_unchanged
+- QA-031 pass (existing): test_device_tools_e2e.py::test_no_tool_result_times_out
+- QA-032 pass: test_qa_032_spoken_reply_after_timeout
+- QA-033 pass: test_qa_033_answer_at_1_9_s
+- QA-034 partial: test_qa_034_late_answer_after_timeout sends the late result right after the turn ends, not 1 s later at 3.0 s
+- QA-035 pass: test_qa_035_device_reports_an_error
+- QA-036 pass (existing): test_gateway.py::test_socket_close_fails_every_waiting_call, test_session.py::test_close_fails_every_wait_and_leaves_no_task
+- QA-037 pass: test_qa_037_close_then_reconnect
+- QA-038 pass: test_qa_038_chat_without_tool_support
+- QA-039 pass: test_qa_039_broken_json_arguments
+- QA-040 pass: test_qa_040_too_many_tool_call_indexes
+- QA-041 pass: test_qa_041_arguments_over_4096_characters
+- QA-042 pass: test_qa_042_large_result_is_cut
+- QA-043 pass: test_qa_043_result_at_the_limit
+- QA-044 pass: test_qa_044_result_wrapped_as_untrusted
+- QA-045 pass: test_qa_045_call_frame_size (hub and device source level, fixed id 99999)
+- QA-046 pass (existing): test_hub.py::test_oversized_frame
+- QA-047 pass: test_qa_047_tool_messages_out_of_history_and_moderation
+- QA-048 pass: test_qa_048_tool_round_cap (also test_agent.py::test_three_tool_rounds_then_a_text_round)
+- QA-049 pass: test_qa_049_text_only_turn
+- QA-050 pass (existing): test_agent.py::test_budget_is_extended_by_the_tool_wait
+- QA-051 pass: test_qa_051_calls_leave_no_pending_entry (answered, aborted, closed; the timeout path is in test_pending.py::test_timeout_leaves_no_entry)
+- QA-052 pass: main session gate run: pytest 462 passed; ruff check, ruff format --check and `mypy src tests` report 0 issues
+- QA-053 pass: coverage of ota_server/hub/*.py is 100 % (chain, device_source, hub, pending, steps, types)
+- QA-054 partial: tests use httpx mock transports and fakes only, no key read; the run was not made with the network blocked
+- QA-055 partial: test_qa_055_echo_makes_no_chat_request has no endpoint wired in echo mode, so 0 requests holds by construction; the gateway echo path is in test_gateway.py::test_echo_round_trip_with_credit
+- QA-056 pass: test_qa_056_calls_over_cap_do_not_run
+- QA-057 pass: test_qa_057_results_in_reverse_order

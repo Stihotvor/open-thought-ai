@@ -12,10 +12,12 @@ A call raises one of these, and nothing else:
 """
 
 import asyncio
+import contextlib
 import json
 import logging
 import math
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
+from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
@@ -49,6 +51,8 @@ MISTRAL_CORE = frozenset(
 OPENAI_CORE = frozenset({"sexual", "hate", "harassment", "self-harm", "violence"})
 MAX_SSE_LINE = 64 * 1024  # bytes
 MAX_CHAT_TEXT = 16 * 1024  # characters per chat reply
+MAX_TOOL_INDEXES = 8  # distinct tool calls per chat reply
+MAX_TOOL_ARG_CHARS = 4096  # joined arguments, all calls together
 SSE_PREFIX = "data:"
 SSE_DONE = "[DONE]"
 WAV_FILENAME = "turn.wav"
@@ -153,8 +157,86 @@ def _sse_data(line: str) -> str | None:
     return line.removeprefix(SSE_PREFIX).removeprefix(" ")
 
 
-def _sse_delta(data: str) -> str | None:
-    """Text of one SSE chunk, or None for an empty chunk. An error chunk is a failure."""
+@dataclass(frozen=True)
+class TextDelta:
+    text: str
+
+
+@dataclass(frozen=True)
+class ToolCallRequest:
+    id: str
+    name: str
+    arguments: str  # the joined JSON text, not parsed here
+
+
+@dataclass(frozen=True)
+class ToolCallsDone:
+    calls: tuple[ToolCallRequest, ...]  # ordered by index
+
+
+@dataclass
+class _PartialCall:
+    id: str | None = None
+    name: str | None = None
+    arguments: list[str] = field(default_factory=list)
+
+
+def _opt_str(value: object) -> str | None:
+    """A string field of a tool delta: None when absent, a failure when not a string."""
+    if value is not None and not isinstance(value, str):
+        raise ProviderError(CHAT)
+    return value
+
+
+def _tool_delta(delta: object) -> tuple[int, dict[str, Any], dict[str, Any]]:
+    """The index, the delta and its function object. A broken shape is a failure."""
+    if not isinstance(delta, dict):
+        raise ProviderError(CHAT)
+    index = delta.get("index")
+    function = delta.get("function") or {}
+    if not isinstance(index, int) or isinstance(index, bool) or index < 0:
+        raise ProviderError(CHAT)
+    if not isinstance(function, dict):
+        raise ProviderError(CHAT)
+    return index, delta, function
+
+
+class _ToolCallJoin:
+    """Joins streamed tool_calls deltas by index: id and name from the first delta
+    that has them, arguments by concatenation, within the index and size caps."""
+
+    def __init__(self) -> None:
+        self.parts: dict[int, _PartialCall] = {}
+        self.arg_chars = 0
+
+    def add(self, delta: object) -> None:
+        index, fields, function = _tool_delta(delta)
+        part = self.parts.setdefault(index, _PartialCall())
+        if len(self.parts) > MAX_TOOL_INDEXES:
+            raise ProviderError(CHAT)
+        part.id = part.id or _opt_str(fields.get("id"))
+        part.name = part.name or _opt_str(function.get("name"))
+        arguments = _opt_str(function.get("arguments")) or ""
+        self.arg_chars += len(arguments)
+        if self.arg_chars > MAX_TOOL_ARG_CHARS:
+            raise ProviderError(CHAT)
+        part.arguments.append(arguments)
+
+    def done(self) -> ToolCallsDone | None:
+        """The joined calls ordered by index, or None when no call was seen."""
+        if not self.parts:
+            return None
+        calls = []
+        for index in sorted(self.parts):
+            part = self.parts[index]
+            if not part.id or not part.name:
+                raise ProviderError(CHAT)
+            calls.append(ToolCallRequest(part.id, part.name, "".join(part.arguments)))
+        return ToolCallsDone(tuple(calls))
+
+
+def _chunk_delta(data: str) -> dict[str, Any] | None:
+    """The delta object of one SSE chunk, or None for an empty chunk. An error chunk fails."""
     try:
         chunk = json.loads(data)
         if "error" in chunk:
@@ -164,16 +246,32 @@ def _sse_delta(data: str) -> str | None:
             return None
         if not isinstance(choices, list):
             raise ProviderError(CHAT)
-        content = (choices[0].get("delta") or {}).get("content")
+        delta = choices[0].get("delta") or {}
     except (ValueError, AttributeError, TypeError, LookupError, RecursionError):
         raise ProviderError(CHAT) from None
+    if not isinstance(delta, dict):
+        raise ProviderError(CHAT)
+    return delta
+
+
+def _sse_chunk(data: str) -> tuple[str | None, list[Any]]:
+    """The text and the tool_calls deltas of one SSE chunk."""
+    delta = _chunk_delta(data)
+    if delta is None:
+        return None, []
+    content = delta.get("content")
     if content and not isinstance(content, str):
         raise ProviderError(CHAT)
-    return content or None
+    tool_calls = delta.get("tool_calls") or []
+    if not isinstance(tool_calls, list):
+        raise ProviderError(CHAT)
+    return content or None, tool_calls
 
 
-async def _sse_deltas(lines: AsyncGenerator[str], budget: TurnBudget) -> AsyncGenerator[str]:
-    """The text deltas of a chat SSE stream, up to the end marker, within the turn deadline."""
+async def _sse_chunks(
+    lines: AsyncGenerator[str], budget: TurnBudget
+) -> AsyncGenerator[tuple[str | None, list[Any]]]:
+    """The parsed chunks of a chat SSE stream, up to the end marker, within the turn deadline."""
     while True:
         try:
             line = await asyncio.wait_for(anext(lines), budget.left())
@@ -184,9 +282,27 @@ async def _sse_deltas(lines: AsyncGenerator[str], budget: TurnBudget) -> AsyncGe
         data = _sse_data(line)
         if data == SSE_DONE:
             return
-        delta = None if data is None else _sse_delta(data)
-        if delta is not None:
-            yield delta
+        if data is not None:
+            yield _sse_chunk(data)
+
+
+async def _turn_items(
+    chunks: AsyncGenerator[tuple[str | None, list[Any]]],
+) -> AsyncGenerator[TextDelta | ToolCallsDone]:
+    """Text as it arrives, within MAX_CHAT_TEXT, then the joined tool calls if any."""
+    join = _ToolCallJoin()
+    total = 0
+    async for text, tool_deltas in chunks:
+        for delta in tool_deltas:
+            join.add(delta)
+        if text is not None:
+            total += len(text)
+            if total > MAX_CHAT_TEXT:
+                raise ProviderError(CHAT)
+            yield TextDelta(text)
+    done = join.done()
+    if done is not None:
+        yield done
 
 
 class ModelClient:
@@ -328,24 +444,47 @@ class ModelClient:
 
     async def chat(self, messages: list[dict[str, Any]], budget: TurnBudget) -> AsyncGenerator[str]:
         """Stream text deltas. A 429 is retried only before the first byte arrives.
+        A reply with tool calls is a failure here: use chat_turn for tools.
 
         Callers must close the stream: `async with contextlib.aclosing(client.chat(...))`.
         """
-        body = {"model": self._role(CHAT).model, "messages": messages, "stream": True}
+        async with contextlib.aclosing(self.chat_turn(messages, budget, None)) as items:
+            async for item in items:
+                if isinstance(item, ToolCallsDone):
+                    raise ProviderError(CHAT)
+                yield item.text
+
+    async def chat_turn(
+        self,
+        messages: list[dict[str, Any]],
+        budget: TurnBudget,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | None = None,
+    ) -> AsyncGenerator[TextDelta | ToolCallsDone]:
+        """Stream TextDelta items, then one ToolCallsDone when the reply has tool calls.
+        A 429 is retried only before the first byte arrives.
+
+        Callers must close the stream: `async with contextlib.aclosing(client.chat_turn(...))`.
+        """
+        body: dict[str, Any] = {
+            "model": self._role(CHAT).model,
+            "messages": messages,
+            "stream": True,
+        }
+        if tools is not None:
+            body["tools"] = tools
+        if tool_choice is not None:
+            body["tool_choice"] = tool_choice
 
         async def call(cfg: RoleConfig) -> httpx.Response:
             return await self._open(cfg, self._request(cfg, "/chat/completions", budget, json=body))
 
         resp = await self._limited(CHAT, budget, call)
         lines = _lines(resp)
-        deltas = _sse_deltas(lines, budget)
-        total = 0
+        chunks = _sse_chunks(lines, budget)
         try:
-            async for delta in deltas:
-                total += len(delta)
-                if total > MAX_CHAT_TEXT:
-                    raise ProviderError(CHAT)
-                yield delta
+            async for item in _turn_items(chunks):
+                yield item
         except httpx.TimeoutException:
             if budget.left() <= 0:
                 raise DeadlineExceeded() from None
@@ -353,6 +492,6 @@ class ModelClient:
         except httpx.HTTPError:
             raise ProviderError(CHAT) from None
         finally:
-            await deltas.aclose()
+            await chunks.aclose()
             await lines.aclose()
             await resp.aclose()

@@ -11,6 +11,10 @@ from typing import Any
 
 from fastapi import WebSocket
 
+from .hub.device_source import DeviceSource
+from .hub.hub import McpHub
+from .hub.pending import PendingCalls
+from .hub.types import ToolContext
 from .protocol import (
     AUDIO_CHUNK,
     BYTES_PER_SECOND,
@@ -43,7 +47,11 @@ class CreditStalled(Exception):
 
 
 async def echo(
-    pcm: bytes, _history: History, *, notify: Notify = no_notify
+    pcm: bytes,
+    _history: History,
+    *,
+    notify: Notify = no_notify,
+    tools: ToolContext | None = None,
 ) -> AsyncGenerator[ReplyChunk]:
     yield ReplyChunk(pcm)
 
@@ -70,6 +78,8 @@ class DeviceSession:  # pylint: disable=too-many-instance-attributes  # one devi
         # The turn whose reply the device still waits for: set when the reply starts,
         # cleared by its last message. An abort then owes the device a reply.end.
         self.open_turn: int | None = None
+        self.pending = PendingCalls()  # tool calls that wait for the device's tool.result
+        self.hub = McpHub([DeviceSource(self.ws.send_json, self.pending)])  # one per session
 
     async def handle_text(self, msg: dict[str, Any]) -> None:
         match msg["type"]:
@@ -98,6 +108,8 @@ class DeviceSession:  # pylint: disable=too-many-instance-attributes  # one devi
                     raise ProtocolError("bad credit")
                 self.credit = min(self.credit + granted, MAX_CREDIT)
                 self.credit_changed.set()
+            case "tool.result":  # in every state: the reply task waits for it
+                self.pending.resolve(msg)
             case other:
                 log.info("ignored message type %s", other)
 
@@ -158,13 +170,17 @@ class DeviceSession:  # pylint: disable=too-many-instance-attributes  # one devi
     ) -> None:
         """Put each reply chunk on the queue, then END, or the exception that ended it."""
         try:
-            source = self.reply_source(pcm, history, notify=notify)
+            source = self.reply_source(pcm, history, notify=notify, tools=self.turn_tools())
             async with contextlib.aclosing(source) as chunks:
                 async for chunk in chunks:
                     await queue.put(chunk)
             await queue.put(END)
         except Exception as exc:  # pylint: disable=broad-exception-caught  # play() reports it
             await queue.put(exc)
+
+    def turn_tools(self) -> ToolContext:
+        """The session's hub with a new CallCtx: the call cap lives for one turn (D5, D7)."""
+        return self.hub.turn_context()
 
     async def play(self, turn: int, queue: ReplyQueue, played: list[ReplyChunk]) -> None:
         clock = time.monotonic()
@@ -240,6 +256,11 @@ class DeviceSession:  # pylint: disable=too-many-instance-attributes  # one devi
             self.credit -= len(chunk)
             await self.ws.send_bytes(bytes([turn]) + chunk)
         return clock
+
+    async def close(self) -> None:
+        """The socket closed: end every waiting tool call, then the reply."""
+        self.pending.fail_all()
+        await self.cancel_reply()
 
     async def cancel_reply(self) -> None:
         task, self.reply_task = self.reply_task, None

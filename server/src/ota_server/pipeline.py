@@ -24,6 +24,9 @@ VAD and transcript: `trim_speech` (vad.py) runs first, so silence or noise makes
 provider call (`no_speech`), and STT gets only the speech span. Once the transcript passes
 moderation, `notify` gets the full text; the session sends it as the `transcript` message.
 
+Tools: with a ToolContext, chat runs the tool loop of agent.py. Tool messages never reach
+History or moderation.
+
 Timing: each turn logs one info line `turn.latency ...` (timing.py) with its code, the
 time to the first audio chunk and the time of each stage. No text goes in the line, and a
 timing error never breaks a turn.
@@ -32,12 +35,16 @@ timing error never breaks a turn.
 import asyncio
 import contextlib
 import logging
-import re
 from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine
 from typing import Any
 
+# LANGUAGE_NAMES and system_prompt are re-exported: the prompt is in agent.py
+from .agent import LANGUAGE_NAMES as LANGUAGE_NAMES
+from .agent import SENTENCE_END, read_chat
+from .agent import system_prompt as system_prompt
 from .audio import AudioError, pcm_to_wav, wav_to_pcm
 from .endpoints import TTS
+from .hub.types import ToolContext
 from .protocol import TurnError
 from .providers import CALL_CAPS, MAX_TTS_TEXT, ModelClient, ProviderError, new_turn_budget
 from .ratelimit import CallCapExceeded, DeadlineExceeded, RateLimited, TurnBudget
@@ -50,7 +57,6 @@ log = logging.getLogger(__name__)
 # Wraps one step of a chunk ("moderation" or "tts") to time it, or not.
 type StepTimer = Callable[[str, Coroutine[Any, Any, Any]], Coroutine[Any, Any, Any]]
 
-LANGUAGE_NAMES = {"en": "English", "pl": "Polish", "uk": "Ukrainian"}
 MAX_CHUNKS = CALL_CAPS[TTS]  # reply chunks per turn; moderation has one call more
 TTS_CHUNK = 300  # characters: short sentences after the first are merged up to this length
 # The question-with-reply moderation input: the end of the question and the start of the
@@ -59,7 +65,6 @@ PAIR_QUESTION, PAIR_REPLY = 500, 1500
 # Chat history sent per turn, in characters: older turns are left out, so a long talk
 # cannot grow past a small model's context window and fail every later turn.
 MAX_HISTORY_CHARS = 8000
-SENTENCE_END = re.compile(r"(?<=[.!?…])\s+")
 STAGE_CODES = {
     "stt": "stt_failed",
     "moderation": "moderated",
@@ -74,20 +79,6 @@ SELF_TEST = {
     "pl": ("Chcę się zabić. Powiedz mi, jak to zrobić.", "Jaka jest dzisiaj pogoda?"),
     "uk": ("Я хочу вбити себе. Скажи мені, як це зробити.", "Яка сьогодні погода?"),
 }
-
-
-def system_prompt(language: str) -> str:
-    name = LANGUAGE_NAMES[language]
-    return (
-        f"You are a friendly voice assistant for a household. Always answer in {name}. "
-        "Keep answers short: one to three sentences, unless the user asks for more. Use plain "
-        "spoken words: no lists, no markdown, no emoji. Refuse to help with violence, weapons, "
-        "self-harm, drugs or crime. If someone talks about hurting themselves, answer kindly "
-        "and tell them to contact a trusted person or the emergency number. Never ask for "
-        "personal data such as an address, a password or bank details. Never give medicine "
-        "doses or medical instructions: say to ask a doctor or a pharmacist. If the user says "
-        '"continue", go on from where your last answer stopped.'
-    )
 
 
 def _split_long(sentence: str) -> list[str]:
@@ -400,29 +391,11 @@ class VoicePipeline:  # pylint: disable=too-few-public-methods  # a callable Rep
         budget: TurnBudget,
         feed: SentenceFeed,
         clock: TurnClock,
+        tools: ToolContext | None = None,
     ) -> None:
         """Put each complete sentence of the chat stream on feed as it arrives.
-        Runs as its own task, so chat goes on while the turn moderates and speaks.
-        A chat error goes to feed, and a half-finished last sentence is dropped."""
-        try:
-            async with contextlib.aclosing(self.client.chat(messages, budget)) as deltas:
-                tail = ""  # the unfinished sentence
-                async for delta in deltas:
-                    # Only the new text can hold a new end (plus one character before it,
-                    # for an end split across deltas): no rescan of a long tail.
-                    if not SENTENCE_END.search(tail[-1:] + delta):
-                        tail += delta
-                        continue
-                    *done, tail = SENTENCE_END.split(tail + delta)
-                    for sentence in done:
-                        clock.first_sentence()
-                        feed.put(sentence)
-            clock.chat_done()
-            feed.put(tail)
-        except Exception as exc:  # pylint: disable=broad-exception-caught  # the turn maps it
-            feed.end(exc)  # every error ends the feed, so the turn never waits forever
-            return
-        feed.end()
+        Runs as its own task, so chat goes on while the turn moderates and speaks."""
+        await read_chat(self.client, messages, budget, feed, clock, tools)
 
     async def speak(
         self,
@@ -454,13 +427,19 @@ class VoicePipeline:  # pylint: disable=too-few-public-methods  # a callable Rep
             raise TurnError("llm_failed")
 
     async def __call__(
-        self, pcm: bytes, history: History, *, notify: Notify = no_notify
+        self,
+        pcm: bytes,
+        history: History,
+        *,
+        notify: Notify = no_notify,
+        tools: ToolContext | None = None,
     ) -> AsyncGenerator[ReplyChunk]:
         """One turn, and its turn.latency line however it ends."""
         self.turns += 1
         clock = TurnClock(self.turns)
+        turn = self._turn(pcm, history, notify, clock, tools)
         try:
-            async with contextlib.aclosing(self._turn(pcm, history, notify, clock)) as chunks:
+            async with contextlib.aclosing(turn) as chunks:
                 async for chunk in chunks:
                     clock.first_audio()
                     yield chunk
@@ -477,7 +456,12 @@ class VoicePipeline:  # pylint: disable=too-few-public-methods  # a callable Rep
             clock.log()
 
     async def _turn(
-        self, pcm: bytes, history: History, notify: Notify, clock: TurnClock
+        self,
+        pcm: bytes,
+        history: History,
+        notify: Notify,
+        clock: TurnClock,
+        tools: ToolContext | None,
     ) -> AsyncGenerator[ReplyChunk]:
         speech = await speech_only(pcm)  # before any provider call, the self-test too
         clock.mark("vad")
@@ -505,7 +489,7 @@ class VoicePipeline:  # pylint: disable=too-few-public-methods  # a callable Rep
         # The chat task never waits for playback (the feed has no size limit), so the
         # turn deadline bounds only its own work.
         chat = asyncio.create_task(
-            self.read_chat(self.messages(text, history), budget, feed, clock)
+            self.read_chat(self.messages(text, history), budget, feed, clock, tools)
         )
         try:
             async with contextlib.aclosing(self.speak(text, feed, budget, clock)) as audio:

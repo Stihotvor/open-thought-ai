@@ -1,0 +1,102 @@
+{
+  "tasks": [
+    {
+      "id": "T1",
+      "title": "Hub core: types, chain and steps (resolve, limit, validate, wrap) with unit tests",
+      "size": "M",
+      "depends_on": [],
+      "done_when": "cd server && pytest tests/test_hub_chain.py passes: unknown tool gives error outcome and the fake terminal is called 0 times (E1, M4); 3 invalid-args cases (level 150, missing field, wrong type) give error outcome and 0 terminal calls (E2, M4); with 6 calls on one CallCtx the terminal runs 4 times and calls 5-6 get 'tool call limit reached', also across rounds (E5, M3); wrap marks results as untrusted and truncates to <= 2000 chars (F5, M6); build_chain accepts a list so a fake confirm step can be inserted; mypy and ruff report 0 errors",
+      "files": [
+        "server/src/ota_server/hub/__init__.py",
+        "server/src/ota_server/hub/types.py",
+        "server/src/ota_server/hub/chain.py",
+        "server/src/ota_server/hub/steps.py",
+        "server/tests/test_hub_chain.py"
+      ],
+      "agent": "py-coder"
+    },
+    {
+      "id": "T2",
+      "title": "providers.py: chat_turn with tools and streamed tool_calls deltas",
+      "size": "M",
+      "depends_on": [],
+      "done_when": "cd server && pytest tests/test_providers.py passes, incl. new tests: chat_turn sends the tools field and yields TextDelta then ToolCallsDone with deltas joined by index; chat() keeps its signature and existing tests are unchanged; more than 8 indexes or more than 4096 joined arg chars raises ProviderError(CHAT); a broken tool_calls delta raises ProviderError(CHAT) (F4); mypy and ruff report 0 errors",
+      "files": [
+        "server/src/ota_server/providers.py",
+        "server/tests/test_providers.py"
+      ],
+      "agent": "py-coder"
+    },
+    {
+      "id": "T3",
+      "title": "PendingCalls, tool.result routing and DeviceSession.close in session and gateway",
+      "size": "M",
+      "depends_on": [],
+      "done_when": "cd server && pytest tests/test_pending.py tests/test_session.py tests/test_gateway.py passes: a tool.result resolves its waiting future in every state; unknown or answered id is ignored and logged, and the next turn works (E3, M5); malformed tool.result gives an error result for a known id and is ignored for an unknown id (E4); call ids are session-unique; abort leaves no pending entry (E6); DeviceSession.close() fails every waiting future and the gateway calls it on socket close, with 0 leaked tasks (F3); mypy and ruff report 0 errors",
+      "files": [
+        "server/src/ota_server/hub/pending.py",
+        "server/src/ota_server/session.py",
+        "server/src/ota_server/gateway.py",
+        "server/tests/test_pending.py",
+        "server/tests/test_session.py",
+        "server/tests/test_gateway.py"
+      ],
+      "agent": "py-coder"
+    },
+    {
+      "id": "T4",
+      "title": "Device source and McpHub: schemas, 2 s timeout, list_tools and run",
+      "size": "M",
+      "depends_on": [
+        "T1",
+        "T3"
+      ],
+      "done_when": "cd server && pytest tests/test_hub.py passes with a fake send and fake PendingCalls: list_tools returns device__set_volume, device__set_face (enum of 6 faces) and device__get_status; run of device__set_volume {level: 30} sends exactly 1 tool.call {name: set_volume, args: {level: 30}} (M1 part); with no result the outcome is a tool_timeout error after 2.0 s +- 0.2 s (M2); device ok:false gives the error text as outcome (F2); 6 requested calls send exactly 4 tool.call (M3); each frame is <= 1024 bytes, an oversized frame is refused before send (M6); run never raises; mypy and ruff report 0 errors",
+      "files": [
+        "server/src/ota_server/hub/device_source.py",
+        "server/src/ota_server/hub/hub.py",
+        "server/tests/test_hub.py"
+      ],
+      "agent": "py-coder"
+    },
+    {
+      "id": "T5",
+      "title": "reply.py tools kwarg and pipeline read_chat tool rounds",
+      "size": "M",
+      "depends_on": [
+        "T1",
+        "T2",
+        "T3"
+      ],
+      "done_when": "cd server && pytest tests/test_pipeline.py passes, incl. new tests with a fake chat and a fake ToolContext: a tool_calls round runs the tool and then a final text round (max 3 tool rounds then 1 text round, E7); tool messages stay out of History and moderation input; text before tool_calls is spoken and an unfinished half sentence is flushed at round end (D11); the turn budget is extended by the tool wait (D10); a text-only turn and the echo pipeline behave as before (E8); a broken tool stream ends with llm_failed (F4); mypy and ruff report 0 errors",
+      "files": [
+        "server/src/ota_server/reply.py",
+        "server/src/ota_server/pipeline.py",
+        "server/tests/test_pipeline.py",
+        "server/src/ota_server/session.py",
+        "server/tests/test_session.py"
+      ],
+      "agent": "py-coder"
+    },
+    {
+      "id": "T6",
+      "title": "Session builds McpHub per turn and end-to-end fake-socket test",
+      "size": "M",
+      "depends_on": [
+        "T3",
+        "T4",
+        "T5"
+      ],
+      "done_when": "cd server && pytest passes, incl. new tests/test_device_tools_e2e.py with a fake chat endpoint and fake socket: a turn where the LLM calls device__set_volume {level: 30} gives the socket exactly 1 tool.call, then after the fake tool.result the user hears the final reply (M1); no tool.result gives tool_timeout and the turn still finishes (M2); abort during a wait cancels it and a late result does not change the next turn (E6); echo pipeline unchanged (E8); full suite green, ruff and mypy report 0 errors, and coverage of new code is >= 90 % (M7)",
+      "files": [
+        "server/src/ota_server/session.py",
+        "server/tests/test_device_tools_e2e.py",
+        "server/tests/test_session.py",
+        "server/tests/test_gateway.py",
+        "server/tests/test_qa_vad_transcript.py",
+        "server/tests/test_pipeline.py"
+      ],
+      "agent": "py-coder"
+    }
+  ]
+}

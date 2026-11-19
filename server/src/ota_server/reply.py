@@ -4,6 +4,8 @@ from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
+from .hub.types import ToolContext
+
 
 @dataclass(frozen=True)
 class ReplyChunk:
@@ -28,8 +30,15 @@ class ReplySource(Protocol):  # pylint: disable=too-few-public-methods  # a call
     """Turns captured audio (and the history) into reply chunks: echo (M2) or
     pipeline.VoicePipeline (M3). It raises TurnError(code) when the turn fails: before the
     first chunk the device gets that error code, after it the reply ends with reason "error".
-    It may call `notify` with the transcript before the first chunk."""
+    It may call `notify` with the transcript before the first chunk. With `tools`, the
+    reply may call device tools (pipeline only; echo ignores them)."""
 
     def __call__(
-        self, pcm: bytes, history: History, /, *, notify: Notify = no_notify
+        self,
+        pcm: bytes,
+        history: History,
+        /,
+        *,
+        notify: Notify = no_notify,
+        tools: ToolContext | None = None,
     ) -> AsyncGenerator[ReplyChunk]: ...

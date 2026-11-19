@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import json
+import time
 from collections.abc import AsyncGenerator, Iterator
 from contextlib import ExitStack
 from typing import Any
@@ -18,6 +19,7 @@ from ota_server import gateway
 from ota_server import session as session_module
 from ota_server.config import Settings, get_settings
 from ota_server.endpoints import ConfigError
+from ota_server.hub.pending import DeviceResult, PendingClosed
 from ota_server.main import create_app
 from ota_server.pipeline import VoicePipeline
 from ota_server.protocol import (
@@ -30,6 +32,7 @@ from ota_server.protocol import (
 )
 from ota_server.ratelimit import TokenBucket
 from ota_server.reply import History, Notify, ReplyChunk, ReplySource, no_notify
+from ota_server.session import DeviceSession
 
 TOKEN = "test-token-0123456789abcdef0123456789"
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
@@ -157,7 +160,7 @@ def test_turn_limit_survives_reconnect(client: DeviceClient) -> None:
 
 def failing_source(error: Exception, chunks: int = 0) -> ReplySource:
     async def source(
-        pcm: bytes, _history: History, *, notify: Notify = no_notify
+        pcm: bytes, _history: History, *, notify: Notify = no_notify, tools: Any = None
     ) -> AsyncGenerator[ReplyChunk]:
         for _ in range(chunks):
             yield ReplyChunk(pcm[:AUDIO_CHUNK])
@@ -217,7 +220,7 @@ def test_voice_pipeline_starts_with_all_roles(monkeypatch: pytest.MonkeyPatch) -
 
 def test_abort_while_thinking_ends_the_reply(client: DeviceClient) -> None:
     async def slow(
-        pcm: bytes, _history: History, *, notify: Notify = no_notify
+        pcm: bytes, _history: History, *, notify: Notify = no_notify, tools: Any = None
     ) -> AsyncGenerator[ReplyChunk]:
         await asyncio.Event().wait()  # never answers
         yield ReplyChunk(pcm)
@@ -291,7 +294,7 @@ def test_abort_while_speaking_closes_the_source(client: DeviceClient) -> None:
     closed = asyncio.Event()
 
     async def endless(
-        pcm: bytes, _history: History, *, notify: Notify = no_notify
+        pcm: bytes, _history: History, *, notify: Notify = no_notify, tools: Any = None
     ) -> AsyncGenerator[ReplyChunk]:
         try:
             while True:
@@ -318,7 +321,7 @@ def test_chunks_stream_in_order_and_the_cap_stops_the_source(
     made: list[int] = []
 
     async def chunks(
-        pcm: bytes, _history: History, *, notify: Notify = no_notify
+        pcm: bytes, _history: History, *, notify: Notify = no_notify, tools: Any = None
     ) -> AsyncGenerator[ReplyChunk]:
         for n in range(1, 10):
             made.append(n)
@@ -343,3 +346,34 @@ def test_a_device_without_credit_ends_the_reply(
     msgs, received = reply_messages(ws)
     assert msgs[-1] == {"type": "reply.end", "turn": turn, "reason": "error"}
     assert len(received) <= START_CREDIT
+
+
+def test_socket_close_fails_every_waiting_call(
+    client: DeviceClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    closed: list[list[BaseException | DeviceResult]] = []
+
+    async def no_send() -> None:
+        pass
+
+    class WaitingSession(DeviceSession):
+        """Two tool calls wait from the start; close() collects how they ended."""
+
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            super().__init__(*args, **kwargs)
+            self.waits = [
+                asyncio.create_task(self.pending.wait_for(self.pending.new_id(), 30.0, no_send))
+                for _ in range(2)
+            ]
+
+        async def close(self) -> None:
+            await super().close()
+            closed.append(await asyncio.gather(*self.waits, return_exceptions=True))
+
+    monkeypatch.setattr(gateway, "DeviceSession", WaitingSession)
+    connect(client).close()
+    deadline = time.monotonic() + 2.0
+    while not closed and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert len(closed) == 1
+    assert all(isinstance(r, PendingClosed) for r in closed[0])
