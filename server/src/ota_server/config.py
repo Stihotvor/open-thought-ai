@@ -28,6 +28,8 @@ class Settings(BaseSettings):
     tts_voice: str = Field(default="", max_length=100)
     # Chat memory: the last N turns of one device connection, in memory only. 0 turns it off.
     history_turns: int = Field(default=15, ge=0, le=100)
+    # External MCP servers: path to a JSON list of servers (mcp/config.py). Empty means none.
+    mcp_servers_file: str = ""
 
 
 @lru_cache
