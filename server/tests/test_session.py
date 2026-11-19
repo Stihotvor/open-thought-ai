@@ -3,14 +3,16 @@
 import asyncio
 import logging
 import time
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from typing import Any, cast
 
 import pytest
 
 from ota_server import session as session_module
-from ota_server.hub.pending import DeviceResult, PendingClosed
-from ota_server.hub.types import ToolContext
+from ota_server.hub.device_source import DeviceSource
+from ota_server.hub.hub import McpHub
+from ota_server.hub.pending import DeviceResult, PendingCalls, PendingClosed
+from ota_server.hub.types import ToolCall, ToolContext
 from ota_server.protocol import AUDIO_CHUNK, MAX_CREDIT, MAX_LEAD_SECONDS, TRANSCRIPT_MAX_CHARS
 from ota_server.reply import History, Notify, ReplyChunk, ReplySource, no_notify
 from ota_server.session import CreditStalled, DeviceSession, echo
@@ -349,3 +351,53 @@ def test_close_fails_every_wait_and_leaves_no_task() -> None:
     results, left = asyncio.run(scenario())
     assert all(isinstance(r, PendingClosed) for r in results)
     assert left == 0
+
+
+def test_tool_result_after_cancel_keeps_the_session() -> None:
+    async def scenario() -> list[Any]:
+        session = new_session()
+        waiter = asyncio.create_task(session.pending.wait_for(1, 5.0, no_send))
+        await wait_until(lambda: len(session.pending) == 1)
+        waiter.cancel()
+        await session.handle_text({"type": "tool.result", "id": 1, "ok": True})
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+        await session.handle_text({"type": "listen.start"})
+        return fake_ws(session).sent
+
+    assert asyncio.run(scenario())[-1] == {"type": "turn.start", "turn": 1}
+
+
+def test_two_turns_share_one_hub_with_their_own_cap() -> None:
+    async def scenario() -> list[list[str | None]]:
+        session = new_session()
+        session.pending = FakePendingOk()
+        session.hub = McpHub([DeviceSource(session.ws.send_json, session.pending)])
+        hub = session.hub
+        codes: list[list[str | None]] = []
+        for _ in range(2):
+            tools = session.turn_tools()
+            assert session.hub is hub
+            call = ToolCall("c", "device__get_status", {})
+            codes.append([(await tools.run(call)).code for _ in range(5)])
+        return codes
+
+    first, second = asyncio.run(scenario())
+    assert first == second == [None, None, None, None, "call_limit"]
+
+
+def test_the_hub_is_built_once_per_session() -> None:
+    session = new_session()
+    assert isinstance(session.hub, McpHub)
+    hub = session.hub
+    session.turn_tools()
+    session.turn_tools()
+    assert session.hub is hub
+
+
+class FakePendingOk(PendingCalls):
+    async def wait_for(
+        self, call_id: int, timeout: float, send: Callable[[], Awaitable[None]]
+    ) -> DeviceResult:
+        await send()
+        return DeviceResult(True, "ok")

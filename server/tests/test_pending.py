@@ -109,3 +109,19 @@ def test_a_blocking_send_ends_as_timeout() -> None:
     pending = PendingCalls()
     assert asyncio.run(scenario()) < 0.5
     assert len(pending) == 0
+
+
+def test_resolve_after_cancel_does_not_raise() -> None:
+    async def scenario() -> bool:
+        pending = PendingCalls()
+        waiter = asyncio.create_task(pending.wait_for(1, 5.0, no_send))
+        while len(pending) == 0:
+            await asyncio.sleep(0)
+        waiter.cancel()  # cancels the waiting future now; the finally runs later
+        resolved = pending.resolve({"type": "tool.result", "id": 1, "ok": True})
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+        assert len(pending) == 0
+        return resolved
+
+    assert asyncio.run(scenario()) is False

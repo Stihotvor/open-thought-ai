@@ -45,7 +45,7 @@ class FakeTerminal:
 
 
 def chain(terminal: FakeTerminal, extra: list[Step] | None = None) -> Next:
-    steps: list[Step] = [resolve(SPECS), limit(), validate(SPECS), *(extra or []), wrap()]
+    steps: list[Step] = [wrap(), resolve(SPECS), limit(), validate(SPECS), *(extra or [])]
     return build_chain(steps, terminal)
 
 
@@ -77,7 +77,7 @@ def test_invalid_args(args: dict[str, Any]) -> None:
     outcome = run(chain(terminal), ToolCall(id="c1", name="device__set_volume", args=args))
     assert outcome.ok is False
     assert outcome.code == "invalid_args"
-    assert outcome.text.startswith("invalid arguments: ")
+    assert outcome.text.startswith(UNTRUSTED_PREFIX + "invalid arguments: ")
     assert terminal.calls == []
 
 
@@ -109,7 +109,7 @@ def test_call_limit_across_rounds() -> None:
     for outcome in outcomes[4:]:
         assert outcome.ok is False
         assert outcome.code == "call_limit"
-        assert outcome.text == "tool call limit reached"
+        assert outcome.text == UNTRUSTED_PREFIX + "tool call limit reached"
 
 
 def test_result_is_untrusted_and_truncated() -> None:
@@ -180,3 +180,8 @@ def test_validate_rejects_unknown_type_kind() -> None:
     outcome = run_step(validate({spec.full_name: spec}), call, terminal)
     assert outcome.code == "invalid_args"
     assert terminal.calls == []
+
+
+def test_unknown_tool_is_wrapped() -> None:
+    outcome = run(chain(FakeTerminal()), ToolCall(id="c1", name="device__nope", args={}))
+    assert outcome.text == UNTRUSTED_PREFIX + "unknown tool"

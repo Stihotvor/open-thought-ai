@@ -50,6 +50,7 @@ class ToolSpec:
 
 class ToolSource(Protocol):
     name: str
+    timeout: float  # seconds; the hub's outer guard per call (D4a)
 
     def specs(self) -> list[ToolSpec]: ...
 

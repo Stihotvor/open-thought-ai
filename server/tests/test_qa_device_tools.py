@@ -67,6 +67,7 @@ def test_qa_004_tool_list_for_the_chat_model() -> None:
 def test_qa_005_extra_tool_source() -> None:
     class Ping:
         name = "fake"
+        timeout = 1.0
 
         def __init__(self) -> None:
             self.ran = 0

@@ -74,7 +74,7 @@ class PendingCalls:
         future = None
         if isinstance(call_id, int) and not isinstance(call_id, bool):
             future = self._waiting.pop(call_id, None)
-        if future is None:
+        if future is None or future.done():  # done: cancelled, its finally not run yet
             log.info("ignored tool.result for unknown id %r", call_id)
             return False
         future.set_result(parse_result(msg))

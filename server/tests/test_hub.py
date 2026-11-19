@@ -12,7 +12,8 @@ import pytest
 from ota_server.hub.device_source import FACES, DeviceSource
 from ota_server.hub.hub import McpHub
 from ota_server.hub.pending import DeviceResult, PendingCalls, PendingClosed
-from ota_server.hub.types import CallCtx, ToolCall, ToolOutcome
+from ota_server.hub.steps import UNTRUSTED_PREFIX
+from ota_server.hub.types import MAX_RESULT_CHARS, CallCtx, ToolCall, ToolOutcome, ToolSpec
 from ota_server.protocol import MAX_TEXT_FRAME
 
 
@@ -187,3 +188,76 @@ def test_one_info_line_per_call_without_args_or_results(caplog: pytest.LogCaptur
     assert "device__set_volume" in lines[0] and "True" in lines[0]
     assert "device__nope" in lines[1] and "unknown_tool" in lines[1]
     assert not any("37" in line or "secret-result" in line for line in lines)
+
+
+def test_invalid_args_outcome_is_wrapped_and_capped() -> None:
+    hub, send = make_hub()
+    outcome = run(hub, "device__set_volume", {"level": 30, "k" * 4000: 1})
+    assert outcome.code == "invalid_args"
+    assert outcome.text.startswith(UNTRUSTED_PREFIX + "invalid arguments: ")
+    assert len(outcome.text) <= MAX_RESULT_CHARS
+    assert send.frames == []
+
+
+def test_call_limit_outcome_is_wrapped() -> None:
+    hub, _ = make_hub()
+    tools = hub.turn_context()
+
+    async def scenario() -> list[ToolOutcome]:
+        return [await tools.run(ToolCall(f"c{i}", "device__get_status", {})) for i in range(5)]
+
+    assert asyncio.run(scenario())[-1].text == UNTRUSTED_PREFIX + "tool call limit reached"
+
+
+class SlowSource:
+    """A source that ignores its own timeout: only the hub's outer guard ends it."""
+
+    name = "slow"
+    timeout = 0.05
+
+    def specs(self) -> list[ToolSpec]:
+        return [ToolSpec("slow", "wait", "Wait.", {"type": "object"})]
+
+    async def call(self, tool: str, args: dict[str, Any]) -> ToolOutcome:
+        await asyncio.sleep(10)
+        return ToolOutcome(True, "late")
+
+
+def test_outer_guard_ends_a_slow_source() -> None:
+    hub = McpHub([SlowSource()])
+    start = time.monotonic()
+    outcome = run(hub, "slow__wait", {})
+    assert time.monotonic() - start < 1.0
+    assert outcome.ok is False
+    assert outcome.code == "tool_timeout"
+    assert outcome.text.startswith(UNTRUSTED_PREFIX)
+
+
+def named(source: str, tool: str) -> SlowSource:
+    fake = SlowSource()
+    fake.name = source
+    fake.specs = lambda: [ToolSpec(source, tool, "", {"type": "object"})]  # type: ignore[method-assign]
+    return fake
+
+
+@pytest.mark.parametrize(
+    ("source", "tool"),
+    [("dev__ice", "x"), ("device", "bad name"), ("device", "x" * 60), ("device", "a.b")],
+)
+def test_bad_source_or_tool_name_is_rejected(source: str, tool: str) -> None:
+    with pytest.raises(ValueError):
+        McpHub([named(source, tool)])
+
+
+def test_good_names_are_accepted() -> None:
+    hub = McpHub([named("my-src_1", "tool-name_2")])
+    assert [t["function"]["name"] for t in hub.list_tools()] == ["my-src_1__tool-name_2"]
+
+
+def test_device_timeout_fires_before_the_outer_guard(caplog: pytest.LogCaptureFixture) -> None:
+    hub = McpHub([DeviceSource(FakeSend(), PendingCalls(), timeout=0.05)])
+    with caplog.at_level(logging.WARNING):
+        outcome = run(hub, "device__get_status", {})
+    assert outcome.code == "tool_timeout"
+    names = [r.name for r in caplog.records if "timed out" in r.getMessage()]
+    assert names == ["ota_server.hub.device_source"]

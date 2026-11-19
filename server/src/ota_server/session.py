@@ -79,6 +79,7 @@ class DeviceSession:  # pylint: disable=too-many-instance-attributes  # one devi
         # cleared by its last message. An abort then owes the device a reply.end.
         self.open_turn: int | None = None
         self.pending = PendingCalls()  # tool calls that wait for the device's tool.result
+        self.hub = McpHub([DeviceSource(self.ws.send_json, self.pending)])  # one per session
 
     async def handle_text(self, msg: dict[str, Any]) -> None:
         match msg["type"]:
@@ -178,8 +179,8 @@ class DeviceSession:  # pylint: disable=too-many-instance-attributes  # one devi
             await queue.put(exc)
 
     def turn_tools(self) -> ToolContext:
-        """A new hub per turn: its CallCtx, so the call cap, lives for one turn (D5, D7)."""
-        return McpHub([DeviceSource(self.ws.send_json, self.pending)]).turn_context()
+        """The session's hub with a new CallCtx: the call cap lives for one turn (D5, D7)."""
+        return self.hub.turn_context()
 
     async def play(self, turn: int, queue: ReplyQueue, played: list[ReplyChunk]) -> None:
         clock = time.monotonic()
