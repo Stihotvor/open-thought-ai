@@ -2,7 +2,8 @@
 
 This is the only module that imports the SDK. One owner task enters the transport and the
 ClientSession, and leaves them in the same task (anyio rule). Calls from other tasks use the
-shared ClientSession directly, with no queue (E7).
+shared ClientSession directly, with no queue (E7). A transport error makes call_tool reconnect
+once under a lock and retry once (D7).
 """
 
 from __future__ import annotations
@@ -12,20 +13,40 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from typing import Any
 
+import anyio
+import httpx
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.sse import sse_client
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamable_http_client
 from mcp.shared._httpx_utils import create_mcp_http_client  # private: recheck on mcp bump
+from mcp.shared.exceptions import McpError
 from mcp.shared.message import SessionMessage
-from mcp.types import CallToolResult, ContentBlock, ImageContent, TextContent, Tool
+from mcp.types import (
+    CONNECTION_CLOSED,
+    CallToolResult,
+    ContentBlock,
+    ImageContent,
+    TextContent,
+    Tool,
+)
 
 from ota_server.mcp.config import McpServerConfig
 from ota_server.mcp.hooks import ConnectionPolicy
 from ota_server.mcp.port import RawResult, RawTool
 
 STOP_TIMEOUT = 5.0  # seconds close() waits for the owner task before it cancels it (D9)
+RECONNECT_TIMEOUT = 5.0  # seconds for one reconnect: old owner stop plus new open (D7)
+# The SDK streamable http client answers a 404 for an unknown session id with this code.
+SESSION_TERMINATED = 32600
+TRANSPORT_ERRORS = (
+    anyio.ClosedResourceError,
+    anyio.BrokenResourceError,
+    anyio.EndOfStream,
+    httpx.TransportError,
+    ConnectionError,  # includes OwnerGone and "not connected"
+)
 
 Streams = tuple[
     MemoryObjectReceiveStream[SessionMessage | Exception], MemoryObjectSendStream[SessionMessage]
@@ -55,6 +76,21 @@ def sdk_transport(
     return stdio_client(params)
 
 
+class OwnerGone(ConnectionError):
+    """The owner task ended while a call was waiting (e.g. the transport failed)."""
+
+
+class ConnectionClosed(RuntimeError):
+    """The connection was closed with close(). Not a transport error: no reconnect."""
+
+
+def is_transport_error(exc: BaseException) -> bool:
+    """D7: only these start a reconnect. A tool fault McpError and a timeout do not."""
+    if isinstance(exc, McpError):
+        return exc.error.code in (CONNECTION_CLOSED, SESSION_TERMINATED)
+    return isinstance(exc, TRANSPORT_ERRORS)
+
+
 class SdkConnection:
     """One MCP server connection. Build it with `await SdkConnection.open(config, policy)`."""
 
@@ -64,10 +100,12 @@ class SdkConnection:
         self._config = config
         self._policy = policy
         self._factory = factory
-        self._ready = asyncio.Event()
         self._stop = asyncio.Event()
         self._session: ClientSession | None = None
         self._task: asyncio.Task[None] | None = None
+        self._lock = asyncio.Lock()
+        self._generation = 0
+        self._closed = False
 
     @classmethod
     async def open(
@@ -79,25 +117,35 @@ class SdkConnection:
     ) -> SdkConnection:
         """Connect and initialize. Re-raises the owner's failure, e.g. ConnectionDenied."""
         conn = cls(config, policy, transport_factory)
-        await conn._start()
+        conn._session = await conn._start()
         return conn
 
-    async def _start(self) -> None:
-        task = asyncio.create_task(self._own(), name=f"mcp-owner-{self._config.name}")
+    @property
+    def generation(self) -> int:
+        """Goes up by 1 after each successful reconnect."""
+        return self._generation
+
+    async def _start(self) -> ClientSession:
+        """Start a new owner task; return its ready session. The caller publishes it."""
+        ready: asyncio.Future[ClientSession] = asyncio.get_running_loop().create_future()
+        stop = asyncio.Event()
+        self._stop = stop
+        task = asyncio.create_task(self._own(ready, stop), name=f"mcp-owner-{self._config.name}")
         self._task = task
-        ready = asyncio.create_task(self._ready.wait())
+        first: set[asyncio.Future[Any]] = {task, ready}
         try:
-            await asyncio.wait({task, ready}, return_when=asyncio.FIRST_COMPLETED)
+            await asyncio.wait(first, return_when=asyncio.FIRST_COMPLETED)
         except asyncio.CancelledError:
-            await self.close()
-            raise
-        finally:
             ready.cancel()
-        if not self._ready.is_set():
+            await _cancel_owner(task)  # not ready: the stop event cannot end it
+            raise
+        if not ready.done():
+            ready.cancel()
             await task  # re-raises the owner's failure
             raise ConnectionError(f"mcp server {self._config.name!r} closed before ready")
+        return ready.result()
 
-    async def _own(self) -> None:
+    async def _own(self, ready: asyncio.Future[ClientSession], stop: asyncio.Event) -> None:
         headers = await self._policy.before_connect(self._config)
         if self._config.transport == "stdio":
             headers = {}  # for stdio the policy may only deny (D11)
@@ -106,17 +154,21 @@ class SdkConnection:
             ClientSession(read, write) as session,
         ):
             await session.initialize()
-            self._session = session
-            self._ready.set()
-            await self._stop.wait()
+            if not ready.done():
+                ready.set_result(session)
+            await stop.wait()
 
-    def _live(self) -> ClientSession:
-        if self._session is None:
+    def _live(self) -> tuple[ClientSession, asyncio.Task[None], int]:
+        """The shared session, its owner and the generation that belongs to them."""
+        if self._closed:
+            raise ConnectionClosed(f"mcp server {self._config.name!r} connection is closed")
+        session, task = self._session, self._task
+        if session is None or task is None or task.done():
             raise ConnectionError(f"mcp server {self._config.name!r} is not connected")
-        return self._session
+        return session, task, self._generation
 
     async def list_tools(self) -> list[RawTool]:
-        session = self._live()
+        session, _, _ = self._live()
         tools: list[Tool] = []
         cursor: str | None = None
         while True:
@@ -128,22 +180,84 @@ class SdkConnection:
         return [RawTool(t.name, t.description or "", t.inputSchema) for t in tools]
 
     async def call_tool(self, name: str, args: dict[str, Any]) -> RawResult:
-        result = await self._live().call_tool(name, args)
-        return _to_raw(result)
+        """Call once; on a transport error reconnect and retry once (D7)."""
+        seen = self._generation  # used only when no session is live
+        try:
+            session, owner, seen = self._live()
+            return await self._call_on(session, owner, name, args)
+        except Exception as exc:
+            if not is_transport_error(exc):
+                raise
+        await self.reconnect(seen)
+        session, owner, _ = self._live()
+        return await self._call_on(session, owner, name, args)
+
+    async def _call_on(
+        self, session: ClientSession, owner: asyncio.Task[None], name: str, args: dict[str, Any]
+    ) -> RawResult:
+        """One call on session. Raises OwnerGone if the owner ends first."""
+        call = asyncio.create_task(session.call_tool(name, args))
+        try:
+            await asyncio.wait({call, owner}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            if not call.done():
+                call.cancel()
+                await asyncio.wait({call})
+        if call.cancelled():
+            raise OwnerGone(f"mcp server {self._config.name!r} owner task ended")
+        return _to_raw(call.result())
+
+    async def reconnect(self, seen_generation: int) -> None:
+        """Replace the owner once per generation. Shielded: a caller cancel or timeout does
+        not stop it half done. Raises the failure; the next call then tries again."""
+        job = asyncio.create_task(self._reconnect_locked(seen_generation))
+        job.add_done_callback(_retrieve)
+        await asyncio.shield(job)
+
+    async def _reconnect_locked(self, seen_generation: int) -> None:
+        async with self._lock:
+            if self._closed or self._generation > seen_generation:
+                return  # closed, or another caller already reconnected
+            old_task, old_stop = self._task, self._stop
+            self._session = None
+            async with asyncio.timeout(RECONNECT_TIMEOUT):  # covers stop plus open (D7)
+                if old_task is not None:
+                    await _stop_owner(old_task, old_stop, None)
+                session = await self._start()
+            self._generation += 1  # publish the session and its generation together
+            self._session = session
 
     async def close(self) -> None:
-        """Stop the owner task; after STOP_TIMEOUT cancel it (D9). Idempotent, never raises."""
-        task = self._task
-        if task is None:
-            return
-        self._stop.set()
+        """Stop the owner task; after STOP_TIMEOUT cancel it (D9). Waits for an in-flight
+        reconnect, so no owner outlives close. Idempotent, never raises."""
+        async with self._lock:
+            self._closed = True
+            self._session = None
+            if self._task is not None:
+                await _stop_owner(self._task, self._stop, STOP_TIMEOUT)
+
+
+async def _stop_owner(task: asyncio.Task[None], stop: asyncio.Event, timeout: float | None) -> None:
+    """Set stop and wait for the owner; cancel it after timeout or when this wait is cancelled."""
+    stop.set()
+    try:
         if not task.done():
-            done, _ = await asyncio.wait({task}, timeout=STOP_TIMEOUT)
-            if not done:
-                task.cancel()
-                await asyncio.wait({task})
-        if not task.cancelled():
-            task.exception()  # mark the owner's failure as retrieved
+            await asyncio.wait({task}, timeout=timeout)
+    finally:
+        await _cancel_owner(task)
+
+
+async def _cancel_owner(task: asyncio.Task[None]) -> None:
+    """Cancel the owner if it still runs, wait for it, and mark its failure as retrieved."""
+    if not task.done():
+        task.cancel()
+        await asyncio.wait({task})
+    _retrieve(task)
+
+
+def _retrieve(task: asyncio.Task[None]) -> None:
+    if not task.cancelled():
+        task.exception()
 
 
 def _to_raw(result: CallToolResult) -> RawResult:
