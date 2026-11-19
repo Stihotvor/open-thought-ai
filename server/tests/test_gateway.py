@@ -20,6 +20,7 @@ from ota_server import session as session_module
 from ota_server.config import Settings, get_settings
 from ota_server.endpoints import ConfigError
 from ota_server.hub.pending import DeviceResult, PendingClosed
+from ota_server.hub.types import ToolOutcome, ToolSpec
 from ota_server.main import create_app
 from ota_server.pipeline import VoicePipeline
 from ota_server.protocol import (
@@ -60,6 +61,7 @@ def client() -> Iterator[DeviceClient]:
 def env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OTA_DEVICE_ID", "test")
     monkeypatch.setenv("OTA_DEVICE_TOKEN_SHA256", hashlib.sha256(TOKEN.encode()).hexdigest())
+    monkeypatch.setenv("OTA_MCP_SERVERS_FILE", "")  # no external MCP servers
 
 
 def connect(client: DeviceClient) -> WebSocketTestSession:
@@ -377,3 +379,48 @@ def test_socket_close_fails_every_waiting_call(
         time.sleep(0.01)
     assert len(closed) == 1
     assert all(isinstance(r, PendingClosed) for r in closed[0])
+
+
+class FakeSource:
+    """A ToolSource with the one tool "t"."""
+
+    name = "ext"
+    timeout = 1.0
+
+    def specs(self) -> list[ToolSpec]:
+        return [ToolSpec(self.name, "t", "A test tool.", {"type": "object"})]
+
+    async def call(self, tool: str, args: dict[str, Any]) -> ToolOutcome:
+        return ToolOutcome(True, tool)
+
+
+def session_tools(client: DeviceClient, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Connect once and return the tool names of the hub the gateway built."""
+    made: list[DeviceSession] = []
+
+    class Recorded(DeviceSession):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            super().__init__(*args, **kwargs)
+            made.append(self)
+
+    monkeypatch.setattr(gateway, "DeviceSession", Recorded)
+    connect(client)
+    [session] = made
+    return [tool["function"]["name"] for tool in session.hub.list_tools()]
+
+
+def test_no_mcp_file_gives_no_sources_and_device_tools_only(
+    client: DeviceClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert client.app.state.mcp_sources == []
+    names = session_tools(client, monkeypatch)
+    assert names and all(name.startswith("device__") for name in names)
+
+
+def test_the_gateway_passes_mcp_sources_to_the_session(
+    client: DeviceClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client.app.state.mcp_sources = [FakeSource()]
+    names = session_tools(client, monkeypatch)
+    assert "ext__t" in names
+    assert any(name.startswith("device__") for name in names)

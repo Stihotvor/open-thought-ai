@@ -5,7 +5,7 @@ import contextlib
 import logging
 import time
 from collections import deque
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Sequence
 from dataclasses import replace
 from typing import Any
 
@@ -14,7 +14,7 @@ from fastapi import WebSocket
 from .hub.device_source import DeviceSource
 from .hub.hub import McpHub
 from .hub.pending import PendingCalls
-from .hub.types import ToolContext
+from .hub.types import ToolContext, ToolSource
 from .protocol import (
     AUDIO_CHUNK,
     BYTES_PER_SECOND,
@@ -63,6 +63,7 @@ class DeviceSession:  # pylint: disable=too-many-instance-attributes  # one devi
         reply_source: ReplySource = echo,
         turn_limit: TokenBucket | None = None,
         history_turns: int = 15,
+        mcp_sources: Sequence[ToolSource] = (),
     ) -> None:
         # Chat memory of this connection only: what the device really played.
         self.history: deque[tuple[str, str]] = deque(maxlen=history_turns)
@@ -79,7 +80,8 @@ class DeviceSession:  # pylint: disable=too-many-instance-attributes  # one devi
         # cleared by its last message. An abort then owes the device a reply.end.
         self.open_turn: int | None = None
         self.pending = PendingCalls()  # tool calls that wait for the device's tool.result
-        self.hub = McpHub([DeviceSource(self.ws.send_json, self.pending)])  # one per session
+        # One hub per session; the external sources and their connections are shared.
+        self.hub = McpHub([DeviceSource(self.ws.send_json, self.pending), *mcp_sources])
 
     async def handle_text(self, msg: dict[str, Any]) -> None:
         match msg["type"]:

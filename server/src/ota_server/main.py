@@ -9,6 +9,9 @@ from fastapi import FastAPI
 from .config import Settings, get_settings, model_env
 from .endpoints import voice_roles
 from .gateway import router
+from .mcp.config import load_servers
+from .mcp.registry import McpRegistry
+from .mcp.source import McpSource
 from .pipeline import VoicePipeline
 from .providers import ModelClient, make_http_client
 from .reply import ReplySource
@@ -26,11 +29,18 @@ async def start_reply_source(settings: Settings, stack: AsyncExitStack) -> Reply
     return VoicePipeline(ModelClient(roles, http), settings.language, settings.tts_voice)
 
 
+async def start_mcp_sources(settings: Settings, stack: AsyncExitStack) -> list[McpSource]:
+    """The external MCP servers, shared by all sessions. The stack closes them (D10)."""
+    configs = load_servers(settings.mcp_servers_file)
+    return await McpRegistry.start(configs, stack)
+
+
 @asynccontextmanager
 async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()  # fail at startup on missing or invalid settings
     async with AsyncExitStack() as stack:
         application.state.reply_source = await start_reply_source(settings, stack)
+        application.state.mcp_sources = await start_mcp_sources(settings, stack)
         yield
 
 

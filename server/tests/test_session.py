@@ -12,7 +12,7 @@ from ota_server import session as session_module
 from ota_server.hub.device_source import DeviceSource
 from ota_server.hub.hub import McpHub
 from ota_server.hub.pending import DeviceResult, PendingCalls, PendingClosed
-from ota_server.hub.types import ToolCall, ToolContext
+from ota_server.hub.types import ToolCall, ToolContext, ToolOutcome, ToolSpec
 from ota_server.protocol import AUDIO_CHUNK, MAX_CREDIT, MAX_LEAD_SECONDS, TRANSCRIPT_MAX_CHARS
 from ota_server.reply import History, Notify, ReplyChunk, ReplySource, no_notify
 from ota_server.session import CreditStalled, DeviceSession, echo
@@ -393,6 +393,35 @@ def test_the_hub_is_built_once_per_session() -> None:
     session.turn_tools()
     session.turn_tools()
     assert session.hub is hub
+
+
+class OneToolSource:
+    """A ToolSource with the one tool "t"."""
+
+    name = "ext"
+    timeout = 1.0
+
+    def specs(self) -> list[ToolSpec]:
+        return [ToolSpec(self.name, "t", "A test tool.", {"type": "object"})]
+
+    async def call(self, tool: str, args: dict[str, Any]) -> ToolOutcome:
+        return ToolOutcome(True, tool)
+
+
+def hub_names(session: DeviceSession) -> list[str]:
+    return [tool["function"]["name"] for tool in session.hub.list_tools()]
+
+
+def test_the_hub_holds_the_given_source_tools() -> None:
+    session = DeviceSession(FakeSocket(), mcp_sources=[OneToolSource()])  # type: ignore[arg-type]
+    names = hub_names(session)
+    assert "ext__t" in names
+    assert any(name.startswith("device__") for name in names)
+
+
+def test_the_default_hub_lists_only_device_tools() -> None:
+    names = hub_names(new_session())
+    assert names and all(name.startswith("device__") for name in names)
 
 
 class FakePendingOk(PendingCalls):
