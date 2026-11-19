@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Run the server quality gate before a push. This saves CI minutes on the GitHub free tier.
+# Enable once per clone: git config core.hooksPath .githooks
+set -euo pipefail
+exec "$(git rev-parse --show-toplevel)/server/scripts/gate.sh"
