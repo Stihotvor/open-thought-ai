@@ -51,7 +51,7 @@
       "depends_on": [
         "T2"
       ],
-      "done_when": "cd server && pytest tests/test_mcp_adapters.py passes: for http and sse a fake server on 127.0.0.1 that answers a same-origin 307 makes the connect fail in under 2 s (M3, T8); a 307 on a mid-session call returns an error outcome and the session survives; RedirectBlocked is not an httpx.TransportError; the passed timeout and headers reach the client; existing adapter and reconnect tests still pass; ruff and mypy report 0 errors",
+      "done_when": "cd server && pytest tests/test_mcp_adapters.py passes: for http and sse a fake server on 127.0.0.1 that answers a same-origin 307 makes the connect fail in under 2 s (M3, T8); a 307 on a mid-session call returns an error outcome and the call returns an error outcome without a crash; RedirectBlocked is not an httpx.TransportError; the passed timeout and headers reach the client; existing adapter and reconnect tests still pass; ruff and mypy report 0 errors",
       "files": [
         "server/src/ota_server/mcp/adapters.py",
         "server/tests/test_mcp_adapters.py",
@@ -110,10 +110,11 @@
       "depends_on": [
         "T2"
       ],
-      "done_when": "grep -c 'OTA_MCP_ALLOWED_HOSTS' docs/security.md returns at least 1; docs/security.md and the servers file example show tools as a map of sha256 pins and headers as MCP_SECRET_* names; grep for the old tools list form in the example returns 0 matches; the example file loads through load_servers with 0 logged errors",
+      "done_when": "A test in server/tests/test_mcp_config.py loads docs/examples/mcp/servers.json with load_servers and gets all entries with 0 logged errors; docs/security.md names tools map, headers MCP_SECRET_* and OTA_MCP_ALLOWED_HOSTS.",
       "files": [
         "docs/security.md",
-        "docs/examples/mcp/servers.json"
+        "docs/examples/mcp/servers.json",
+        "server/tests/test_mcp_config.py"
       ],
       "agent": "py-coder"
     },
