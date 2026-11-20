@@ -13,7 +13,7 @@ from ota_server.hub.hub import McpHub
 from ota_server.hub.types import CallCtx, ToolCall, ToolOutcome
 from ota_server.mcp import hooks
 from ota_server.mcp.config import McpServerConfig
-from ota_server.mcp.port import RawResult, RawTool
+from ota_server.mcp.port import RawResult, RawTool, Verifier
 from ota_server.mcp.registry import McpRegistry
 from ota_server.mcp.source import McpSource
 
@@ -36,6 +36,10 @@ class FakeConnection:
         self.delay = delay
         self.raises = raises
         self.calls: list[tuple[str, dict[str, Any]]] = []
+        self.verify: Verifier | None = None
+
+    def set_verifier(self, verify: Verifier) -> None:
+        self.verify = verify
 
     async def list_tools(self) -> list[RawTool]:
         return list(self.tools)

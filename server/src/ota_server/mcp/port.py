@@ -1,5 +1,6 @@
 """The SDK-free connection port (D2): the contract between McpSource and the adapters."""
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -22,8 +23,17 @@ class RawResult:
     parts: list[tuple[str, str]]
 
 
+Verifier = Callable[[list[RawTool]], Awaitable[None]]
+
+
 class McpConnection(Protocol):
     async def list_tools(self) -> list[RawTool]: ...
+
+    def set_verifier(self, verify: Verifier) -> None:
+        """After each reconnect (not the first connect), list the tools and await verify on
+        them before the new session serves any call. If verify raises, the reconnect fails
+        with that error and the next call tries the reconnect again."""
+        ...
 
     async def call_tool(self, name: str, args: dict[str, Any]) -> RawResult: ...
 

@@ -3,7 +3,8 @@
 This is the only module that imports the SDK. One owner task enters the transport and the
 ClientSession, and leaves them in the same task (anyio rule). Calls from other tasks use the
 shared ClientSession directly, with no queue (E7). A transport error makes call_tool reconnect
-once under a lock and retry once (D7). Every 3xx on http and sse raises RedirectBlocked
+once under a lock and retry once (D7); a reconnect runs the verifier on the new tool list
+before the session serves a call. Every 3xx on http and sse raises RedirectBlocked
 (tool-safety D6).
 """
 
@@ -39,7 +40,7 @@ from mcp.types import (
 
 from ota_server.mcp.config import McpServerConfig
 from ota_server.mcp.hooks import ConnectionPolicy
-from ota_server.mcp.port import RawResult, RawTool
+from ota_server.mcp.port import RawResult, RawTool, Verifier
 
 log = logging.getLogger(__name__)
 
@@ -153,6 +154,7 @@ class SdkConnection:
         self._lock = asyncio.Lock()
         self._generation = 0
         self._closed = False
+        self._verify: Verifier | None = None
 
     @classmethod
     async def open(
@@ -164,20 +166,27 @@ class SdkConnection:
     ) -> SdkConnection:
         """Connect and initialize. Re-raises the owner's failure, e.g. ConnectionDenied."""
         conn = cls(config, policy, transport_factory)
-        conn._session = await conn._start()
+        conn._session = await conn._start(check=False)
         return conn
+
+    def set_verifier(self, verify: Verifier) -> None:
+        """Run verify on the listed tools after each reconnect, before the session is used."""
+        self._verify = verify
 
     @property
     def generation(self) -> int:
         """Goes up by 1 after each successful reconnect."""
         return self._generation
 
-    async def _start(self) -> ClientSession:
-        """Start a new owner task; return its ready session. The caller publishes it."""
+    async def _start(self, check: bool) -> ClientSession:
+        """Start a new owner task; return its ready session. The caller publishes it.
+        With check, the owner runs the verifier before the session is ready."""
         ready: asyncio.Future[ClientSession] = asyncio.get_running_loop().create_future()
         stop = asyncio.Event()
         self._stop = stop
-        task = asyncio.create_task(self._own(ready, stop), name=f"mcp-owner-{self._config.name}")
+        task = asyncio.create_task(
+            self._own(ready, stop, check), name=f"mcp-owner-{self._config.name}"
+        )
         self._task = task
         first: set[asyncio.Future[Any]] = {task, ready}
         try:
@@ -192,26 +201,48 @@ class SdkConnection:
             raise ConnectionError(f"mcp server {self._config.name!r} closed before ready")
         return ready.result()
 
-    async def _own(self, ready: asyncio.Future[ClientSession], stop: asyncio.Event) -> None:
+    async def _own(
+        self, ready: asyncio.Future[ClientSession], stop: asyncio.Event, check: bool
+    ) -> None:
         headers = await self._policy.before_connect(self._config)
         if self._config.transport == "stdio":
             headers = {}  # for stdio the policy may only deny (D11)
         try:
-            await self._serve(headers, ready, stop)
+            await self._serve(headers, ready, stop, check)
         except BaseExceptionGroup as group:
             raise _redirect_in(group) or group from None
 
     async def _serve(
-        self, headers: dict[str, str], ready: asyncio.Future[ClientSession], stop: asyncio.Event
+        self,
+        headers: dict[str, str],
+        ready: asyncio.Future[ClientSession],
+        stop: asyncio.Event,
+        check: bool,
     ) -> None:
+        failure: Exception | None = None
         async with (
             self._factory(self._config, headers) as (read, write),
             ClientSession(read, write) as session,
         ):
             await session.initialize()
-            if not ready.done():
-                ready.set_result(session)
-            await stop.wait()
+            if check:
+                failure = await self._verify_on(session)
+            if failure is None:
+                if not ready.done():
+                    ready.set_result(session)
+                await stop.wait()
+        if failure is not None:
+            raise failure  # outside the SDK task groups, so it is not wrapped in a group
+
+    async def _verify_on(self, session: ClientSession) -> Exception | None:
+        """Run the verifier on session's tool list; return its failure, if any."""
+        if self._verify is None:
+            return None
+        try:
+            await self._verify(await self._list_on(session))
+        except Exception as exc:
+            return exc
+        return None
 
     def _live(self) -> tuple[ClientSession, asyncio.Task[None], int]:
         """The shared session, its owner and the generation that belongs to them."""
@@ -224,6 +255,9 @@ class SdkConnection:
 
     async def list_tools(self) -> list[RawTool]:
         session, _, _ = self._live()
+        return await self._list_on(session)
+
+    async def _list_on(self, session: ClientSession) -> list[RawTool]:
         tools: list[Tool] = []
         cursor: str | None = None
         for _ in range(MAX_TOOL_PAGES):
@@ -282,7 +316,7 @@ class SdkConnection:
             async with asyncio.timeout(RECONNECT_TIMEOUT):  # covers stop plus open (D7)
                 if old_task is not None:
                     await _stop_owner(old_task, old_stop, None)
-                session = await self._start()
+                session = await self._start(check=True)
             self._generation += 1  # publish the session and its generation together
             self._session = session
 

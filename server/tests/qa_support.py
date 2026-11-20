@@ -13,7 +13,7 @@ from mcp_fakes import AlwaysRedirectServer, _read_request, build_fake
 from ota_server.config import Settings
 from ota_server.hub.types import CallCtx, ToolCall, ToolOutcome
 from ota_server.mcp.config import McpServerConfig
-from ota_server.mcp.port import RawResult, RawTool
+from ota_server.mcp.port import RawResult, RawTool, Verifier
 from ota_server.mcp.ssrf import Resolver
 from ota_server.mcp.toolfilter import tool_hash
 
@@ -62,6 +62,10 @@ class FakeConn:
     def __init__(self, tools: list[RawTool]) -> None:
         self.tools = tools
         self.calls: list[str] = []
+        self.verify: Verifier | None = None
+
+    def set_verifier(self, verify: Verifier) -> None:
+        self.verify = verify
 
     async def list_tools(self) -> list[RawTool]:
         return list(self.tools)

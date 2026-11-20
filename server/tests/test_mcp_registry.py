@@ -16,7 +16,7 @@ from ota_server.mcp import registry
 from ota_server.mcp.adapters import SdkConnection
 from ota_server.mcp.config import McpServerConfig
 from ota_server.mcp.hooks import ConnectionPolicy
-from ota_server.mcp.port import McpConnection, RawResult, RawTool
+from ota_server.mcp.port import McpConnection, RawResult, RawTool, Verifier
 from ota_server.mcp.registry import McpRegistry
 from ota_server.mcp.source import McpSource
 
@@ -29,6 +29,10 @@ class FakeConn:
     def __init__(self, fail_close: bool = False) -> None:
         self.closed = False
         self.fail_close = fail_close
+        self.verify: Verifier | None = None
+
+    def set_verifier(self, verify: Verifier) -> None:
+        self.verify = verify
 
     async def list_tools(self) -> list[RawTool]:
         return list(TOOLS)
@@ -48,6 +52,9 @@ class Recording:
     def __init__(self, inner: SdkConnection) -> None:
         self.inner = inner
         self.closed = False
+
+    def set_verifier(self, verify: Verifier) -> None:
+        self.inner.set_verifier(verify)
 
     async def list_tools(self) -> list[RawTool]:
         return await self.inner.list_tools()
