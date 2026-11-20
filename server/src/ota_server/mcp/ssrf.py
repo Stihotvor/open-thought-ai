@@ -76,6 +76,15 @@ async def _resolve(host: str, resolver: Resolver) -> list[IpAddress] | None:
     return [ip for ip in ips if ip is not None]
 
 
+def plain_http_allowed(host: str, allowed_hosts: frozenset[str]) -> bool:
+    """Return True if plain http may reach host: a loopback literal or an allowlisted host."""
+    host = host.lower()
+    if host in allowed_hosts:
+        return True
+    literal = _parse_ip(host)
+    return literal is not None and literal.is_loopback
+
+
 async def check_host(
     host: str, allowed_hosts: frozenset[str], resolver: Resolver = default_resolver
 ) -> str | None:

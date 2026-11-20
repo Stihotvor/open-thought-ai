@@ -4,7 +4,6 @@ It keeps no state, so every connect and reconnect re-runs the check (F2). Each d
 one WARNING with the server, the host and the reason, never a header value (T12).
 """
 
-import ipaddress
 import logging
 import os
 from collections.abc import Mapping
@@ -13,16 +12,9 @@ from urllib.parse import urlsplit
 
 from ota_server.mcp.config import McpServerConfig
 from ota_server.mcp.hooks import ConnectionDenied
-from ota_server.mcp.ssrf import Resolver, check_host, default_resolver
+from ota_server.mcp.ssrf import Resolver, check_host, default_resolver, plain_http_allowed
 
 log = logging.getLogger(__name__)
-
-
-def _is_loopback_literal(host: str) -> bool:
-    try:
-        return ipaddress.ip_address(host).is_loopback
-    except ValueError:
-        return False
 
 
 class SafeConnectionPolicy:
@@ -57,7 +49,7 @@ class SafeConnectionPolicy:
     def _scheme_reason(self, scheme: str, host: str) -> str | None:
         if scheme == "https":
             return None
-        if scheme == "http" and (_is_loopback_literal(host) or host in self._allowed):
+        if scheme == "http" and plain_http_allowed(host, self._allowed):
             return None
         return "http needs https"
 

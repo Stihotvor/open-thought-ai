@@ -170,3 +170,19 @@ def test_slow_dns_is_deny(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_dns_timeout_constant() -> None:
     assert ssrf.DNS_TIMEOUT == 3.0
+
+
+@pytest.mark.parametrize(
+    ("host", "allowed", "expected"),
+    [
+        ("127.0.0.1", EMPTY, True),
+        ("::1", EMPTY, True),
+        ("n8n.lan", frozenset({"n8n.lan"}), True),
+        ("N8N.LAN", frozenset({"n8n.lan"}), True),
+        ("n8n.lan", EMPTY, False),
+        ("localhost", EMPTY, False),
+        ("10.0.0.1", EMPTY, False),
+    ],
+)
+def test_plain_http_allowed(host: str, allowed: frozenset[str], expected: bool) -> None:
+    assert ssrf.plain_http_allowed(host, allowed) is expected
