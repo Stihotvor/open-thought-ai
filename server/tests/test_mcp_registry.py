@@ -230,3 +230,18 @@ def test_one_close_fails_the_rest_still_close() -> None:
     asyncio.run(_start([fake_config("first"), fake_config("second")], connect))
     assert first.closed
     assert second.closed
+
+
+def test_bad_names_dropped_before_connect(caplog: pytest.LogCaptureFixture) -> None:
+    connected: list[str] = []
+
+    async def connect(config: McpServerConfig, policy: ConnectionPolicy) -> McpConnection:
+        connected.append(config.name)
+        return FakeConn()
+
+    configs = [fake_config("a"), fake_config("a"), fake_config("b__x"), fake_config("c")]
+    with caplog.at_level(logging.ERROR, logger="ota_server.mcp.registry"):
+        sources = asyncio.run(_start(configs, connect))
+    assert connected == ["a", "c"]
+    assert [s.name for s in sources] == ["a", "c"]
+    assert len(caplog.records) == 2

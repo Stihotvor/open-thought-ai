@@ -12,6 +12,7 @@ import logging
 from collections.abc import Awaitable, Callable, Sequence
 from contextlib import AsyncExitStack
 
+from ota_server.hub.types import SEP
 from ota_server.mcp.adapters import SdkConnection
 from ota_server.mcp.config import McpServerConfig
 from ota_server.mcp.hooks import ALLOW_ALL, ConnectionPolicy, ToolFilter
@@ -38,9 +39,25 @@ class McpRegistry:
     ) -> list[McpSource]:
         """Connect all servers in parallel; return the live sources in config order."""
         results = await asyncio.gather(
-            *(_start_one(config, stack, policy, tool_filter, connect) for config in configs)
+            *(
+                _start_one(config, stack, policy, tool_filter, connect)
+                for config in _usable(configs)
+            )
         )
         return [source for source in results if source is not None]
+
+
+def _usable(configs: Sequence[McpServerConfig]) -> list[McpServerConfig]:
+    """Drop the configs the hub would skip (D7), so none of them holds a live connection."""
+    kept: dict[str, McpServerConfig] = {}
+    for config in configs:
+        if SEP in config.name:
+            log.error("mcp %r skipped: its name contains %r", config.name, SEP)
+        elif config.name in kept:
+            log.error("mcp %r skipped: the name is already used", config.name)
+        else:
+            kept[config.name] = config
+    return list(kept.values())
 
 
 async def _start_one(
