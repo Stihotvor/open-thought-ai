@@ -15,9 +15,9 @@ IpAddress = ipaddress.IPv4Address | ipaddress.IPv6Address
 _BLOCKED_CLASSES: tuple[str, ...] = (
     "loopback",
     "link_local",
-    "private",
     "unspecified",
     "multicast",
+    "private",
 )
 
 

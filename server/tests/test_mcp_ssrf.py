@@ -118,3 +118,9 @@ def test_resolver_error_is_deny() -> None:
 def test_empty_resolution_is_deny() -> None:
     reason = asyncio.run(check_host("a.example.com", EMPTY, _fake({})))
     assert reason == "dns failure"
+
+
+@pytest.mark.parametrize("ip", ["0.0.0.0", "::"])
+def test_unspecified_reason_is_specific(ip: str) -> None:
+    reason = asyncio.run(check_host("svc.example.com", EMPTY, _fake({"svc.example.com": [ip]})))
+    assert reason == "blocked address (unspecified)"
