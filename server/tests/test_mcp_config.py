@@ -15,6 +15,7 @@ from ota_server.mcp.port import RawTool
 
 DIGEST = "0" * 64
 PIN = "sha256:" + "0" * 64
+EXAMPLE = Path(__file__).resolve().parents[2] / "docs" / "examples" / "mcp" / "servers.json"
 
 
 def _entry(transport: str = "http", **over: Any) -> dict[str, Any]:
@@ -175,3 +176,15 @@ def test_settings_field(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("OTA_MCP_SERVERS_FILE")
     settings = Settings(device_id="test", device_token_sha256=DIGEST, _env_file=None)  # type: ignore[call-arg]
     assert settings.mcp_servers_file == ""
+
+
+def test_example_servers_file_loads(caplog: pytest.LogCaptureFixture) -> None:
+    """T8: the documented example loads in full with 0 logged errors."""
+    raw = json.loads(EXAMPLE.read_text(encoding="utf-8"))
+    with caplog.at_level(logging.DEBUG):
+        servers = load_servers(str(EXAMPLE))
+    assert [s.name for s in servers] == [e["name"] for e in raw]
+    assert len(servers) == 2
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert all(isinstance(e["tools"], dict) for e in raw)
+    assert servers[0].headers == {"Authorization": "MCP_SECRET_N8N"}
