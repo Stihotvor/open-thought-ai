@@ -226,3 +226,22 @@ async def _read_request(reader: asyncio.StreamReader) -> None:
             length = int(value.strip())
     if length:
         await reader.readexactly(length)
+
+
+class HeaderRecordingServer(FakeServer):
+    """A FakeServer that keeps the request headers of every http request (tool-safety T9)."""
+
+    def __init__(self, transport: str) -> None:
+        super().__init__(transport)
+        self.seen: list[dict[str, str]] = []
+
+    def _app(self) -> ASGIApp:
+        inner = super()._app()
+
+        async def app(scope: Scope, receive: Receive, send: Send) -> None:
+            if scope["type"] == "http":
+                headers = {k.decode("latin-1"): v.decode("latin-1") for k, v in scope["headers"]}
+                self.seen.append(headers)
+            await inner(scope, receive, send)
+
+        return app
