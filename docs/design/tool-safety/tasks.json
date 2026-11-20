@@ -1,0 +1,136 @@
+{
+  "tasks": [
+    {
+      "id": "T1",
+      "title": "ssrf.check_host with injectable resolver",
+      "size": "M",
+      "depends_on": [],
+      "done_when": "cd server && pytest tests/test_mcp_ssrf.py passes with a fake resolver: one deny case each for loopback, link-local (169.254.169.254), 10/8, 172.16/12, 192.168/16, fc00::/7, unspecified and multicast, plus a single-label name (M1, T6); 2001:db8::1 is not single-label; ::ffff:10.0.0.1 is denied as IPv4 (E5); a host with one public and one private IP is denied (E1); an allowlisted host N8N matches n8n and skips the check (E2); a resolver error is a deny (E7); ruff and mypy report 0 errors",
+      "files": [
+        "server/src/ota_server/mcp/ssrf.py",
+        "server/tests/test_mcp_ssrf.py"
+      ],
+      "agent": "py-coder"
+    },
+    {
+      "id": "T2",
+      "title": "Config validators (tools map, headers, device, stdio env) and migrate #28 tests to tools map",
+      "size": "M",
+      "depends_on": [],
+      "done_when": "cd server && pytest tests/test_mcp_config.py passes: entries are rejected with a logged error for a name 'device', a literal header value, a shared MCP_SECRET_* name across two entries, a stdio env key API_KEY, a stdio env value starting MCP_SECRET_, headers on a stdio entry (E6), the old tools list form and a pin not matching sha256:<64 hex> (M5, 5 of 5); a valid https entry with headers and a tools map loads; all existing #28 tests (test_mcp_config, test_mcp_source, test_mcp_adapters, test_mcp_registry, test_mcp_e2e) use the tools map form and pass with `cd server && pytest`; ruff and mypy report 0 errors",
+      "files": [
+        "server/src/ota_server/mcp/config.py",
+        "server/tests/test_mcp_config.py",
+        "server/tests/test_mcp_source.py",
+        "server/tests/test_mcp_adapters.py",
+        "server/tests/test_mcp_registry.py",
+        "server/tests/test_mcp_e2e.py"
+      ],
+      "agent": "py-coder"
+    },
+    {
+      "id": "T3",
+      "title": "HashToolFilter (hash, caps) and per-tool try in McpSource",
+      "size": "M",
+      "depends_on": [
+        "T2"
+      ],
+      "done_when": "cd server && pytest tests/test_mcp_toolfilter.py tests/test_mcp_source.py passes: a matching pin is admitted, a missing pin and a changed description are not admitted and the WARNING log holds the tool name and current sha256 hash, a 1 001 char description is not admitted with an ERROR log (M2, 4 of 4, T4); a canonical schema over 4 000 chars is not admitted; the hash is stable over a fixed fixture; a filter that raises hides only that tool, the other tools stay and McpHub.run does not raise (F4); an unadmitted tool call is an unknown tool (F3); ruff and mypy report 0 errors",
+      "files": [
+        "server/src/ota_server/mcp/toolfilter.py",
+        "server/src/ota_server/mcp/source.py",
+        "server/tests/test_mcp_toolfilter.py",
+        "server/tests/test_mcp_source.py"
+      ],
+      "agent": "py-coder"
+    },
+    {
+      "id": "T4",
+      "title": "NoRedirectTransport and guarded client in adapters",
+      "size": "M",
+      "depends_on": [
+        "T2"
+      ],
+      "done_when": "cd server && pytest tests/test_mcp_adapters.py passes: for http and sse a fake server on 127.0.0.1 that answers a same-origin 307 makes the connect fail in under 2 s (M3, T8); a 307 on a mid-session call returns an error outcome and the session survives; RedirectBlocked is not an httpx.TransportError; the passed timeout and headers reach the client; existing adapter and reconnect tests still pass; ruff and mypy report 0 errors",
+      "files": [
+        "server/src/ota_server/mcp/adapters.py",
+        "server/tests/test_mcp_adapters.py",
+        "server/tests/mcp_fakes.py"
+      ],
+      "agent": "py-coder"
+    },
+    {
+      "id": "T5",
+      "title": "SafeConnectionPolicy (scheme rule, SSRF, secret headers)",
+      "size": "M",
+      "depends_on": [
+        "T1",
+        "T2"
+      ],
+      "done_when": "cd server && pytest tests/test_mcp_policy.py passes with a fake resolver and a fake environ: https passes; http to a public host is denied; http to a loopback or allowlisted host passes (T5); a blocked IP is denied; each denial logs a WARNING with server, host and reason; a header value is read from environ and returned (T9); a missing MCP_SECRET_ variable raises ConnectionDenied with a log naming the variable and no value (T9); a stdio entry returns {}; a second call re-runs the check so a host that now resolves to a blocked IP is denied (F2); ruff and mypy report 0 errors",
+      "files": [
+        "server/src/ota_server/mcp/policy.py",
+        "server/tests/test_mcp_policy.py"
+      ],
+      "agent": "py-coder"
+    },
+    {
+      "id": "T6",
+      "title": "McpHub keep-first for source and tool names",
+      "size": "S",
+      "depends_on": [],
+      "done_when": "cd server && pytest tests/test_hub.py passes: two sources with one name keep the first and log an ERROR for the second with all its specs skipped; a source name containing '__' is skipped whole; two specs with one full name keep the first and log an ERROR for the second; a spec name that fails the format check is logged and skipped, not raised; ruff and mypy report 0 errors",
+      "files": [
+        "server/src/ota_server/hub/hub.py",
+        "server/tests/test_hub.py"
+      ],
+      "agent": "py-coder"
+    },
+    {
+      "id": "T7",
+      "title": "Settings.mcp_allowed_hosts and main.py wiring of policy and filter",
+      "size": "M",
+      "depends_on": [
+        "T3",
+        "T5"
+      ],
+      "done_when": "cd server && pytest tests/test_config.py tests/test_mcp_e2e.py passes: OTA_MCP_ALLOWED_HOSTS=' N8N, 10.0.0.5,' gives allowed_hosts == frozenset({'n8n','10.0.0.5'}) and an empty default gives an empty set (T7); the lifespan passes SafeConnectionPolicy and HashToolFilter (pins built from config.tools only) to McpRegistry.start, shown by an e2e test where an unpinned tool is hidden and a pinned tool is called (T11); ruff and mypy report 0 errors",
+      "files": [
+        "server/src/ota_server/config.py",
+        "server/src/ota_server/main.py",
+        "server/tests/test_config.py",
+        "server/tests/test_mcp_e2e.py"
+      ],
+      "agent": "py-coder"
+    },
+    {
+      "id": "T8",
+      "title": "Update docs/security.md and servers file example",
+      "size": "S",
+      "depends_on": [
+        "T2"
+      ],
+      "done_when": "grep -c 'OTA_MCP_ALLOWED_HOSTS' docs/security.md returns at least 1; docs/security.md and the servers file example show tools as a map of sha256 pins and headers as MCP_SECRET_* names; grep for the old tools list form in the example returns 0 matches; the example file loads through load_servers with 0 logged errors",
+      "files": [
+        "docs/security.md",
+        "docs/examples/mcp/servers.json"
+      ],
+      "agent": "py-coder"
+    },
+    {
+      "id": "T9",
+      "title": "Integration tests for redirect block and secret header, and gate",
+      "size": "M",
+      "depends_on": [
+        "T4",
+        "T7",
+        "T8"
+      ],
+      "done_when": "cd server && pytest tests/test_mcp_tool_safety.py passes: with 127.0.0.1 on the allowlist a fake http server that answers 307 makes the connect fail in under 2 s (M3); a fake http server receives the secret header value from a test env variable and caplog holds 0 occurrences of that value (M4); a denied server does not stop startup and device tools still work (F1); then server/scripts/gate.sh passes with ruff 0 findings, mypy 0 errors, all tests green and coverage >= 90 % (M6)",
+      "files": [
+        "server/tests/test_mcp_tool_safety.py"
+      ],
+      "agent": "py-coder"
+    }
+  ]
+}
