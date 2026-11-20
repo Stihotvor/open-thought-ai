@@ -8,7 +8,6 @@ from typing import Any
 
 import pytest
 
-from ota_server.hub import hub, types
 from ota_server.hub.hub import McpHub
 from ota_server.hub.types import CallCtx, ToolCall, ToolOutcome
 from ota_server.mcp import hooks
@@ -190,7 +189,6 @@ def _default(func: Any, name: str) -> object:
 
 
 def test_shared_names_have_one_home() -> None:
-    assert hub.TOOL_NAME is types.TOOL_NAME
     assert isinstance(hooks.ALLOW_ALL, hooks.AllowAll)
     assert _default(McpSource, "tool_filter") is hooks.ALLOW_ALL
     assert _default(McpSource.build, "tool_filter") is hooks.ALLOW_ALL

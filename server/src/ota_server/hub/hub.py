@@ -9,8 +9,15 @@ from typing import Any
 
 from ota_server.hub.chain import build_chain
 from ota_server.hub.steps import limit, resolve, validate, wrap
-from ota_server.hub.types import SEP, CallCtx, ToolCall, ToolOutcome, ToolSource, ToolSpec
-from ota_server.hub.types import TOOL_NAME as TOOL_NAME  # re-export for older imports
+from ota_server.hub.types import (
+    SEP,
+    TOOL_NAME,
+    CallCtx,
+    ToolCall,
+    ToolOutcome,
+    ToolSource,
+    ToolSpec,
+)
 
 log = logging.getLogger(__name__)
 
