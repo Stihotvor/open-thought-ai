@@ -3,7 +3,8 @@
 This is the only module that imports the SDK. One owner task enters the transport and the
 ClientSession, and leaves them in the same task (anyio rule). Calls from other tasks use the
 shared ClientSession directly, with no queue (E7). A transport error makes call_tool reconnect
-once under a lock and retry once (D7).
+once under a lock and retry once (D7). Every 3xx on http and sse raises RedirectBlocked
+(tool-safety D6).
 """
 
 from __future__ import annotations
@@ -21,7 +22,10 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.sse import sse_client
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamable_http_client
-from mcp.shared._httpx_utils import create_mcp_http_client  # private: recheck on mcp bump
+from mcp.shared._httpx_utils import (  # private module: recheck on mcp bump
+    MCP_DEFAULT_SSE_READ_TIMEOUT,
+    MCP_DEFAULT_TIMEOUT,
+)
 from mcp.shared.exceptions import McpError
 from mcp.shared.message import SessionMessage
 from mcp.types import (
@@ -58,10 +62,49 @@ Streams = tuple[
 TransportFactory = Callable[[McpServerConfig, dict[str, str]], AbstractAsyncContextManager[Streams]]
 
 
+class RedirectBlocked(Exception):
+    """A server answered a 3xx. Not an httpx.TransportError, so no reconnect starts (D6)."""
+
+
+class NoRedirectTransport(httpx.AsyncBaseTransport):
+    """Wraps a transport and raises RedirectBlocked on every 3xx response. The SDK follows
+    same-origin redirects itself (stream_within_origin), so follow_redirects=False is not
+    enough."""
+
+    def __init__(self, inner: httpx.AsyncBaseTransport) -> None:
+        self._inner = inner
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        response = await self._inner.handle_async_request(request)
+        if 300 <= response.status_code < 400:
+            await response.aclose()
+            # Only the status: the Location can carry server-controlled text.
+            raise RedirectBlocked(f"HTTP {response.status_code} redirect blocked")
+        return response
+
+    async def aclose(self) -> None:
+        await self._inner.aclose()
+
+
+def guarded_client(
+    headers: dict[str, str] | None = None,
+    timeout: httpx.Timeout | None = None,
+    auth: httpx.Auth | None = None,
+) -> httpx.AsyncClient:
+    """An McpHttpClientFactory: the SDK default client, but every 3xx raises (D6)."""
+    return httpx.AsyncClient(
+        transport=NoRedirectTransport(httpx.AsyncHTTPTransport()),
+        follow_redirects=False,
+        headers=headers,
+        timeout=timeout or httpx.Timeout(MCP_DEFAULT_TIMEOUT, read=MCP_DEFAULT_SSE_READ_TIMEOUT),
+        auth=auth,
+    )
+
+
 @asynccontextmanager
 async def _http_transport(url: str, headers: dict[str, str]) -> AsyncIterator[Streams]:
     async with (
-        create_mcp_http_client(headers=headers) as client,
+        guarded_client(headers=headers) as client,
         streamable_http_client(url, http_client=client) as (read, write, _),
     ):
         yield read, write
@@ -74,7 +117,7 @@ def sdk_transport(
     if config.transport == "http":
         return _http_transport(config.url, headers)
     if config.transport == "sse":
-        return sse_client(config.url, headers=headers)
+        return sse_client(config.url, headers=headers, httpx_client_factory=guarded_client)
     # stdio: the SDK merges get_default_environment() with config.env (D9, T7).
     params = StdioServerParameters(command=config.command, args=config.args, env=config.env)
     return stdio_client(params)
@@ -153,6 +196,14 @@ class SdkConnection:
         headers = await self._policy.before_connect(self._config)
         if self._config.transport == "stdio":
             headers = {}  # for stdio the policy may only deny (D11)
+        try:
+            await self._serve(headers, ready, stop)
+        except BaseExceptionGroup as group:
+            raise _redirect_in(group) or group from None
+
+    async def _serve(
+        self, headers: dict[str, str], ready: asyncio.Future[ClientSession], stop: asyncio.Event
+    ) -> None:
         async with (
             self._factory(self._config, headers) as (read, write),
             ClientSession(read, write) as session,
@@ -261,6 +312,18 @@ async def _cancel_owner(task: asyncio.Task[None]) -> None:
         task.cancel()
         await asyncio.wait({task})
     _retrieve(task)
+
+
+def _redirect_in(group: BaseExceptionGroup[BaseException]) -> RedirectBlocked | None:
+    """The first RedirectBlocked in the SDK task group's error, raised alone so the caller
+    sees it and not a wrapped group (D6)."""
+    match = group.subgroup(lambda exc: isinstance(exc, RedirectBlocked))
+    while match is not None:
+        first = match.exceptions[0]
+        if isinstance(first, RedirectBlocked):
+            return first
+        match = first if isinstance(first, BaseExceptionGroup) else None
+    return None
 
 
 def _retrieve(task: asyncio.Task[None]) -> None:
