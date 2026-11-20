@@ -12,7 +12,7 @@ import logging
 from collections.abc import Awaitable, Callable, Sequence
 from contextlib import AsyncExitStack
 
-from ota_server.hub.types import SEP
+from ota_server.hub.types import source_name_problem
 from ota_server.mcp.adapters import SdkConnection
 from ota_server.mcp.config import McpServerConfig
 from ota_server.mcp.hooks import ALLOW_ALL, ConnectionPolicy, ToolFilter
@@ -48,13 +48,16 @@ class McpRegistry:
 
 
 def _usable(configs: Sequence[McpServerConfig]) -> list[McpServerConfig]:
-    """Drop the configs the hub would skip (D7), so none of them holds a live connection."""
+    """Drop the configs the hub would skip (D7), so none of them holds a live connection.
+
+    load_servers already refuses these names. This guard is defence in depth for callers
+    that build configs by hand. It uses the hub's own rule, so the two cannot drift.
+    """
     kept: dict[str, McpServerConfig] = {}
     for config in configs:
-        if SEP in config.name:
-            log.error("mcp %r skipped: its name contains %r", config.name, SEP)
-        elif config.name in kept:
-            log.error("mcp %r skipped: the name is already used", config.name)
+        problem = source_name_problem(config.name, kept)
+        if problem is not None:
+            log.error("mcp %r skipped: %s", config.name, problem)
         else:
             kept[config.name] = config
     return list(kept.values())

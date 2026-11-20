@@ -1,7 +1,7 @@
 """Hub types: the contract shared by the chain, the sources and the pipeline."""
 
 import re
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Container
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -9,6 +9,15 @@ MAX_TOOL_CALLS = 4  # per turn
 MAX_RESULT_CHARS = 2000  # per result sent to the LLM
 SEP = "__"  # full tool name = f"{source}{SEP}{tool}"
 TOOL_NAME = re.compile(r"[a-zA-Z0-9_-]{1,64}")  # the full name the LLM API accepts (D13)
+
+
+def source_name_problem(name: str, used: Container[str]) -> str | None:
+    """Return why a source name is refused (D7), or None if the name may be used."""
+    if SEP in name:
+        return f"its name contains {SEP!r}"
+    if name in used:
+        return "the name is already used"
+    return None
 
 
 @dataclass(frozen=True)

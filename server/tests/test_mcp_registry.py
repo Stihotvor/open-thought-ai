@@ -245,3 +245,17 @@ def test_bad_names_dropped_before_connect(caplog: pytest.LogCaptureFixture) -> N
     assert connected == ["a", "c"]
     assert [s.name for s in sources] == ["a", "c"]
     assert len(caplog.records) == 2
+
+
+@pytest.mark.parametrize("names", [["a", "a"], ["a__b"], ["a", "b__c", "a", "d"]])
+def test_registry_and_hub_keep_the_same_names(names: list[str]) -> None:
+    from ota_server.hub.hub import _keep_sources
+
+    kept = [c.name for c in registry._usable([fake_config(n) for n in names])]
+    sources = [FakeSourceName(n) for n in names]
+    assert kept == list(_keep_sources(sources))  # type: ignore[arg-type]
+
+
+class FakeSourceName:
+    def __init__(self, name: str) -> None:
+        self.name = name
