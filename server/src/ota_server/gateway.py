@@ -83,6 +83,7 @@ async def device_endpoint(ws: WebSocket, settings: Settings = Depends(get_settin
         reply_source,
         turn_limit=slot.turn_limit(settings),
         history_turns=settings.history_turns,
+        mcp_sources=ws.app.state.mcp_sources,  # shared by all sessions (main.py)
     )
     await ws.send_json(
         {

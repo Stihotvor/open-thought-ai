@@ -4,18 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 from collections.abc import Sequence
 from typing import Any
 
 from ota_server.hub.chain import build_chain
 from ota_server.hub.steps import limit, resolve, validate, wrap
 from ota_server.hub.types import SEP, CallCtx, ToolCall, ToolOutcome, ToolSource, ToolSpec
+from ota_server.hub.types import TOOL_NAME as TOOL_NAME  # re-export for older imports
 
 log = logging.getLogger(__name__)
 
 GUARD_GRACE = 0.5  # seconds past source.timeout: the source's own timeout fires first
-TOOL_NAME = re.compile(r"[a-zA-Z0-9_-]{1,64}")  # the full name the LLM API accepts (D13)
 
 
 def _check_names(source: ToolSource) -> None:
