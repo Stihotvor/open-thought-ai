@@ -74,11 +74,26 @@ def _build_specs(
     allowed = set(config.tools)
     specs: list[ToolSpec] = []
     for tool in tools:
-        if tool.name in allowed and tool_filter.admit(config.name, tool):
+        if tool.name in allowed and _admitted(config, tool, tool_filter):
             spec = _to_spec(config.name, tool)
             if spec is not None:
                 specs.append(spec)
     return specs
+
+
+def _admitted(config: McpServerConfig, tool: RawTool, tool_filter: ToolFilter) -> bool:
+    """A filter that raises does not admit the tool (F4, D4)."""
+    try:
+        return tool_filter.admit(config.name, tool)
+    except Exception as exc:
+        # Only the type: the message can carry server-controlled text.
+        log.error(
+            "mcp %s: tool filter failed for %r (%s), not admitted",
+            config.name,
+            tool.name,
+            type(exc).__name__,
+        )
+        return False
 
 
 def _to_spec(server: str, tool: RawTool) -> ToolSpec | None:
