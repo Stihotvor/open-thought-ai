@@ -5,6 +5,7 @@ import ipaddress
 
 import pytest
 
+from ota_server.mcp import ssrf
 from ota_server.mcp.ssrf import Resolver, check_host
 
 EMPTY: frozenset[str] = frozenset()
@@ -124,3 +125,48 @@ def test_empty_resolution_is_deny() -> None:
 def test_unspecified_reason_is_specific(ip: str) -> None:
     reason = asyncio.run(check_host("svc.example.com", EMPTY, _fake({"svc.example.com": [ip]})))
     assert reason == "blocked address (unspecified)"
+
+
+@pytest.mark.parametrize("ip", ["100.64.0.1", "100.100.100.200", "64:ff9b::a9fe:a9fe", "240.0.0.1"])
+def test_non_global_and_wrapped_addresses_denied(ip: str) -> None:
+    reason = asyncio.run(check_host("svc.example.com", EMPTY, _fake({"svc.example.com": [ip]})))
+    assert reason
+
+
+@pytest.mark.parametrize("ip", ["100.64.0.1", "100.100.100.200"])
+def test_shared_address_space_reason_is_non_global(ip: str) -> None:
+    reason = asyncio.run(check_host("svc.example.com", EMPTY, _fake({"svc.example.com": [ip]})))
+    assert reason == "blocked address (non-global)"
+
+
+@pytest.mark.parametrize("ip", ["64:ff9b::a9fe:a9fe", "2002:a9fe:a9fe::1"])
+def test_nat64_and_6to4_are_checked_as_ipv4(ip: str) -> None:
+    reason = asyncio.run(check_host("svc.example.com", EMPTY, _fake({"svc.example.com": [ip]})))
+    assert reason == "blocked address (link-local)"
+
+
+def test_allowlist_bypasses_non_global() -> None:
+    resolver = FakeResolver({"cgnat.example.com": ["100.64.0.1"]})
+    reason = asyncio.run(
+        check_host("cgnat.example.com", frozenset({"cgnat.example.com"}), resolver)
+    )
+    assert reason is None
+
+
+def test_slow_dns_is_deny(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(ssrf, "DNS_TIMEOUT", 0.01)
+
+    async def slow_getaddrinfo(*_args: object, **_kwargs: object) -> list[object]:
+        await asyncio.sleep(5)
+        return []
+
+    async def run() -> str | None:
+        loop = asyncio.get_running_loop()
+        monkeypatch.setattr(loop, "getaddrinfo", slow_getaddrinfo)
+        return await check_host("slow.example.com", EMPTY)
+
+    assert asyncio.run(run()) == "dns failure"
+
+
+def test_dns_timeout_constant() -> None:
+    assert ssrf.DNS_TIMEOUT == 3.0

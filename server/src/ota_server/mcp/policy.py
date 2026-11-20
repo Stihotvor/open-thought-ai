@@ -39,7 +39,10 @@ class SafeConnectionPolicy:
         self._environ: Mapping[str, str] = os.environ if environ is None else environ
 
     async def before_connect(self, config: McpServerConfig) -> dict[str, str]:
-        """Return the secret headers, or log and raise ConnectionDenied."""
+        """Check the connection and return its secret headers.
+
+        Raise ConnectionDenied (logged) on denial.
+        """
         if config.transport == "stdio":
             return {}
         parts = urlsplit(config.url)

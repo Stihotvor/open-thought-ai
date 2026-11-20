@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, TypeGuard
 from urllib.parse import urlsplit
@@ -24,7 +25,20 @@ MIN_TIMEOUT = 1.0
 MAX_TIMEOUT = 60.0
 PIN = re.compile(r"sha256:[0-9a-f]{64}")
 SECRET_VAR = re.compile(r"MCP_SECRET_[A-Z0-9_]+")
-SECRET_ENV_WORDS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "AUTH")
+# A substring match on the upper-cased env key: "API_CREDENTIALS" holds "CRED".
+SECRET_ENV_WORDS = (
+    "KEY",
+    "TOKEN",
+    "SECRET",
+    "PASSWORD",
+    "PASSWD",
+    "AUTH",
+    "CRED",
+    "COOKIE",
+    "PRIVATE",
+)
+# "device" is the namespace of the built-in device tools; an MCP server with that name
+# would shadow them in the hub.
 RESERVED_NAMES = frozenset({"device"})
 
 
@@ -52,6 +66,7 @@ def load_servers(path: str) -> list[McpServerConfig]:
         server = _try_entry(index, entry, {s.name for s in servers}, used)
         if server is not None:
             servers.append(server)
+            used.update(dict.fromkeys(server.headers.values(), server.name))
     return servers
 
 
@@ -69,8 +84,9 @@ def _read_list(path: str) -> list[Any]:
 
 
 def _try_entry(
-    index: int, entry: Any, seen: set[str], used: dict[str, str]
+    index: int, entry: Any, seen: set[str], used: Mapping[str, str]
 ) -> McpServerConfig | None:
+    """Parse and check one entry; log and return None on error. Does not change used."""
     name = entry.get("name") if isinstance(entry, dict) else None
     try:
         server = _parse_entry(entry)
@@ -80,12 +96,10 @@ def _try_entry(
     except ValueError as exc:
         log.error("mcp config entry %d (name %r) skipped: %s", index, name, exc)
         return None
-    for var in server.headers.values():
-        used[var] = server.name
     return server
 
 
-def _check_secret_reuse(server: McpServerConfig, used: dict[str, str]) -> None:
+def _check_secret_reuse(server: McpServerConfig, used: Mapping[str, str]) -> None:
     """An MCP_SECRET_* name is bound to one entry: the first accepted entry wins (T9)."""
     for header, var in server.headers.items():
         if var in used:

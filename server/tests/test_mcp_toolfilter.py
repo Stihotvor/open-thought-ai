@@ -1,5 +1,7 @@
 """T3: HashToolFilter, tool_hash and the size caps (D3, T3, T4, E4, M2)."""
 
+import hashlib
+import json
 import logging
 
 import pytest
@@ -9,6 +11,7 @@ from ota_server.mcp.toolfilter import (
     MAX_DESCRIPTION,
     MAX_SCHEMA,
     HashToolFilter,
+    canonical,
     schema_json,
     tool_hash,
 )
@@ -103,3 +106,12 @@ def test_non_ascii_is_hashed_as_utf8() -> None:
     b = RawTool(name="t", description="cafe", schema={})
     assert tool_hash(a) != tool_hash(b)
     assert tool_hash(a).startswith("sha256:") and len(tool_hash(a)) == 7 + 64
+
+
+def test_canonical_matches_one_json_dump() -> None:
+    """The canonical JSON built around the schema text equals one sorted dump of the tool."""
+    tool = RawTool(name='t"x', description='café "q"', schema={"b": [1, {"z": "é"}], "a": None})
+    full = {"name": tool.name, "description": tool.description, "input_schema": tool.schema}
+    text = json.dumps(full, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    assert canonical(tool) == text
+    assert tool_hash(tool) == "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()

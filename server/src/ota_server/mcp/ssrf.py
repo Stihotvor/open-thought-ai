@@ -20,10 +20,18 @@ _BLOCKED_CLASSES: tuple[str, ...] = (
     "private",
 )
 
+DNS_TIMEOUT = 3.0
+NAT64 = ipaddress.IPv6Network("64:ff9b::/96")
+
 
 async def default_resolver(host: str) -> list[str]:
-    """Resolve host with the event loop and return the unique IP strings."""
-    infos = await asyncio.get_running_loop().getaddrinfo(host, None)
+    """Resolve host with the event loop and return the unique IP strings.
+
+    A lookup slower than DNS_TIMEOUT raises TimeoutError, which check_host treats as a
+    DNS failure (deny).
+    """
+    async with asyncio.timeout(DNS_TIMEOUT):
+        infos = await asyncio.get_running_loop().getaddrinfo(host, None)
     return list(dict.fromkeys(str(info[4][0]) for info in infos))
 
 
@@ -34,12 +42,26 @@ def _parse_ip(text: str) -> IpAddress | None:
         return None
 
 
+def _unwrap(ip: IpAddress) -> IpAddress:
+    """Return the IPv4 address embedded by IPv4-mapped, NAT64 (64:ff9b::/96) or 6to4."""
+    if not isinstance(ip, ipaddress.IPv6Address):
+        return ip
+    if ip.ipv4_mapped is not None:
+        return ip.ipv4_mapped
+    if ip in NAT64:
+        return ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
+    if ip.sixtofour is not None:
+        return ip.sixtofour
+    return ip
+
+
 def _blocked_class(ip: IpAddress) -> str | None:
-    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
-        ip = ip.ipv4_mapped
+    ip = _unwrap(ip)
     for name in _BLOCKED_CLASSES:
         if getattr(ip, f"is_{name}"):
             return name.replace("_", "-")
+    if not ip.is_global:
+        return "non-global"
     return None
 
 

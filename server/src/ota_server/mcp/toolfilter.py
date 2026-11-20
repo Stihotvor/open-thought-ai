@@ -22,9 +22,17 @@ def _dumps(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
+def _canonical_with(tool: RawTool, schema_text: str) -> str:
+    """Build the canonical JSON around an already serialized schema (keys in sorted order)."""
+    return (
+        f'{{"description":{_dumps(tool.description)},'
+        f'"input_schema":{schema_text},"name":{_dumps(tool.name)}}}'
+    )
+
+
 def canonical(tool: RawTool) -> str:
     """The canonical JSON of the bare name, description and input schema."""
-    return _dumps({"name": tool.name, "description": tool.description, "input_schema": tool.schema})
+    return _canonical_with(tool, schema_json(tool))
 
 
 def schema_json(tool: RawTool) -> str:
@@ -32,9 +40,13 @@ def schema_json(tool: RawTool) -> str:
     return _dumps(tool.schema)
 
 
+def _hash_text(text: str) -> str:
+    return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 def tool_hash(tool: RawTool) -> str:
     """Return "sha256:" + hex SHA-256 of the UTF-8 canonical JSON."""
-    return "sha256:" + hashlib.sha256(canonical(tool).encode("utf-8")).hexdigest()
+    return _hash_text(canonical(tool))
 
 
 class HashToolFilter:
@@ -44,12 +56,13 @@ class HashToolFilter:
         self._pins = pins
 
     def admit(self, server: str, tool: RawTool) -> bool:
-        if len(tool.description) > MAX_DESCRIPTION or len(schema_json(tool)) > MAX_SCHEMA:
+        schema_text = schema_json(tool)
+        if len(tool.description) > MAX_DESCRIPTION or len(schema_text) > MAX_SCHEMA:
             log.error(
                 "mcp %s: tool %r not admitted, description or schema too long", server, tool.name
             )
             return False
-        current = tool_hash(tool)
+        current = _hash_text(_canonical_with(tool, schema_text))
         if self._pins.get(server, {}).get(tool.name) == current:
             return True
         # Never log the description: it is server-controlled text.
