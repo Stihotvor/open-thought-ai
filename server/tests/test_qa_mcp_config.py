@@ -8,6 +8,7 @@ import pytest
 from mcp_fakes import assert_pid_gone
 from mcp_qa_support import (  # pylint: disable=unused-import
     LONG_TOOL,
+    PIN,
     body,
     call,
     errors,
@@ -43,7 +44,7 @@ def test_qa_012_invalid_json(tmp_path: Path, caplog: pytest.LogCaptureFixture) -
 
 
 def test_qa_013_one_bad_entry_skipped(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
-    bad = {"name": "b", "transport": "ftp", "url": "ftp://x/", "tools": ["echo"]}
+    bad = {"name": "b", "transport": "ftp", "url": "ftp://x/", "tools": {"echo": PIN}}
 
     async def scenario() -> None:
         async with AsyncExitStack() as stack:
@@ -144,7 +145,7 @@ def test_qa_033_url_userinfo_or_query(tmp_path: Path, caplog: pytest.LogCaptureF
         async with AsyncExitStack() as stack:
             urls = ["http://user:pw@127.0.0.1:8000/mcp", "http://127.0.0.1:8000/mcp?token=abc"]
             entries = [
-                {"name": f"u{i}", "transport": "http", "url": u, "tools": ["add"]}
+                {"name": f"u{i}", "transport": "http", "url": u, "tools": {"add": PIN}}
                 for i, u in enumerate(urls)
             ]
             assert await start_file(tmp_path, entries, stack) == []
@@ -155,7 +156,7 @@ def test_qa_033_url_userinfo_or_query(tmp_path: Path, caplog: pytest.LogCaptureF
 
 
 def test_qa_034_non_http_scheme(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
-    entry = {"name": "f", "transport": "http", "url": "file:///etc/passwd", "tools": ["x"]}
+    entry = {"name": "f", "transport": "http", "url": "file:///etc/passwd", "tools": {"x": PIN}}
     path = tmp_path / "s.json"
     path.write_text(json.dumps([entry]))
     assert load_servers(str(path)) == []
@@ -163,8 +164,8 @@ def test_qa_034_non_http_scheme(tmp_path: Path, caplog: pytest.LogCaptureFixture
 
 
 def test_qa_035_missing_fields(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
-    no_command = {"name": "a", "transport": "stdio", "args": [], "tools": ["x"]}
-    no_url = {"name": "b", "transport": "http", "tools": ["x"]}
+    no_command = {"name": "a", "transport": "stdio", "args": [], "tools": {"x": PIN}}
+    no_url = {"name": "b", "transport": "http", "tools": {"x": PIN}}
     no_tools = {k: v for k, v in stdio_entry("c", ["x"]).items() if k != "tools"}
     path = tmp_path / "s.json"
     path.write_text(json.dumps([no_command, no_url, no_tools]))

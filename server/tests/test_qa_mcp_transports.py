@@ -250,10 +250,13 @@ def test_qa_048_secret_value_not_logged(tmp_path: Path, caplog: pytest.LogCaptur
 
     async def scenario() -> None:
         async with AsyncExitStack() as stack:
-            entry = stdio_entry("local", ["echo"], env={"API_KEY": "sk-live-123"})
-            sources = await start_file(tmp_path, [entry], stack)
+            # T10 rejects a secret-looking env key; a neutral key still spawns and calls.
+            leaky = stdio_entry("leaky", ["echo"], env={"API_KEY": "sk-live-123"})
+            entry = stdio_entry("local", ["echo"], env={"QA_OPAQUE": "sk-live-123"})
+            sources = await start_file(tmp_path, [leaky, entry], stack)
             assert tool_names(sources) == ["local__echo"]
             await call(new_session(sources), "local__echo", text="x")
 
     run(scenario())
+    assert "API_KEY" in caplog.text  # the rejection names the key
     assert "sk-live-123" not in caplog.text

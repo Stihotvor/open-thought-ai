@@ -37,6 +37,7 @@ TOOL = "tool"  # a chat script step: answer with tool_calls
 ECHO = ("fake__echo", '{"text": "hello mcp"}')
 VOLUME = ("device__set_volume", '{"level": 30}')
 REPLY = "Gotowe."
+PIN = "sha256:" + "0" * 64  # T2 pin format; filtering by pin starts in T3
 
 
 def tool_sse(calls: list[tuple[str, str]]) -> str:
@@ -188,7 +189,7 @@ def test_voice_turn_calls_an_mcp_tool(monkeypatch: pytest.MonkeyPatch, tmp_path:
     monkeypatch.setattr(mcp_fakes, "build_fake", counting_build(seen))
     chat = ScriptChat(ECHO)
     with served("http") as server:
-        entry = {"name": "fake", "transport": "http", "url": server.url, "tools": ["echo"]}
+        entry = {"name": "fake", "transport": "http", "url": server.url, "tools": {"echo": PIN}}
         use_servers(monkeypatch, tmp_path, [entry])
         with run_app(chat) as (app, client), connect(client) as ws:
             assert [s.name for s in app.state.mcp_sources] == ["fake"]
@@ -205,7 +206,7 @@ def test_server_down_device_tools_work(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     url = f"http://127.0.0.1:{free_port()}/mcp"  # nothing listens here
-    entry = {"name": "down", "transport": "http", "url": url, "tools": ["echo"]}
+    entry = {"name": "down", "transport": "http", "url": url, "tools": {"echo": PIN}}
     use_servers(monkeypatch, tmp_path, [entry])
     chat = ScriptChat(VOLUME)
     caplog.set_level(logging.WARNING, logger="ota_server.mcp.registry")
@@ -237,7 +238,7 @@ def test_shutdown_stops_stdio_children(monkeypatch: pytest.MonkeyPatch, tmp_path
         "transport": "stdio",
         "command": sys.executable,
         "args": [str(STDIO_SCRIPT)],
-        "tools": ["pid"],
+        "tools": {"pid": PIN},
     }
     use_servers(monkeypatch, tmp_path, [entry])
     app = create_app()

@@ -16,6 +16,7 @@ from ota_server.mcp.port import RawResult, RawTool
 from ota_server.mcp.registry import McpRegistry
 from ota_server.mcp.source import McpSource
 
+PIN = "sha256:" + "0" * 64
 OK = RawResult(is_error=False, parts=[("text", "done")])
 
 
@@ -59,8 +60,9 @@ class DenyFilter:
 
 
 def _config(tools: list[str], timeout: float = 10.0) -> McpServerConfig:
+    pins = dict.fromkeys(tools, PIN)
     return McpServerConfig(
-        name="srv", transport="http", url="https://h/mcp", timeout=timeout, tools=tools
+        name="srv", transport="http", url="https://h/mcp", timeout=timeout, tools=pins
     )
 
 

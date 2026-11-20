@@ -19,6 +19,7 @@ from mcp_qa_support import (  # pylint: disable=unused-import
     loopback_only,  # noqa: F401  (autouse T9 guard, active in this module)
     names,
     new_session,
+    pins,
     run,
     serving,
     start_file,
@@ -42,7 +43,7 @@ def test_qa_007_server_down_at_startup(tmp_path: Path, caplog: pytest.LogCapture
     async def scenario() -> None:
         async with serving() as up, AsyncExitStack() as stack:
             down = {"name": "down", "transport": "http", "url": "http://127.0.0.1:9/mcp",
-                    "tools": ["ping"]}  # fmt: skip
+                    "tools": pins(["ping"])}  # fmt: skip
             sources = await start_file(tmp_path, [up.entry("up", ["ping"]), down], stack)
             assert any("down" in w for w in warnings(caplog))
             listed = names(new_session(sources))
@@ -243,7 +244,7 @@ def test_qa_028_malformed_reply_becomes_error(caplog: pytest.LogCaptureFixture) 
     async def scenario() -> None:
         async with AsyncExitStack() as stack:
             cfg = McpServerConfig(
-                "raw", "stdio", command=sys.executable, args=[RAW], tools=["boom"], timeout=5
+                "raw", "stdio", command=sys.executable, args=[RAW], tools=pins(["boom"]), timeout=5
             )
             sources = await McpRegistry.start([cfg], stack)
             out = await call(new_session(sources), "raw__boom")

@@ -60,8 +60,12 @@ class Recording:
         await self.inner.close()
 
 
+PIN = "sha256:" + "0" * 64
+
+
 def fake_config(name: str, tools: list[str] | None = None) -> McpServerConfig:
-    return McpServerConfig(name, "http", url="http://127.0.0.1:1/mcp", tools=tools or ["echo"])
+    pins = dict.fromkeys(tools or ["echo"], PIN)
+    return McpServerConfig(name, "http", url="http://127.0.0.1:1/mcp", tools=pins)
 
 
 def with_tools(config: McpServerConfig, tools: list[str]) -> McpServerConfig:
@@ -72,7 +76,7 @@ def with_tools(config: McpServerConfig, tools: list[str]) -> McpServerConfig:
         command=config.command,
         args=config.args,
         env=config.env,
-        tools=tools,
+        tools=dict.fromkeys(tools, PIN),
     )
 
 
@@ -90,7 +94,7 @@ def test_one_server_down_one_up(caplog: pytest.LogCaptureFixture) -> None:
         try:
             up = with_tools(server.config("up"), ["echo"])
             down_url = f"http://127.0.0.1:{free_port()}/mcp"
-            down = McpServerConfig("down", "http", url=down_url, tools=["echo"])
+            down = McpServerConfig("down", "http", url=down_url, tools={"echo": PIN})
             async with AsyncExitStack() as stack:
                 sources = await McpRegistry.start([down, up], stack)
                 return [(s.name, [spec.name for spec in s.specs()]) for s in sources]

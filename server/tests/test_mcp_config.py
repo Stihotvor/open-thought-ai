@@ -14,10 +14,16 @@ from ota_server.mcp.hooks import AllowAll, ConnectionPolicy, ToolFilter
 from ota_server.mcp.port import RawTool
 
 DIGEST = "0" * 64
+PIN = "sha256:" + "0" * 64
 
 
 def _entry(transport: str = "http", **over: Any) -> dict[str, Any]:
-    base: dict[str, Any] = {"name": "n8n", "transport": transport, "timeout": 5, "tools": ["a"]}
+    base: dict[str, Any] = {
+        "name": "n8n",
+        "transport": transport,
+        "timeout": 5,
+        "tools": {"a": PIN},
+    }
     if transport == "stdio":
         base |= {"command": "mcp-server", "args": ["--x"]}
     else:
@@ -37,7 +43,7 @@ def test_valid_entries_load(tmp_path: Path, transport: str) -> None:
     assert len(servers) == 1
     srv = servers[0]
     assert isinstance(srv, McpServerConfig)
-    assert (srv.name, srv.transport, srv.timeout, srv.tools) == ("n8n", transport, 5.0, ["a"])
+    assert (srv.name, srv.transport, srv.timeout, srv.tools) == ("n8n", transport, 5.0, {"a": PIN})
 
 
 def test_no_file_configured() -> None:
@@ -93,15 +99,71 @@ def test_env_allowed_for_stdio(tmp_path: Path) -> None:
 
 def test_allowlist_name_failing_d13(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     with caplog.at_level(logging.ERROR):
-        servers = load_servers(_write(tmp_path, [_entry(tools=["ok", "bad name"])]))
-    assert servers[0].tools == ["ok"]
+        servers = load_servers(_write(tmp_path, [_entry(tools={"ok": PIN, "bad name": PIN})]))
+    assert servers[0].tools == {"ok": PIN}
     assert any("bad name" in r.getMessage() for r in caplog.records)
+
+
+def test_valid_https_entry_with_headers_and_tools_map(tmp_path: Path) -> None:
+    entry = _entry(tools={"a": PIN}, headers={"X-Api": "MCP_SECRET_N8N"})
+    servers = load_servers(_write(tmp_path, [entry]))
+    assert len(servers) == 1
+    assert isinstance(servers[0], McpServerConfig)
+    assert servers[0].tools == {"a": PIN}
+    assert servers[0].headers == {"X-Api": "MCP_SECRET_N8N"}
+
+
+SAFETY_DEFECTS: dict[str, list[dict[str, Any]]] = {
+    "reserved_name_device": [_entry(), _entry(name="device")],
+    "plain_header_value": [_entry(), _entry(name="x", headers={"X-Api": "plain-secret"})],
+    "shared_secret_name": [
+        _entry(headers={"X-Api": "MCP_SECRET_X"}),
+        _entry(name="x", headers={"X-Other": "MCP_SECRET_X"}),
+    ],
+    "stdio_env_key": [_entry(), _entry("stdio", name="x", env={"API_KEY": "v"})],
+    "stdio_env_value": [_entry(), _entry("stdio", name="x", env={"FOO": "MCP_SECRET_X"})],
+    "stdio_headers": [_entry(), _entry("stdio", name="x", headers={"X-Api": "MCP_SECRET_N8N"})],
+    "tools_list": [_entry(), _entry(name="x", tools=["a"])],
+    "short_pin": [_entry(), _entry(name="x", tools={"a": "sha256:abc"})],
+}
+
+
+@pytest.mark.parametrize("defect", list(SAFETY_DEFECTS))
+def test_safety_defect_rejected(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, defect: str
+) -> None:
+    """One good and one bad entry: only the good one loads, an error names entry 1."""
+    good, bad = SAFETY_DEFECTS[defect]
+    with caplog.at_level(logging.ERROR):
+        servers = load_servers(_write(tmp_path, [good, bad]))
+    assert [s.name for s in servers] == [good["name"]]
+    errors = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
+    assert any("entry 1" in m and repr(bad["name"]) in m for m in errors)
+
+
+def test_error_log_never_holds_header_value(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    entry = _entry(headers={"X-Api": "plain-secret"})
+    with caplog.at_level(logging.DEBUG):
+        assert load_servers(_write(tmp_path, [entry])) == []
+    assert caplog.records
+    assert not any("plain-secret" in r.getMessage() for r in caplog.records)
+    assert any("X-Api" in r.getMessage() for r in caplog.records)
+
+
+def test_stdio_env_error_names_key_only(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    entry = _entry("stdio", env={"github_token": "ghp-literal"})
+    with caplog.at_level(logging.DEBUG):
+        assert load_servers(_write(tmp_path, [entry])) == []
+    assert not any("ghp-literal" in r.getMessage() for r in caplog.records)
+    assert any("github_token" in r.getMessage() for r in caplog.records)
 
 
 def test_default_hooks() -> None:
     policy: ConnectionPolicy = AllowAll()
     tool_filter: ToolFilter = AllowAll()
-    config = McpServerConfig(name="n", transport="http", url="http://h/", tools=["t"])
+    config = McpServerConfig(name="n", transport="http", url="http://h/", tools={"t": PIN})
     assert asyncio.run(policy.before_connect(config)) == {}
     assert tool_filter.admit("n", RawTool(name="t", description="", schema={})) is True
 
