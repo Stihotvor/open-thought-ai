@@ -20,13 +20,28 @@ START_TIMEOUT = 5.0
 PATHS = {"http": "/mcp", "sse": "/sse"}
 
 
+def _is_zombie(pid: int) -> bool:
+    """True when pid has exited but its parent has not reaped it yet (Linux /proc)."""
+    try:
+        with open(f"/proc/{pid}/stat", encoding="ascii") as stat:
+            return stat.read().rsplit(")", 1)[1].split()[0] == "Z"
+    except (OSError, IndexError):
+        return False
+
+
 def assert_pid_gone(pid: int, timeout: float = 3.0) -> None:
-    """Poll every 0.05 s until the process pid no longer exists; fail after timeout."""
+    """Poll every 0.05 s until the process pid is dead; fail after timeout.
+
+    A zombie counts as dead: a caller that blocks the event loop also blocks the
+    SDK from reaping the child, so the pid can stay in the table as a zombie.
+    """
     deadline = time.monotonic() + timeout
     while True:
         try:
             os.kill(pid, 0)
         except ProcessLookupError:
+            return
+        if _is_zombie(pid):
             return
         if time.monotonic() >= deadline:
             raise AssertionError(f"process {pid} still exists after {timeout} s")
