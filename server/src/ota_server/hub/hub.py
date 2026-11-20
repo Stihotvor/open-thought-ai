@@ -17,13 +17,35 @@ log = logging.getLogger(__name__)
 GUARD_GRACE = 0.5  # seconds past source.timeout: the source's own timeout fires first
 
 
-def _check_names(source: ToolSource) -> None:
-    """Raise ValueError for a source name with SEP or a full tool name the LLM API refuses."""
-    if SEP in source.name:
-        raise ValueError(f"tool source name {source.name!r} contains {SEP!r}")
-    for spec in source.specs():
-        if not TOOL_NAME.fullmatch(spec.full_name):
-            raise ValueError(f"bad tool name {spec.full_name!r}")
+def _keep_sources(sources: Sequence[ToolSource]) -> dict[str, ToolSource]:
+    """Keep the first source per name; skip later ones and names with SEP (D7)."""
+    kept: dict[str, ToolSource] = {}
+    for source in sources:
+        if SEP in source.name:
+            log.error("tool source %r skipped: its name contains %r", source.name, SEP)
+        elif source.name in kept:
+            log.error("tool source %r skipped: the name is already used", source.name)
+        else:
+            kept[source.name] = source
+    return kept
+
+
+def _keep_specs(sources: dict[str, ToolSource]) -> dict[str, ToolSpec]:
+    """Keep the first spec per full name; skip later ones and bad names (D7).
+
+    Log lines carry names only, never tool descriptions.
+    """
+    kept: dict[str, ToolSpec] = {}
+    for source in sources.values():
+        for spec in source.specs():
+            name = spec.full_name
+            if not TOOL_NAME.fullmatch(name):
+                log.error("tool %r skipped: bad tool name", name)
+            elif name in kept:
+                log.error("tool %r skipped: the name is already used", name)
+            else:
+                kept[name] = spec
+    return kept
 
 
 class TurnTools:
@@ -42,12 +64,8 @@ class TurnTools:
 
 class McpHub:
     def __init__(self, sources: Sequence[ToolSource]) -> None:
-        for source in sources:
-            _check_names(source)
-        self._sources = {source.name: source for source in sources}
-        self._specs: dict[str, ToolSpec] = {
-            spec.full_name: spec for source in sources for spec in source.specs()
-        }
+        self._sources = _keep_sources(sources)
+        self._specs = _keep_specs(self._sources)
         self._chain = build_chain(
             [wrap(), resolve(self._specs), limit(), validate(self._specs)], self._terminal
         )

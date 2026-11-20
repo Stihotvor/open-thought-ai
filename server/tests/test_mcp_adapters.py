@@ -10,15 +10,31 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, cast
 
+import httpx
 import pytest
 from mcp.types import ListToolsResult, Tool
-from mcp_fakes import FakeServer, assert_pid_gone, stdio_config
+from mcp_fakes import (
+    AlwaysRedirectServer,
+    FakeServer,
+    RedirectAfterServer,
+    assert_pid_gone,
+    stdio_config,
+)
 
+from ota_server.hub.types import ToolOutcome
 from ota_server.mcp import adapters
-from ota_server.mcp.adapters import SdkConnection, Streams, sdk_transport
+from ota_server.mcp.adapters import (
+    RedirectBlocked,
+    SdkConnection,
+    Streams,
+    guarded_client,
+    is_transport_error,
+    sdk_transport,
+)
 from ota_server.mcp.config import McpServerConfig
 from ota_server.mcp.hooks import AllowAll, ConnectionDenied
 from ota_server.mcp.port import RawResult
+from ota_server.mcp.source import McpSource
 
 SERVER_DIR = Path(__file__).resolve().parent.parent
 SECRETS = ("OTA_DEVICE_ID", "MCP_SECRET_X", "OPENAI_API_KEY")
@@ -204,3 +220,87 @@ def test_mcp_pinned_in_pyproject_and_lock() -> None:
     lock = tomllib.loads((SERVER_DIR / "uv.lock").read_text(encoding="utf-8"))
     versions = [p["version"] for p in lock["package"] if p["name"] == "mcp"]
     assert versions == ["1.30.0"]
+
+
+# Tool-safety T4 (D6, M3): every 3xx on http and sse is blocked.
+
+REDIRECT_DEADLINE = 2.0  # seconds a connect to a redirecting server may take
+PIN = "sha256:" + "0" * 64
+
+
+async def _open_redirected(transport: str) -> tuple[BaseException, float]:
+    async with AlwaysRedirectServer() as server:
+        start = time.monotonic()
+        try:
+            conn = await SdkConnection.open(server.config(transport), AllowAll())
+        except Exception as exc:
+            return exc, time.monotonic() - start
+        await conn.close()
+    raise AssertionError("connect to a redirecting server succeeded")
+
+
+@pytest.mark.parametrize("transport", ["http", "sse"])
+def test_redirect_on_connect_fails_fast(transport: str) -> None:
+    exc, elapsed = asyncio.run(_open_redirected(transport))
+    assert isinstance(exc, RedirectBlocked)
+    assert elapsed < REDIRECT_DEADLINE
+
+
+async def _call_through_redirect() -> tuple[ToolOutcome, ToolOutcome, ToolOutcome]:
+    server = RedirectAfterServer("http")
+    await server.start()
+    config = McpServerConfig("fake", "http", url=server.url, tools={"echo": PIN})
+    conn = await SdkConnection.open(config, AllowAll())
+    try:
+        source = McpSource(config, conn, await conn.list_tools())
+        before = await source.call("echo", {"text": "a"})
+        server.redirect_after = server.requests
+        during = await source.call("echo", {"text": "b"})
+        server.redirect_after = None
+        after = await source.call("echo", {"text": "c"})
+    finally:
+        await conn.close()
+        await server.stop()
+    return before, during, after
+
+
+def test_redirect_on_mid_session_call() -> None:
+    before, during, after = asyncio.run(_call_through_redirect())
+    assert before == ToolOutcome(True, "a")
+    assert not during.ok
+    assert during.code == "mcp_error"
+    assert isinstance(after, ToolOutcome)
+    assert after.ok or after.code is not None
+
+
+def test_redirect_blocked_is_not_a_transport_error() -> None:
+    assert not is_transport_error(RedirectBlocked("307"))
+    assert not issubclass(RedirectBlocked, httpx.TransportError)
+
+
+def test_guarded_client_passes_timeout_and_headers() -> None:
+    async def run() -> None:
+        async with guarded_client(headers={"X-A": "1"}, timeout=httpx.Timeout(3)) as client:
+            assert client.headers["X-A"] == "1"
+            assert client.timeout == httpx.Timeout(3)
+            assert client.follow_redirects is False
+
+    asyncio.run(run())
+
+
+def test_guarded_client_default_timeout() -> None:
+    async def run() -> httpx.Timeout:
+        async with guarded_client() as client:
+            return client.timeout
+
+    assert asyncio.run(run()) == httpx.Timeout(30.0, read=300.0)
+
+
+def test_guarded_client_blocks_a_plain_redirect() -> None:
+    async def run() -> int:
+        async with AlwaysRedirectServer() as server, guarded_client() as client:
+            with pytest.raises(RedirectBlocked):
+                await client.get(server.url("http"), follow_redirects=True)
+            return server.requests
+
+    assert asyncio.run(run()) == 1

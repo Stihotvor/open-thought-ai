@@ -1,7 +1,9 @@
 """McpSource (D5): the ToolSource for one external MCP server. All policy, no SDK code.
 
 The hub truncates results in wrap() and guards each call at timeout + GUARD_GRACE, so this
-source does not truncate and times out first (D6).
+source does not truncate and times out first (D6). After a reconnect the connection runs
+this source's verifier: every tool admitted at startup must still be listed and admitted, or
+the reconnect fails with ConnectionDenied (pins hold across reconnects).
 """
 
 from __future__ import annotations
@@ -12,7 +14,7 @@ from typing import Any
 
 from ota_server.hub.types import TOOL_NAME, ToolOutcome, ToolSpec
 from ota_server.mcp.config import McpServerConfig
-from ota_server.mcp.hooks import ALLOW_ALL, ToolFilter
+from ota_server.mcp.hooks import ALLOW_ALL, ConnectionDenied, ToolFilter
 from ota_server.mcp.port import McpConnection, RawResult, RawTool
 
 log = logging.getLogger(__name__)
@@ -32,9 +34,12 @@ class McpSource:
     ) -> None:
         self.name = config.name
         self.timeout = config.timeout
+        self._config = config
+        self._filter = tool_filter
         self._conn = conn
         self._specs = _build_specs(config, tools, tool_filter)
         self._kept = {spec.name for spec in self._specs}
+        conn.set_verifier(self._verify)
 
     @classmethod
     async def build(
@@ -55,11 +60,27 @@ class McpSource:
                 result = await self._conn.call_tool(tool, args)
         except TimeoutError:
             return ToolOutcome(False, f"the {self.name} did not answer in time", "tool_timeout")
+        except ConnectionDenied:
+            return ToolOutcome(False, "tool failed", "mcp_error")  # the denier logged it
         except Exception as exc:
             # Only the type: the message and traceback can carry server-controlled text.
             log.warning("mcp %s: tool %r failed (%s)", self.name, tool, type(exc).__name__)
             return ToolOutcome(False, "tool failed", "mcp_error")
         return _map_result(result)
+
+    async def _verify(self, tools: list[RawTool]) -> None:
+        """The reconnect verifier: raise ConnectionDenied if an admitted tool is gone or no
+        longer admitted. Logs one WARNING with the server and the tool name only."""
+        listed = {tool.name: tool for tool in tools}
+        for name in sorted(self._kept):
+            tool = listed.get(name)
+            if tool is None or not _admitted(self._config, tool, self._filter):
+                log.warning(
+                    "mcp %s: tool %r missing or not admitted after reconnect, server denied",
+                    self.name,
+                    name,
+                )
+                raise ConnectionDenied(f"tool {name!r} changed after reconnect")
 
 
 def _build_specs(
@@ -74,11 +95,26 @@ def _build_specs(
     allowed = set(config.tools)
     specs: list[ToolSpec] = []
     for tool in tools:
-        if tool.name in allowed and tool_filter.admit(config.name, tool):
+        if tool.name in allowed and _admitted(config, tool, tool_filter):
             spec = _to_spec(config.name, tool)
             if spec is not None:
                 specs.append(spec)
     return specs
+
+
+def _admitted(config: McpServerConfig, tool: RawTool, tool_filter: ToolFilter) -> bool:
+    """A filter that raises does not admit the tool (F4, D4)."""
+    try:
+        return tool_filter.admit(config.name, tool)
+    except Exception as exc:
+        # Only the type: the message can carry server-controlled text.
+        log.error(
+            "mcp %s: tool filter failed for %r (%s), not admitted",
+            config.name,
+            tool.name,
+            type(exc).__name__,
+        )
+        return False
 
 
 def _to_spec(server: str, tool: RawTool) -> ToolSpec | None:

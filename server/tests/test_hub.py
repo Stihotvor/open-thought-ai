@@ -240,13 +240,84 @@ def named(source: str, tool: str) -> SlowSource:
     return fake
 
 
+class FakeSource:
+    """A source with fixed specs; call answers with the spec description."""
+
+    timeout = 1.0
+
+    def __init__(self, name: str, specs: list[ToolSpec]) -> None:
+        self.name = name
+        self._specs = specs
+
+    def specs(self) -> list[ToolSpec]:
+        return self._specs
+
+    async def call(self, tool: str, args: dict[str, Any]) -> ToolOutcome:
+        return ToolOutcome(True, f"{self.name}:{tool}")
+
+
+def spec(source: str, tool: str, description: str = "") -> ToolSpec:
+    return ToolSpec(source, tool, description, {"type": "object"})
+
+
+def held(hub: McpHub) -> list[str]:
+    return [t["function"]["name"] for t in hub.list_tools()]
+
+
+def errors(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
+
+
 @pytest.mark.parametrize(
     ("source", "tool"),
     [("dev__ice", "x"), ("device", "bad name"), ("device", "x" * 60), ("device", "a.b")],
 )
-def test_bad_source_or_tool_name_is_rejected(source: str, tool: str) -> None:
-    with pytest.raises(ValueError):
-        McpHub([named(source, tool)])
+def test_bad_source_or_tool_name_is_skipped(
+    source: str, tool: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    with caplog.at_level(logging.ERROR):
+        hub = McpHub([named(source, tool)])
+    assert held(hub) == []
+    assert len(errors(caplog)) == 1
+
+
+def test_duplicate_source_name_keeps_first(caplog: pytest.LogCaptureFixture) -> None:
+    first = FakeSource("a", [spec("a", "x")])
+    second = FakeSource("a", [spec("a", "y"), spec("a", "z")])
+    with caplog.at_level(logging.ERROR):
+        hub = McpHub([first, second])
+    assert held(hub) == ["a__x"]
+    msgs = errors(caplog)
+    assert len(msgs) == 1 and "'a'" in msgs[0]
+    assert run(hub, "a__x", {}).text.endswith("a:x")
+
+
+def test_source_name_with_sep_is_skipped(caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level(logging.ERROR):
+        hub = McpHub([FakeSource("a__b", [spec("a__b", "x")])])
+    assert held(hub) == []
+    assert len(errors(caplog)) == 1
+
+
+def test_duplicate_full_name_keeps_first_spec(caplog: pytest.LogCaptureFixture) -> None:
+    source = FakeSource("a", [spec("a", "x", "first secret desc"), spec("a", "x", "second desc")])
+    with caplog.at_level(logging.ERROR):
+        hub = McpHub([source])
+    tools = hub.list_tools()
+    assert [t["function"]["name"] for t in tools] == ["a__x"]
+    assert tools[0]["function"]["description"] == "first secret desc"
+    msgs = errors(caplog)
+    assert len(msgs) == 1 and "a__x" in msgs[0]
+    assert not any("desc" in m for m in msgs)
+
+
+def test_bad_spec_name_is_logged_and_skipped(caplog: pytest.LogCaptureFixture) -> None:
+    source = FakeSource("a", [spec("a", "bad name"), spec("a", "good")])
+    with caplog.at_level(logging.ERROR):
+        hub = McpHub([source])
+    assert held(hub) == ["a__good"]
+    msgs = errors(caplog)
+    assert len(msgs) == 1 and "a__bad name" in msgs[0]
 
 
 def test_good_names_are_accepted() -> None:

@@ -30,6 +30,15 @@ class Settings(BaseSettings):
     history_turns: int = Field(default=15, ge=0, le=100)
     # External MCP servers: path to a JSON list of servers (mcp/config.py). Empty means none.
     mcp_servers_file: str = ""
+    # Hosts that skip the MCP SSRF check: comma-separated names or IPs (env OTA_MCP_ALLOWED_HOSTS).
+    # A plain str: pydantic-settings would JSON-decode a collection field (D8).
+    mcp_allowed_hosts: str = ""
+
+    @property
+    def allowed_hosts(self) -> frozenset[str]:
+        """The allowlist: split on commas, stripped, lowercase, blanks dropped."""
+        parts = (part.strip().lower() for part in self.mcp_allowed_hosts.split(","))
+        return frozenset(part for part in parts if part)
 
 
 @lru_cache

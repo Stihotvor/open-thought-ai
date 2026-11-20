@@ -21,6 +21,7 @@ from ota_server.mcp.port import RawResult
 from ota_server.mcp.source import McpSource
 
 SLACK = 0.5  # seconds a bounded step may run past its deadline
+PIN = "sha256:" + "0" * 64  # T2 pin format; filtering by pin starts in T3
 
 
 class CountingPolicy:
@@ -143,7 +144,7 @@ def test_reconnect_fails_then_server_returns() -> None:
     policy = CountingPolicy()
 
     async def session(server: FakeServer, conn: SdkConnection, step: asyncio.Event) -> list[bool]:
-        config = replace(server.config(), tools=["echo"])
+        config = replace(server.config(), tools={"echo": PIN})
         source = McpSource(config, conn, await conn.list_tools())
         await server.stop()
         first = await source.call("echo", {"text": "x"})
@@ -280,7 +281,7 @@ def test_call_after_a_timeout() -> None:
 
     async def run() -> tuple[float, tuple[bool, str], tuple[bool, str]]:
         async with _http(policy) as (server, conn):
-            config = replace(server.config(), timeout=1.0, tools=["slow_once"])
+            config = replace(server.config(), timeout=1.0, tools={"slow_once": PIN})
             source = McpSource(config, conn, await conn.list_tools())
             start = time.monotonic()
             first = await source.call("slow_once", {"text": "a"})

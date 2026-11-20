@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+import importlib.util
 import json
 import logging
 import socket
@@ -31,7 +32,9 @@ from ota_server.hub.steps import UNTRUSTED_PREFIX
 from ota_server.hub.types import ToolCall, ToolOutcome
 from ota_server.main import start_mcp_sources
 from ota_server.mcp.config import McpServerConfig
+from ota_server.mcp.port import RawTool
 from ota_server.mcp.source import McpSource
+from ota_server.mcp.toolfilter import tool_hash
 from ota_server.session import DeviceSession
 
 TESTS = Path(__file__).resolve().parent
@@ -40,6 +43,14 @@ STDIO = str(TESTS / "mcp_qa_stdio_server.py")
 RAW = str(TESTS / "mcp_qa_raw_server.py")
 LONG_TOOL = "t" * 60
 LOOPBACK = ("127.0.0.1", "::1")
+PIN = "sha256:" + "0" * 64  # a well-formed pin that matches no tool
+ALLOWED = "127.0.0.1"  # the fakes run on loopback: on the MCP allowlist (tool-safety D9)
+
+
+def pins(tools: list[str]) -> dict[str, str]:
+    """The servers file tools map for a list of tool names, with the owner's real pins (D3).
+    A name no fake serves gets the dummy PIN."""
+    return {tool: KNOWN_PINS.get(tool, PIN) for tool in tools}
 
 
 @pytest.fixture(autouse=True)
@@ -83,10 +94,12 @@ class QaServer:
 
     def entry(self, name: str, tools: list[str], timeout: float = 10) -> dict[str, Any]:
         return {"name": name, "transport": self.transport, "url": self.url,
-                "tools": tools, "timeout": timeout}  # fmt: skip
+                "tools": pins(tools), "timeout": timeout}  # fmt: skip
 
     def config(self, name: str, tools: list[str], timeout: float = 10) -> McpServerConfig:
-        return McpServerConfig(name, self.transport, url=self.url, tools=tools, timeout=timeout)
+        return McpServerConfig(
+            name, self.transport, url=self.url, tools=pins(tools), timeout=timeout
+        )
 
     def _build(self) -> FastMCP:  # noqa: C901
         mcp = FastMCP("qa-fake")
@@ -216,6 +229,33 @@ async def serving(transport: str = "http") -> AsyncIterator[QaServer]:
         await server.stop()
 
 
+# ---------------------------------------------------------------- pins
+
+
+def _hashes(mcp: FastMCP) -> dict[str, str]:
+    tools = asyncio.run(mcp.list_tools())
+    return {t.name: tool_hash(RawTool(t.name, t.description or "", t.inputSchema)) for t in tools}
+
+
+def _stdio_fake() -> FastMCP:
+    """The FastMCP of mcp_qa_stdio_server.py, loaded with no options (it parses sys.argv)."""
+    spec = importlib.util.spec_from_file_location("mcp_qa_stdio_tools", STDIO)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    argv = sys.argv
+    sys.argv = [STDIO]
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.argv = argv
+    fake: FastMCP = module.mcp
+    return fake
+
+
+# The QA http fake and the stdio fake share only echo, defined the same in both.
+KNOWN_PINS = {**_hashes(_stdio_fake()), **_hashes(QaServer()._build())}
+
+
 # ---------------------------------------------------------------- helpers
 
 
@@ -258,7 +298,7 @@ def stdio_entry(
     script: str = STDIO,
 ) -> dict[str, Any]:
     entry: dict[str, Any] = {"name": name, "transport": "stdio", "command": sys.executable,
-                             "args": [script, *extra], "tools": tools}  # fmt: skip
+                             "args": [script, *extra], "tools": pins(tools)}  # fmt: skip
     if env is not None:
         entry["env"] = env
     return entry
@@ -267,14 +307,16 @@ def stdio_entry(
 def stdio_config(name: str, tools: list[str], *extra: str, **kw: Any) -> McpServerConfig:
     entry = stdio_entry(name, tools, *extra, **kw)
     return McpServerConfig(name, "stdio", command=entry["command"], args=entry["args"],
-                           env=entry.get("env", {}), tools=tools)  # fmt: skip
+                           env=entry.get("env", {}), tools=pins(tools))  # fmt: skip
 
 
 async def start_file(tmp_path: Path, entries: Any, stack: AsyncExitStack) -> list[McpSource]:
     """Server startup (main.start_mcp_sources) with a config file holding entries."""
     path = tmp_path / "servers.json"
     path.write_text(entries if isinstance(entries, str) else json.dumps(entries))
-    return await start_mcp_sources(Settings.model_construct(mcp_servers_file=str(path)), stack)
+    return await start_mcp_sources(
+        Settings.model_construct(mcp_servers_file=str(path), mcp_allowed_hosts=ALLOWED), stack
+    )
 
 
 def errors(caplog: pytest.LogCaptureFixture) -> list[str]:

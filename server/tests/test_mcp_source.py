@@ -9,13 +9,15 @@ from typing import Any
 import pytest
 
 from ota_server.hub import hub, types
-from ota_server.hub.types import ToolOutcome
+from ota_server.hub.hub import McpHub
+from ota_server.hub.types import CallCtx, ToolCall, ToolOutcome
 from ota_server.mcp import hooks
 from ota_server.mcp.config import McpServerConfig
-from ota_server.mcp.port import RawResult, RawTool
+from ota_server.mcp.port import RawResult, RawTool, Verifier
 from ota_server.mcp.registry import McpRegistry
 from ota_server.mcp.source import McpSource
 
+PIN = "sha256:" + "0" * 64
 OK = RawResult(is_error=False, parts=[("text", "done")])
 
 
@@ -34,6 +36,10 @@ class FakeConnection:
         self.delay = delay
         self.raises = raises
         self.calls: list[tuple[str, dict[str, Any]]] = []
+        self.verify: Verifier | None = None
+
+    def set_verifier(self, verify: Verifier) -> None:
+        self.verify = verify
 
     async def list_tools(self) -> list[RawTool]:
         return list(self.tools)
@@ -59,8 +65,9 @@ class DenyFilter:
 
 
 def _config(tools: list[str], timeout: float = 10.0) -> McpServerConfig:
+    pins = dict.fromkeys(tools, PIN)
     return McpServerConfig(
-        name="srv", transport="http", url="https://h/mcp", timeout=timeout, tools=tools
+        name="srv", transport="http", url="https://h/mcp", timeout=timeout, tools=pins
     )
 
 
@@ -102,6 +109,37 @@ def test_bad_full_name_is_dropped(caplog: pytest.LogCaptureFixture) -> None:
 def test_tool_filter_hides_a_tool() -> None:
     source = _build(FakeConnection(["a", "b"]), ["a", "b"], tool_filter=DenyFilter("a"))
     assert _names(source) == ["srv__b"]
+
+
+class RaisingFilter:
+    """Raises for one tool, admits the rest."""
+
+    def __init__(self, bad: str) -> None:
+        self.bad = bad
+
+    def admit(self, server: str, tool: RawTool) -> bool:
+        if tool.name == self.bad:
+            raise ValueError("filter secret text")
+        return True
+
+
+def test_filter_raises_drops_only_that_tool(caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level(logging.ERROR, logger="ota_server.mcp.source"):
+        source = _build(FakeConnection(["a", "b"]), ["a", "b"], tool_filter=RaisingFilter("a"))
+    assert _names(source) == ["srv__b"]
+    errors = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
+    assert any("srv" in m and "'a'" in m and "ValueError" in m for m in errors)
+    assert all("filter secret text" not in r.getMessage() for r in caplog.records)
+    out = asyncio.run(McpHub([source]).run(ToolCall("c1", "srv__b", {}), CallCtx()))
+    assert out.ok and out.text.endswith("done")
+
+
+def test_unadmitted_tool_call_is_unknown() -> None:
+    conn = FakeConnection(["a", "b"])
+    source = _build(conn, ["a", "b"], tool_filter=DenyFilter("a"))
+    out = asyncio.run(source.call("a", {}))
+    assert not out.ok and out.code == "unknown_tool"
+    assert conn.calls == []
 
 
 def test_is_error_gives_generic_text() -> None:

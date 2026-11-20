@@ -33,12 +33,22 @@ Threat model: a home LAN with guests and IoT devices, family members including c
 ## MCP hub and tools
 - New tools start `enabled=false`, `confirm=true`. Tools are namespaced `<server>__<tool>`.
 - Device tool schemas are fixed in the server. The device cannot declare tools.
-- A changed tool description or schema (hash) disables the tool until re-approved. Description length is capped at 1 000 chars.
+- Each MCP tool is pinned by a SHA-256 hash in the `tools` map of the servers file (example: `docs/examples/mcp/servers.json`). The map is tool name to `"sha256:<64 hex>"`. A tool with a missing or different hash is not admitted. The server then logs the tool name and the current hash at WARNING.
+  - To approve a tool, check its description and schema. Then copy the hash from the WARNING log into `tools` and restart the server.
+- A tool with a description over 1 000 chars, or an input schema over 4 000 chars of canonical JSON, is not admitted.
 - Tool args and results are validated against the JSON Schema. Results are wrapped as untrusted data.
 - At most 4 tool calls per turn.
 - Confirmation is enforced by the hub, bound to the tool name, args and turn, single use. Accepted risk: anyone in earshot can say "yes".
-- SSRF: MCP URLs only `http`/`https`. The hub resolves DNS and checks the IP on save and on connect. It blocks loopback, link-local, metadata ranges and compose service names, except hosts on an explicit allowlist (for example the n8n host). No redirects.
-- Secret headers reference only `MCP_SECRET_*` env names, each bound to one host.
+- SSRF: MCP URLs only `http`/`https`. The hub resolves DNS and checks the IP on save, on connect and on each reconnect. It blocks loopback, link-local, metadata ranges and compose service names, except hosts on an explicit allowlist (for example the n8n host).
+  - The allowlist is `OTA_MCP_ALLOWED_HOSTS`. It is a comma-separated list of hosts. The default is empty.
+  - `http` is allowed only to a loopback host or an allowlisted host. Other hosts must use `https`.
+  - No redirects. A redirect makes the connect or the call fail.
+- Accepted risk: DNS rebinding. The hub resolves the host, and the HTTP client resolves it again at connect. A hostile DNS server can return a safe IP first and a blocked IP second. Follow-up: an httpcore backend that connects only to the vetted IP.
+- Secret headers reference only `MCP_SECRET_*` env names, each bound to one host. The `headers` map in the servers file is header name to env name, for example `"Authorization": "MCP_SECRET_N8N"`. The file never holds the secret value.
+  - One `MCP_SECRET_*` name is in one entry only. A second entry with the same name is rejected.
+  - If the variable is not set, the server is denied. Other servers still start.
+  - A stdio entry with a secret-like `env` key or a `MCP_SECRET_` value is rejected.
+- The source name `device` is reserved. A servers file entry with that name is rejected.
 - Raw error bodies from MCP servers are not shown in the UI.
 
 ## Models and data

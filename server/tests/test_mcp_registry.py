@@ -16,7 +16,7 @@ from ota_server.mcp import registry
 from ota_server.mcp.adapters import SdkConnection
 from ota_server.mcp.config import McpServerConfig
 from ota_server.mcp.hooks import ConnectionPolicy
-from ota_server.mcp.port import McpConnection, RawResult, RawTool
+from ota_server.mcp.port import McpConnection, RawResult, RawTool, Verifier
 from ota_server.mcp.registry import McpRegistry
 from ota_server.mcp.source import McpSource
 
@@ -29,6 +29,10 @@ class FakeConn:
     def __init__(self, fail_close: bool = False) -> None:
         self.closed = False
         self.fail_close = fail_close
+        self.verify: Verifier | None = None
+
+    def set_verifier(self, verify: Verifier) -> None:
+        self.verify = verify
 
     async def list_tools(self) -> list[RawTool]:
         return list(TOOLS)
@@ -49,6 +53,9 @@ class Recording:
         self.inner = inner
         self.closed = False
 
+    def set_verifier(self, verify: Verifier) -> None:
+        self.inner.set_verifier(verify)
+
     async def list_tools(self) -> list[RawTool]:
         return await self.inner.list_tools()
 
@@ -60,8 +67,12 @@ class Recording:
         await self.inner.close()
 
 
+PIN = "sha256:" + "0" * 64
+
+
 def fake_config(name: str, tools: list[str] | None = None) -> McpServerConfig:
-    return McpServerConfig(name, "http", url="http://127.0.0.1:1/mcp", tools=tools or ["echo"])
+    pins = dict.fromkeys(tools or ["echo"], PIN)
+    return McpServerConfig(name, "http", url="http://127.0.0.1:1/mcp", tools=pins)
 
 
 def with_tools(config: McpServerConfig, tools: list[str]) -> McpServerConfig:
@@ -72,7 +83,7 @@ def with_tools(config: McpServerConfig, tools: list[str]) -> McpServerConfig:
         command=config.command,
         args=config.args,
         env=config.env,
-        tools=tools,
+        tools=dict.fromkeys(tools, PIN),
     )
 
 
@@ -90,7 +101,7 @@ def test_one_server_down_one_up(caplog: pytest.LogCaptureFixture) -> None:
         try:
             up = with_tools(server.config("up"), ["echo"])
             down_url = f"http://127.0.0.1:{free_port()}/mcp"
-            down = McpServerConfig("down", "http", url=down_url, tools=["echo"])
+            down = McpServerConfig("down", "http", url=down_url, tools={"echo": PIN})
             async with AsyncExitStack() as stack:
                 sources = await McpRegistry.start([down, up], stack)
                 return [(s.name, [spec.name for spec in s.specs()]) for s in sources]

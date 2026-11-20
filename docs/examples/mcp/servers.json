@@ -1,0 +1,27 @@
+[
+  {
+    "name": "n8n",
+    "transport": "http",
+    "url": "https://n8n.example.com/mcp",
+    "timeout": 10,
+    "headers": {
+      "Authorization": "MCP_SECRET_N8N"
+    },
+    "tools": {
+      "list_workflows": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  },
+  {
+    "name": "clock",
+    "transport": "stdio",
+    "command": "uvx",
+    "args": ["mcp-server-time"],
+    "env": {
+      "LOG_LEVEL": "info"
+    },
+    "timeout": 10,
+    "tools": {
+      "get_current_time": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  }
+]

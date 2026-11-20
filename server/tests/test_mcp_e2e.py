@@ -17,6 +17,7 @@ from typing import Any
 
 import httpx
 import mcp_fakes
+import mcp_stdio_server
 import pytest
 from fakes import SPEECH, Endpoint, pipeline_for, sse, tts_wav
 from fastapi import FastAPI
@@ -27,7 +28,13 @@ from starlette.testclient import WebSocketTestSession
 
 from ota_server import gateway
 from ota_server.config import get_settings
+from ota_server.hub.hub import McpHub
+from ota_server.hub.types import CallCtx, ToolCall, ToolOutcome
 from ota_server.main import create_app
+from ota_server.mcp.policy import SafeConnectionPolicy
+from ota_server.mcp.port import RawTool
+from ota_server.mcp.registry import McpRegistry
+from ota_server.mcp.toolfilter import HashToolFilter, tool_hash
 from ota_server.protocol import AUDIO_CHUNK, MAX_CREDIT, START_CREDIT
 from ota_server.session import DeviceSession
 
@@ -37,6 +44,7 @@ TOOL = "tool"  # a chat script step: answer with tool_calls
 ECHO = ("fake__echo", '{"text": "hello mcp"}')
 VOLUME = ("device__set_volume", '{"level": 30}')
 REPLY = "Gotowe."
+LOOPBACK = "127.0.0.1"
 
 
 def tool_sse(calls: list[tuple[str, str]]) -> str:
@@ -67,6 +75,17 @@ class ScriptChat(Endpoint):
         if len(self.chats) == 1:
             return httpx.Response(200, text=tool_sse([self.call]))
         return httpx.Response(200, text=sse(self.reply))
+
+
+def real_pins(server: FastMCP) -> dict[str, str]:
+    """The owner's pins: the current hash of each tool the fake server lists (D3)."""
+    tools = asyncio.run(server.list_tools())
+    return {t.name: tool_hash(RawTool(t.name, t.description or "", t.inputSchema)) for t in tools}
+
+
+def stdio_pins() -> dict[str, str]:
+    """The pins of the stdio fake (mcp_stdio_server.py), built in this process."""
+    return real_pins(mcp_stdio_server.mcp)
 
 
 def counting_build(seen: list[str]) -> Callable[..., FastMCP]:
@@ -108,6 +127,7 @@ def env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.setenv("OTA_DEVICE_TOKEN_SHA256", hashlib.sha256(TOKEN.encode()).hexdigest())
     monkeypatch.setenv("OTA_PIPELINE", "echo")
     monkeypatch.setenv("OTA_MCP_SERVERS_FILE", "")
+    monkeypatch.setenv("OTA_MCP_ALLOWED_HOSTS", LOOPBACK)  # the fakes run on 127.0.0.1 (D9)
     get_settings.cache_clear()
     gateway.slot = gateway.SessionSlot()  # no session left over from an earlier test
     yield
@@ -185,10 +205,12 @@ def run_app(chat: ScriptChat) -> Iterator[tuple[FastAPI, TestClient]]:
 
 def test_voice_turn_calls_an_mcp_tool(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     seen: list[str] = []
-    monkeypatch.setattr(mcp_fakes, "build_fake", counting_build(seen))
+    build = counting_build(seen)
+    monkeypatch.setattr(mcp_fakes, "build_fake", build)
     chat = ScriptChat(ECHO)
+    pins = real_pins(build())
     with served("http") as server:
-        entry = {"name": "fake", "transport": "http", "url": server.url, "tools": ["echo"]}
+        entry = {"name": "fake", "transport": "http", "url": server.url, "tools": pins}
         use_servers(monkeypatch, tmp_path, [entry])
         with run_app(chat) as (app, client), connect(client) as ws:
             assert [s.name for s in app.state.mcp_sources] == ["fake"]
@@ -205,7 +227,12 @@ def test_server_down_device_tools_work(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     url = f"http://127.0.0.1:{free_port()}/mcp"  # nothing listens here
-    entry = {"name": "down", "transport": "http", "url": url, "tools": ["echo"]}
+    entry = {
+        "name": "down",
+        "transport": "http",
+        "url": url,
+        "tools": {"echo": "sha256:" + "0" * 64},
+    }
     use_servers(monkeypatch, tmp_path, [entry])
     chat = ScriptChat(VOLUME)
     caplog.set_level(logging.WARNING, logger="ota_server.mcp.registry")
@@ -237,7 +264,7 @@ def test_shutdown_stops_stdio_children(monkeypatch: pytest.MonkeyPatch, tmp_path
         "transport": "stdio",
         "command": sys.executable,
         "args": [str(STDIO_SCRIPT)],
-        "tools": ["pid"],
+        "tools": {"pid": stdio_pins()["pid"]},
     }
     use_servers(monkeypatch, tmp_path, [entry])
     app = create_app()
@@ -248,3 +275,59 @@ def test_shutdown_stops_stdio_children(monkeypatch: pytest.MonkeyPatch, tmp_path
         assert outcome.ok
         pid = int(outcome.text)
     assert_pid_gone(pid)
+
+
+def pinned_build(name: str = "fake") -> FastMCP:
+    """A fake with the tools pinned and unpinned."""
+    server = FastMCP(name)
+
+    @server.tool()
+    def pinned() -> str:
+        return "pinned ok"
+
+    @server.tool()
+    def unpinned() -> str:
+        return "should not run"
+
+    return server
+
+
+def hub_call(client: TestClient, hub: McpHub, name: str) -> ToolOutcome:
+    assert client.portal is not None
+    outcome: ToolOutcome = client.portal.call(hub.run, ToolCall("c1", name, {}), CallCtx())
+    return outcome
+
+
+def test_lifespan_wires_policy_and_filter(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(mcp_fakes, "build_fake", pinned_build)
+    pin = real_pins(pinned_build())["pinned"]
+    with served("http") as server:
+        tools = {"pinned": pin, "unpinned": "sha256:" + "1" * 64}  # a stale pin: not admitted
+        entry = {"name": "fake", "transport": "http", "url": server.url, "tools": tools}
+        use_servers(monkeypatch, tmp_path, [entry])
+        app = create_app()
+        with TestClient(app) as client:
+            hub = McpHub(app.state.mcp_sources)
+            names = [tool["function"]["name"] for tool in hub.list_tools()]
+            assert "fake__pinned" in names
+            assert "fake__unpinned" not in names
+            ok = hub_call(client, hub, "fake__pinned")
+            unknown = hub_call(client, hub, "fake__unpinned")
+    assert ok.ok and "pinned ok" in ok.text
+    assert (unknown.ok, unknown.code) == (False, "unknown_tool")
+
+
+def test_hooks_come_from_settings(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    entry = {"name": "s", "transport": "http", "url": "https://mcp.example/", "tools": {}}
+    use_servers(monkeypatch, tmp_path, [entry])
+    seen: dict[str, Any] = {}
+
+    async def spy(configs: Any, stack: Any, **hooks: Any) -> list[Any]:
+        seen.update(hooks)
+        return []
+
+    monkeypatch.setattr(McpRegistry, "start", staticmethod(spy))
+    with TestClient(create_app()):
+        pass
+    assert isinstance(seen["policy"], SafeConnectionPolicy)
+    assert isinstance(seen["tool_filter"], HashToolFilter)
