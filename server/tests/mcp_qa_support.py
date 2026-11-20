@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+import importlib.util
 import json
 import logging
 import socket
@@ -31,7 +32,9 @@ from ota_server.hub.steps import UNTRUSTED_PREFIX
 from ota_server.hub.types import ToolCall, ToolOutcome
 from ota_server.main import start_mcp_sources
 from ota_server.mcp.config import McpServerConfig
+from ota_server.mcp.port import RawTool
 from ota_server.mcp.source import McpSource
+from ota_server.mcp.toolfilter import tool_hash
 from ota_server.session import DeviceSession
 
 TESTS = Path(__file__).resolve().parent
@@ -40,12 +43,14 @@ STDIO = str(TESTS / "mcp_qa_stdio_server.py")
 RAW = str(TESTS / "mcp_qa_raw_server.py")
 LONG_TOOL = "t" * 60
 LOOPBACK = ("127.0.0.1", "::1")
-PIN = "sha256:" + "0" * 64  # T2 pin format; filtering by pin starts in T3
+PIN = "sha256:" + "0" * 64  # a well-formed pin that matches no tool
+ALLOWED = "127.0.0.1"  # the fakes run on loopback: on the MCP allowlist (tool-safety D9)
 
 
 def pins(tools: list[str]) -> dict[str, str]:
-    """The servers file tools map (T2) for a list of tool names, each with a dummy pin."""
-    return dict.fromkeys(tools, PIN)
+    """The servers file tools map for a list of tool names, with the owner's real pins (D3).
+    A name no fake serves gets the dummy PIN."""
+    return {tool: KNOWN_PINS.get(tool, PIN) for tool in tools}
 
 
 @pytest.fixture(autouse=True)
@@ -224,6 +229,33 @@ async def serving(transport: str = "http") -> AsyncIterator[QaServer]:
         await server.stop()
 
 
+# ---------------------------------------------------------------- pins
+
+
+def _hashes(mcp: FastMCP) -> dict[str, str]:
+    tools = asyncio.run(mcp.list_tools())
+    return {t.name: tool_hash(RawTool(t.name, t.description or "", t.inputSchema)) for t in tools}
+
+
+def _stdio_fake() -> FastMCP:
+    """The FastMCP of mcp_qa_stdio_server.py, loaded with no options (it parses sys.argv)."""
+    spec = importlib.util.spec_from_file_location("mcp_qa_stdio_tools", STDIO)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    argv = sys.argv
+    sys.argv = [STDIO]
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.argv = argv
+    fake: FastMCP = module.mcp
+    return fake
+
+
+# The QA http fake and the stdio fake share only echo, defined the same in both.
+KNOWN_PINS = {**_hashes(_stdio_fake()), **_hashes(QaServer()._build())}
+
+
 # ---------------------------------------------------------------- helpers
 
 
@@ -282,7 +314,9 @@ async def start_file(tmp_path: Path, entries: Any, stack: AsyncExitStack) -> lis
     """Server startup (main.start_mcp_sources) with a config file holding entries."""
     path = tmp_path / "servers.json"
     path.write_text(entries if isinstance(entries, str) else json.dumps(entries))
-    return await start_mcp_sources(Settings.model_construct(mcp_servers_file=str(path)), stack)
+    return await start_mcp_sources(
+        Settings.model_construct(mcp_servers_file=str(path), mcp_allowed_hosts=ALLOWED), stack
+    )
 
 
 def errors(caplog: pytest.LogCaptureFixture) -> list[str]:

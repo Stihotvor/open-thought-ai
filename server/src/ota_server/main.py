@@ -10,8 +10,10 @@ from .config import Settings, get_settings, model_env
 from .endpoints import voice_roles
 from .gateway import router
 from .mcp.config import load_servers
+from .mcp.policy import SafeConnectionPolicy
 from .mcp.registry import McpRegistry
 from .mcp.source import McpSource
+from .mcp.toolfilter import HashToolFilter
 from .pipeline import VoicePipeline
 from .providers import ModelClient, make_http_client
 from .reply import ReplySource
@@ -30,9 +32,14 @@ async def start_reply_source(settings: Settings, stack: AsyncExitStack) -> Reply
 
 
 async def start_mcp_sources(settings: Settings, stack: AsyncExitStack) -> list[McpSource]:
-    """The external MCP servers, shared by all sessions. The stack closes them (D10)."""
+    """The external MCP servers, shared by all sessions. The stack closes them (D10).
+
+    The policy checks each host and adds the secret headers (D2); the filter admits only
+    pinned tools, with the pins from the servers file only (D3)."""
     configs = load_servers(settings.mcp_servers_file)
-    return await McpRegistry.start(configs, stack)
+    policy = SafeConnectionPolicy(settings.allowed_hosts, environ=model_env())
+    tool_filter = HashToolFilter({c.name: c.tools for c in configs})
+    return await McpRegistry.start(configs, stack, policy=policy, tool_filter=tool_filter)
 
 
 @asynccontextmanager
