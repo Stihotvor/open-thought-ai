@@ -9,8 +9,16 @@ from typing import Any
 
 from ota_server.hub.chain import build_chain
 from ota_server.hub.steps import limit, resolve, validate, wrap
-from ota_server.hub.types import SEP, CallCtx, ToolCall, ToolOutcome, ToolSource, ToolSpec
-from ota_server.hub.types import TOOL_NAME as TOOL_NAME  # re-export for older imports
+from ota_server.hub.types import (
+    SEP,
+    TOOL_NAME,
+    CallCtx,
+    ToolCall,
+    ToolOutcome,
+    ToolSource,
+    ToolSpec,
+    source_name_problem,
+)
 
 log = logging.getLogger(__name__)
 
@@ -21,10 +29,9 @@ def _keep_sources(sources: Sequence[ToolSource]) -> dict[str, ToolSource]:
     """Keep the first source per name; skip later ones and names with SEP (D7)."""
     kept: dict[str, ToolSource] = {}
     for source in sources:
-        if SEP in source.name:
-            log.error("tool source %r skipped: its name contains %r", source.name, SEP)
-        elif source.name in kept:
-            log.error("tool source %r skipped: the name is already used", source.name)
+        problem = source_name_problem(source.name, kept)
+        if problem is not None:
+            log.error("tool source %r skipped: %s", source.name, problem)
         else:
             kept[source.name] = source
     return kept

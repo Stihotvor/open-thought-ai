@@ -37,7 +37,7 @@ def _policy(
     allowed: frozenset[str] = EMPTY,
     environ: dict[str, str] | None = None,
 ) -> SafeConnectionPolicy:
-    return SafeConnectionPolicy(allowed, resolver, environ if environ is not None else {})
+    return SafeConnectionPolicy(allowed, resolver, lambda: environ or {})
 
 
 def _connect(policy: SafeConnectionPolicy, config: McpServerConfig) -> dict[str, str]:
@@ -135,3 +135,12 @@ def test_dns_failure_denied_and_logged(caplog: pytest.LogCaptureFixture) -> None
     with caplog.at_level(logging.WARNING), pytest.raises(ConnectionDenied, match="dns"):
         _connect(policy, _remote("https://a.example.com/mcp"))
     assert any(r.levelno == logging.WARNING for r in caplog.records)
+
+
+def test_rotated_secret_applies_on_next_connect() -> None:
+    env = {"MCP_SECRET_N8N": "old"}
+    policy = SafeConnectionPolicy(EMPTY, FakeResolver({"a.example.com": [PUBLIC]}), lambda: env)
+    config = _remote("https://a.example.com/mcp", {"Authorization": "MCP_SECRET_N8N"})
+    assert _connect(policy, config) == {"Authorization": "old"}
+    env["MCP_SECRET_N8N"] = "new"
+    assert _connect(policy, config) == {"Authorization": "new"}

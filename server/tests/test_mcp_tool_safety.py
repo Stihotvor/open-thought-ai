@@ -87,7 +87,7 @@ def settings_for(tmp_path: Path, entries: list[dict[str, Any]]) -> Settings:
 
 
 async def _open_redirected(transport: str) -> tuple[BaseException, float, int]:
-    policy = SafeConnectionPolicy(ALLOWED, resolver=fake_resolver, environ={})
+    policy = SafeConnectionPolicy(ALLOWED, resolver=fake_resolver, environ=lambda: {})
     async with AlwaysRedirectServer() as server:
         start = time.monotonic()
         try:
@@ -157,7 +157,7 @@ async def _start_with_denied() -> tuple[list[str], ToolOutcome, ToolOutcome]:
         "inner", "http", url=f"https://{DENIED_HOST}/mcp", tools={"echo": pins["echo"]}
     )
     good = McpServerConfig("fake", "http", url=server.url, tools={"echo": pins["echo"]})
-    policy = SafeConnectionPolicy(ALLOWED, resolver=fake_resolver, environ={})
+    policy = SafeConnectionPolicy(ALLOWED, resolver=fake_resolver, environ=lambda: {})
     tool_filter = HashToolFilter({c.name: c.tools for c in (denied, good)})
     try:
         async with AsyncExitStack() as stack:

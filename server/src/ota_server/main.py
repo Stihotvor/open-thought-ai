@@ -37,7 +37,7 @@ async def start_mcp_sources(settings: Settings, stack: AsyncExitStack) -> list[M
     The policy checks each host and adds the secret headers (D2); the filter admits only
     pinned tools, with the pins from the servers file only (D3)."""
     configs = load_servers(settings.mcp_servers_file)
-    policy = SafeConnectionPolicy(settings.allowed_hosts, environ=model_env())
+    policy = SafeConnectionPolicy(settings.allowed_hosts, environ=model_env)
     tool_filter = HashToolFilter({c.name: c.tools for c in configs})
     return await McpRegistry.start(configs, stack, policy=policy, tool_filter=tool_filter)
 

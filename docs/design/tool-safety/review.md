@@ -32,7 +32,7 @@ PASS WITH WARNINGS. No critical or high finding. The fixed warnings are listed b
 
 ## Architecture review (PR #66, in place of CodeRabbit)
 - Medium, fixed: pins were checked only at startup. Now each reconnect lists the tools again and runs the tool filter before the new session serves a call. A changed or missing admitted tool denies the reconnect, and the call returns an `mcp_error` outcome. Tests: `test_mcp_reconnect_pins.py`.
-- Low, stays (follow-up): `policy.py` repeats the allowlist test from `ssrf.py`. One shared helper would hold the http rule.
-- Low, stays (follow-up): the policy reads the environment once at startup. A rotated `MCP_SECRET_*` value needs a restart.
-- Low, stays (follow-up): a source that the hub skips keeps its connection until shutdown.
-- Low, stays (follow-up): `mcp.config` imports `hub.types`, and `hub.hub` re-exports `TOOL_NAME`. No cycle.
+- Low, fixed in follow-up PR: `policy.py` repeats the allowlist test from `ssrf.py`. One shared helper would hold the http rule.
+- Low, fixed in follow-up PR: the policy reads the environment once at startup. A rotated `MCP_SECRET_*` value needs a restart.
+- Low, fixed in follow-up PR: a source that the hub skips keeps its connection until shutdown.
+- Low, fixed in follow-up PR: `mcp.config` imports `hub.types`, and `hub.hub` re-exports `TOOL_NAME`. No cycle.

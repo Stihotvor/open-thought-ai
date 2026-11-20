@@ -4,25 +4,19 @@ It keeps no state, so every connect and reconnect re-runs the check (F2). Each d
 one WARNING with the server, the host and the reason, never a header value (T12).
 """
 
-import ipaddress
 import logging
 import os
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import NoReturn
 from urllib.parse import urlsplit
 
 from ota_server.mcp.config import McpServerConfig
 from ota_server.mcp.hooks import ConnectionDenied
-from ota_server.mcp.ssrf import Resolver, check_host, default_resolver
+from ota_server.mcp.ssrf import Resolver, check_host, default_resolver, plain_http_allowed
 
 log = logging.getLogger(__name__)
 
-
-def _is_loopback_literal(host: str) -> bool:
-    try:
-        return ipaddress.ip_address(host).is_loopback
-    except ValueError:
-        return False
+Environ = Callable[[], Mapping[str, str]]  # read on each connect, so a rotated secret applies
 
 
 class SafeConnectionPolicy:
@@ -32,11 +26,11 @@ class SafeConnectionPolicy:
         self,
         allowed_hosts: frozenset[str],
         resolver: Resolver = default_resolver,
-        environ: Mapping[str, str] | None = None,
+        environ: Environ = lambda: os.environ,
     ) -> None:
         self._allowed = allowed_hosts
         self._resolver = resolver
-        self._environ: Mapping[str, str] = os.environ if environ is None else environ
+        self._environ = environ
 
     async def before_connect(self, config: McpServerConfig) -> dict[str, str]:
         """Check the connection and return its secret headers.
@@ -52,19 +46,21 @@ class SafeConnectionPolicy:
             reason = await check_host(host, self._allowed, self._resolver)
         if reason is not None:
             self._deny(config, host, reason)
-        return self._headers(config, host)
+        return self._headers(config, host, self._environ())
 
     def _scheme_reason(self, scheme: str, host: str) -> str | None:
         if scheme == "https":
             return None
-        if scheme == "http" and (_is_loopback_literal(host) or host in self._allowed):
+        if scheme == "http" and plain_http_allowed(host, self._allowed):
             return None
         return "http needs https"
 
-    def _headers(self, config: McpServerConfig, host: str) -> dict[str, str]:
+    def _headers(
+        self, config: McpServerConfig, host: str, environ: Mapping[str, str]
+    ) -> dict[str, str]:
         headers: dict[str, str] = {}
         for header, var in config.headers.items():
-            value = self._environ.get(var)
+            value = environ.get(var)
             if not value:
                 self._deny(config, host, f"missing variable {var}")
             headers[header] = value

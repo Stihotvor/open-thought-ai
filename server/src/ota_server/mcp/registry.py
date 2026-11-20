@@ -12,6 +12,7 @@ import logging
 from collections.abc import Awaitable, Callable, Sequence
 from contextlib import AsyncExitStack
 
+from ota_server.hub.types import source_name_problem
 from ota_server.mcp.adapters import SdkConnection
 from ota_server.mcp.config import McpServerConfig
 from ota_server.mcp.hooks import ALLOW_ALL, ConnectionPolicy, ToolFilter
@@ -38,9 +39,28 @@ class McpRegistry:
     ) -> list[McpSource]:
         """Connect all servers in parallel; return the live sources in config order."""
         results = await asyncio.gather(
-            *(_start_one(config, stack, policy, tool_filter, connect) for config in configs)
+            *(
+                _start_one(config, stack, policy, tool_filter, connect)
+                for config in _usable(configs)
+            )
         )
         return [source for source in results if source is not None]
+
+
+def _usable(configs: Sequence[McpServerConfig]) -> list[McpServerConfig]:
+    """Drop the configs the hub would skip (D7), so none of them holds a live connection.
+
+    load_servers already refuses these names. This guard is defence in depth for callers
+    that build configs by hand. It uses the hub's own rule, so the two cannot drift.
+    """
+    kept: dict[str, McpServerConfig] = {}
+    for config in configs:
+        problem = source_name_problem(config.name, kept)
+        if problem is not None:
+            log.error("mcp %r skipped: %s", config.name, problem)
+        else:
+            kept[config.name] = config
+    return list(kept.values())
 
 
 async def _start_one(
