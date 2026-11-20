@@ -1,6 +1,6 @@
 # QA results: mcp-client
 
-Tests: /home/yevhend/claude-projects/open-thought-ai/server/tests/test_qa_mcp_client.py (helpers: mcp_qa_stdio_server.py, mcp_qa_raw_server.py; reuses mcp_fakes.assert_pid_gone and free_port). Run: 47 passed, 1 skipped. Full suite with coverage: 594 passed, 1 skipped, coverage 98.61 %.
+Tests: /home/yevhend/claude-projects/open-thought-ai/server/tests/test_qa_mcp_transports.py, test_qa_mcp_config.py, test_qa_mcp_failures.py (shared fixtures and fakes: mcp_qa_support.py; helpers: mcp_qa_stdio_server.py, mcp_qa_raw_server.py; reuses mcp_fakes.assert_pid_gone and free_port). Run: 47 passed, 1 skipped. Full suite with coverage: 594 passed, 1 skipped, coverage 98.61 %.
 
 - QA-001 pass
 - QA-002 pass
