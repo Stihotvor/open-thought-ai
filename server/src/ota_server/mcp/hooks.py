@@ -1,4 +1,8 @@
-"""The #31 seam (D11): a connection policy and a tool filter. The default allows all."""
+"""The access-control seam (D11): a connection policy and a tool filter.
+
+A ConnectionPolicy runs before each connect and may add HTTP headers or deny the server.
+A ToolFilter decides which listed tools the LLM sees. The default, ALLOW_ALL, allows all.
+"""
 
 from typing import Protocol
 
@@ -28,3 +32,6 @@ class AllowAll:
 
     def admit(self, server: str, tool: RawTool) -> bool:
         return True
+
+
+ALLOW_ALL = AllowAll()  # the shared default policy and filter; it holds no state

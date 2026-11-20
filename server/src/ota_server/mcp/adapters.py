@@ -9,6 +9,7 @@ once under a lock and retry once (D7).
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from typing import Any
@@ -36,6 +37,9 @@ from ota_server.mcp.config import McpServerConfig
 from ota_server.mcp.hooks import ConnectionPolicy
 from ota_server.mcp.port import RawResult, RawTool
 
+log = logging.getLogger(__name__)
+
+MAX_TOOL_PAGES = 20  # tools/list pages read at most; a server can page without end
 STOP_TIMEOUT = 5.0  # seconds close() waits for the owner task before it cancels it (D9)
 RECONNECT_TIMEOUT = 5.0  # seconds for one reconnect: old owner stop plus new open (D7)
 # The SDK streamable http client answers a 404 for an unknown session id with this code.
@@ -171,12 +175,16 @@ class SdkConnection:
         session, _, _ = self._live()
         tools: list[Tool] = []
         cursor: str | None = None
-        while True:
+        for _ in range(MAX_TOOL_PAGES):
             page = await session.list_tools(cursor)
             tools.extend(page.tools)
             cursor = page.nextCursor
             if cursor is None:
                 break
+        else:
+            log.warning(
+                "mcp %s: tool list stopped after %d pages", self._config.name, MAX_TOOL_PAGES
+            )
         return [RawTool(t.name, t.description or "", t.inputSchema) for t in tools]
 
     async def call_tool(self, name: str, args: dict[str, Any]) -> RawResult:

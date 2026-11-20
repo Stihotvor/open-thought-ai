@@ -12,8 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any, TypeGuard
 from urllib.parse import urlsplit
 
-from ota_server.hub.hub import TOOL_NAME
-from ota_server.hub.types import SEP
+from ota_server.hub.types import SEP, TOOL_NAME
 
 log = logging.getLogger(__name__)
 

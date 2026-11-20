@@ -1,15 +1,19 @@
 """T2: McpSource policy over a FakeConnection with no SDK (D5, D5a, D6)."""
 
 import asyncio
+import inspect
 import logging
 import time
 from typing import Any
 
 import pytest
 
+from ota_server.hub import hub, types
 from ota_server.hub.types import ToolOutcome
+from ota_server.mcp import hooks
 from ota_server.mcp.config import McpServerConfig
 from ota_server.mcp.port import RawResult, RawTool
+from ota_server.mcp.registry import McpRegistry
 from ota_server.mcp.source import McpSource
 
 OK = RawResult(is_error=False, parts=[("text", "done")])
@@ -131,11 +135,29 @@ def test_timeout_then_next_call_succeeds() -> None:
 
 def test_any_exception_becomes_outcome(caplog: pytest.LogCaptureFixture) -> None:
     source = _build(FakeConnection(["a"], raises=RuntimeError("boom")), ["a"])
-    with caplog.at_level(logging.ERROR, logger="ota_server.mcp.source"):
+    with caplog.at_level(logging.DEBUG, logger="ota_server.mcp.source"):
         out = asyncio.run(source.call("a", {}))
     assert out == ToolOutcome(False, "tool failed", "mcp_error")
     assert "boom" not in out.text
-    assert any(r.exc_info for r in caplog.records)
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    message = warnings[0].getMessage()
+    assert "'a'" in message and "RuntimeError" in message
+    # No server-controlled text: no exception message and no traceback.
+    assert all("boom" not in r.getMessage() and not r.exc_info for r in caplog.records)
+
+
+def _default(func: Any, name: str) -> object:
+    return inspect.signature(func).parameters[name].default
+
+
+def test_shared_names_have_one_home() -> None:
+    assert hub.TOOL_NAME is types.TOOL_NAME
+    assert isinstance(hooks.ALLOW_ALL, hooks.AllowAll)
+    assert _default(McpSource, "tool_filter") is hooks.ALLOW_ALL
+    assert _default(McpSource.build, "tool_filter") is hooks.ALLOW_ALL
+    assert _default(McpRegistry.start, "policy") is hooks.ALLOW_ALL
+    assert _default(McpRegistry.start, "tool_filter") is hooks.ALLOW_ALL
 
 
 def test_caller_cancel_is_reraised() -> None:

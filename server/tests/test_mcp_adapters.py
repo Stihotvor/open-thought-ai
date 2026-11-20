@@ -2,13 +2,16 @@
 D11, T7) and the mcp==1.30.0 pin (D3)."""
 
 import asyncio
+import logging
 import time
 import tomllib
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
+from mcp.types import ListToolsResult, Tool
 from mcp_fakes import FakeServer, assert_pid_gone, stdio_config
 
 from ota_server.mcp import adapters
@@ -159,6 +162,40 @@ def test_close_is_idempotent() -> None:
         await conn.close()
 
     asyncio.run(run())
+
+
+class EndlessPages:
+    """A session fake whose tools/list always has a next page."""
+
+    def __init__(self) -> None:
+        self.pages = 0
+
+    async def list_tools(self, cursor: str | None = None) -> ListToolsResult:
+        self.pages += 1
+        if self.pages > 100:  # bounds the test if the cap is missing
+            raise RuntimeError("no page cap")
+        tool = Tool(name=f"t{self.pages}", inputSchema={"type": "object"})
+        return ListToolsResult(tools=[tool], nextCursor=f"c{self.pages}")
+
+
+def test_list_tools_stops_at_page_cap(caplog: pytest.LogCaptureFixture) -> None:
+    async def run() -> tuple[int, int]:
+        conn = SdkConnection(stdio_config(), AllowAll(), sdk_transport)
+        session = EndlessPages()
+        owner = asyncio.create_task(asyncio.Event().wait())
+        conn._session = cast(Any, session)
+        conn._task = cast(Any, owner)
+        try:
+            tools = await conn.list_tools()
+        finally:
+            owner.cancel()
+        return len(tools), session.pages
+
+    with caplog.at_level(logging.WARNING, logger="ota_server.mcp.adapters"):
+        count, pages = asyncio.run(run())
+    assert adapters.MAX_TOOL_PAGES == 20
+    assert pages == count == adapters.MAX_TOOL_PAGES
+    assert any(r.levelno == logging.WARNING for r in caplog.records)
 
 
 def test_mcp_pinned_in_pyproject_and_lock() -> None:

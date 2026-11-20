@@ -10,15 +10,13 @@ import asyncio
 import logging
 from typing import Any
 
-from ota_server.hub.hub import TOOL_NAME
-from ota_server.hub.types import ToolOutcome, ToolSpec
+from ota_server.hub.types import TOOL_NAME, ToolOutcome, ToolSpec
 from ota_server.mcp.config import McpServerConfig
-from ota_server.mcp.hooks import AllowAll, ToolFilter
+from ota_server.mcp.hooks import ALLOW_ALL, ToolFilter
 from ota_server.mcp.port import McpConnection, RawResult, RawTool
 
 log = logging.getLogger(__name__)
 
-ALLOW_ALL: ToolFilter = AllowAll()  # the default filter (D11), shared: it holds no state
 PLACEHOLDERS = {"image": "[image]", "resource": "[resource]"}
 
 
@@ -57,8 +55,9 @@ class McpSource:
                 result = await self._conn.call_tool(tool, args)
         except TimeoutError:
             return ToolOutcome(False, f"the {self.name} did not answer in time", "tool_timeout")
-        except Exception:
-            log.exception("mcp %s: tool %r failed", self.name, tool)
+        except Exception as exc:
+            # Only the type: the message and traceback can carry server-controlled text.
+            log.warning("mcp %s: tool %r failed (%s)", self.name, tool, type(exc).__name__)
             return ToolOutcome(False, "tool failed", "mcp_error")
         return _map_result(result)
 

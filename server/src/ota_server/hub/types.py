@@ -1,5 +1,6 @@
 """Hub types: the contract shared by the chain, the sources and the pipeline."""
 
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -7,6 +8,7 @@ from typing import Any, Protocol
 MAX_TOOL_CALLS = 4  # per turn
 MAX_RESULT_CHARS = 2000  # per result sent to the LLM
 SEP = "__"  # full tool name = f"{source}{SEP}{tool}"
+TOOL_NAME = re.compile(r"[a-zA-Z0-9_-]{1,64}")  # the full name the LLM API accepts (D13)
 
 
 @dataclass(frozen=True)

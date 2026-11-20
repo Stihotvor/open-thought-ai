@@ -118,6 +118,33 @@ def test_hung_server_hits_the_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
     assert [s.name for s in sources] == ["ok"]
 
 
+class HungListConn(FakeConn):
+    """Connects at once but never answers tools/list."""
+
+    async def list_tools(self) -> list[RawTool]:
+        await asyncio.Event().wait()
+        return []
+
+
+def test_hung_tool_list_hits_the_deadline(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setattr(registry, "CONNECT_TIMEOUT", 0.5)
+    hung = HungListConn()
+
+    async def connect(config: McpServerConfig, policy: ConnectionPolicy) -> McpConnection:
+        return hung if config.name == "hung" else FakeConn()
+
+    begin = time.monotonic()
+    with caplog.at_level(logging.WARNING, logger="ota_server.mcp.registry"):
+        sources = asyncio.run(_start([fake_config("hung"), fake_config("ok")], connect))
+    assert time.monotonic() - begin < 1.0
+    assert [s.name for s in sources] == ["ok"]
+    assert hung.closed
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("hung" in message for message in warnings)
+
+
 def test_default_deadline_is_five_seconds() -> None:
     assert registry.CONNECT_TIMEOUT == 5.0
 

@@ -14,16 +14,15 @@ from contextlib import AsyncExitStack
 
 from ota_server.mcp.adapters import SdkConnection
 from ota_server.mcp.config import McpServerConfig
-from ota_server.mcp.hooks import AllowAll, ConnectionPolicy, ToolFilter
+from ota_server.mcp.hooks import ALLOW_ALL, ConnectionPolicy, ToolFilter
 from ota_server.mcp.port import McpConnection
 from ota_server.mcp.source import McpSource
 
 log = logging.getLogger(__name__)
 
-CONNECT_TIMEOUT = 5.0  # seconds per server connect (D10); read at call time
+CONNECT_TIMEOUT = 5.0  # seconds per server for connect plus tools/list (D10); read at call time
 
 Connect = Callable[[McpServerConfig, ConnectionPolicy], Awaitable[McpConnection]]
-ALLOW_ALL = AllowAll()
 
 
 class McpRegistry:
@@ -51,14 +50,16 @@ async def _start_one(
     tool_filter: ToolFilter,
     connect: Connect,
 ) -> McpSource | None:
-    conn = await _connect(config, stack, policy, connect)
-    if conn is None:
-        return None
     try:
-        source = await McpSource.build(config, conn, tool_filter)
-    except Exception as exc:
-        log.warning("mcp %s: tool list failed (%s), server off", config.name, type(exc).__name__)
-        await _close_quietly(config.name, conn)
+        async with asyncio.timeout(CONNECT_TIMEOUT):  # one deadline: connect plus tools/list
+            conn = await _connect(config, stack, policy, connect)
+            if conn is None:
+                return None
+            source = await _build(config, conn, tool_filter)
+    except TimeoutError:
+        log.warning("mcp %s: not ready within %s s, server off", config.name, CONNECT_TIMEOUT)
+        return None  # a live conn is closed by the stack (F4)
+    if source is None:
         return None
     if not source.specs():
         log.info("mcp %s: no admitted tools, server dropped", config.name)
@@ -67,16 +68,24 @@ async def _start_one(
     return source
 
 
+async def _build(
+    config: McpServerConfig, conn: McpConnection, tool_filter: ToolFilter
+) -> McpSource | None:
+    """List the tools once; a failure closes the connection and drops the server."""
+    try:
+        return await McpSource.build(config, conn, tool_filter)
+    except Exception as exc:
+        log.warning("mcp %s: tool list failed (%s), server off", config.name, type(exc).__name__)
+        await _close_quietly(config.name, conn)
+        return None
+
+
 async def _connect(
     config: McpServerConfig, stack: AsyncExitStack, policy: ConnectionPolicy, connect: Connect
 ) -> McpConnection | None:
-    """Connect under the deadline and register the close on the stack at once (F4)."""
+    """Connect and register the close on the stack at once (F4). The caller sets the deadline."""
     try:
-        async with asyncio.timeout(CONNECT_TIMEOUT):
-            conn = await connect(config, policy)
-    except TimeoutError:
-        log.warning("mcp %s: no connect within %s s, server off", config.name, CONNECT_TIMEOUT)
-        return None
+        conn = await connect(config, policy)
     except Exception as exc:
         # Only the exception type: a message can carry a URL or a header (no secrets in logs).
         log.warning("mcp %s: connect failed (%s), server off", config.name, type(exc).__name__)
