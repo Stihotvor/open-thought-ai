@@ -6,7 +6,7 @@ one WARNING with the server, the host and the reason, never a header value (T12)
 
 import logging
 import os
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import NoReturn
 from urllib.parse import urlsplit
 
@@ -16,6 +16,8 @@ from ota_server.mcp.ssrf import Resolver, check_host, default_resolver, plain_ht
 
 log = logging.getLogger(__name__)
 
+Environ = Callable[[], Mapping[str, str]]  # read on each connect, so a rotated secret applies
+
 
 class SafeConnectionPolicy:
     """A ConnectionPolicy for external MCP servers (T5, T6, T9)."""
@@ -24,11 +26,11 @@ class SafeConnectionPolicy:
         self,
         allowed_hosts: frozenset[str],
         resolver: Resolver = default_resolver,
-        environ: Mapping[str, str] | None = None,
+        environ: Environ = lambda: os.environ,
     ) -> None:
         self._allowed = allowed_hosts
         self._resolver = resolver
-        self._environ: Mapping[str, str] = os.environ if environ is None else environ
+        self._environ = environ
 
     async def before_connect(self, config: McpServerConfig) -> dict[str, str]:
         """Check the connection and return its secret headers.
@@ -44,7 +46,7 @@ class SafeConnectionPolicy:
             reason = await check_host(host, self._allowed, self._resolver)
         if reason is not None:
             self._deny(config, host, reason)
-        return self._headers(config, host)
+        return self._headers(config, host, self._environ())
 
     def _scheme_reason(self, scheme: str, host: str) -> str | None:
         if scheme == "https":
@@ -53,10 +55,12 @@ class SafeConnectionPolicy:
             return None
         return "http needs https"
 
-    def _headers(self, config: McpServerConfig, host: str) -> dict[str, str]:
+    def _headers(
+        self, config: McpServerConfig, host: str, environ: Mapping[str, str]
+    ) -> dict[str, str]:
         headers: dict[str, str] = {}
         for header, var in config.headers.items():
-            value = self._environ.get(var)
+            value = environ.get(var)
             if not value:
                 self._deny(config, host, f"missing variable {var}")
             headers[header] = value

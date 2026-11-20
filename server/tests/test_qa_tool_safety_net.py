@@ -77,7 +77,7 @@ def test_qa_020_dns_failure_denies_one_server_only(caplog: pytest.LogCaptureFixt
         alpha = McpServerConfig("alpha", "http", url="https://alpha.example/mcp", tools=pins)
         beta = McpServerConfig("beta", "http", url=server.url, tools={"echo": pins["echo"]})
         resolver = as_resolver(FakeResolver(raises=OSError("no dns")))
-        policy = SafeConnectionPolicy(ALLOWED, resolver, {})
+        policy = SafeConnectionPolicy(ALLOWED, resolver, lambda: {})
         tool_filter = HashToolFilter({"alpha": alpha.tools, "beta": beta.tools})
         try:
             async with AsyncExitStack() as stack:
@@ -138,7 +138,7 @@ async def _dropped_then_called(policy: Any, caplog_name: str) -> tuple[list[Tool
 
 
 def test_qa_028_reconnect_reruns_the_ssrf_check(caplog: pytest.LogCaptureFixture) -> None:
-    later = SafeConnectionPolicy(EMPTY, as_resolver(FakeResolver()), {})
+    later = SafeConnectionPolicy(EMPTY, as_resolver(FakeResolver()), lambda: {})
     flip = FlipPolicy(later)
     with caplog.at_level(logging.WARNING):
         outcomes, closed = asyncio.run(_dropped_then_called(flip, "alpha"))
@@ -323,7 +323,9 @@ def test_qa_090_n8n_config_only_setup(tmp_path: Path) -> None:
         }
         settings = settings_for(tmp_path, [entry], allowed="n8n")
         configs = load_servers(settings.mcp_servers_file)
-        policy = SafeConnectionPolicy(settings.allowed_hosts, environ={"MCP_SECRET_N8N": "tok"})
+        policy = SafeConnectionPolicy(
+            settings.allowed_hosts, environ=lambda: {"MCP_SECRET_N8N": "tok"}
+        )
 
         async def connect(config: McpServerConfig, pol: ConnectionPolicy) -> McpConnection:
             def factory(cfg: McpServerConfig, headers: dict[str, str]) -> Any:

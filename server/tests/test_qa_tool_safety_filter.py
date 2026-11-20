@@ -122,7 +122,7 @@ def test_qa_075_filter_exception_hides_only_that_tool(caplog: pytest.LogCaptureF
 def test_qa_078_denied_server_call_is_an_unknown_tool_outcome() -> None:
     async def run() -> ToolOutcome:
         resolver = as_resolver(FakeResolver())
-        policy = SafeConnectionPolicy(EMPTY, resolver, {})
+        policy = SafeConnectionPolicy(EMPTY, resolver, lambda: {})
         bad = remote("https://169.254.169.254/mcp", name="bad")
         bad = McpServerConfig("bad", "http", url=bad.url, tools={"echo": PIN0})
         async with AsyncExitStack() as stack:

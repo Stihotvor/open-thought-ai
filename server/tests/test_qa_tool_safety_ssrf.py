@@ -60,7 +60,7 @@ def test_qa_denied_with_logged_reason(
     needle: str,
 ) -> None:
     resolver = FakeResolver(table)
-    policy = SafeConnectionPolicy(allowed, as_resolver(resolver), {})
+    policy = SafeConnectionPolicy(allowed, as_resolver(resolver), lambda: {})
     with caplog.at_level(logging.WARNING), pytest.raises(ConnectionDenied):
         asyncio.run(policy.before_connect(remote(url)))
     warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
@@ -96,7 +96,7 @@ def test_qa_allowed_without_denial(
     allowed: frozenset[str],
 ) -> None:
     resolver = FakeResolver(table)
-    policy = SafeConnectionPolicy(allowed, as_resolver(resolver), {})
+    policy = SafeConnectionPolicy(allowed, as_resolver(resolver), lambda: {})
     with caplog.at_level(logging.DEBUG):
         assert asyncio.run(policy.before_connect(remote(url))) == {}
     assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
@@ -105,7 +105,9 @@ def test_qa_allowed_without_denial(
 
 
 def test_qa_023_http_public_host_is_a_scheme_denial(caplog: pytest.LogCaptureFixture) -> None:
-    policy = SafeConnectionPolicy(EMPTY, as_resolver(FakeResolver({"t.example.org": [PUBLIC]})), {})
+    policy = SafeConnectionPolicy(
+        EMPTY, as_resolver(FakeResolver({"t.example.org": [PUBLIC]})), lambda: {}
+    )
     with caplog.at_level(logging.WARNING), pytest.raises(ConnectionDenied, match="https"):
         asyncio.run(policy.before_connect(remote("http://t.example.org/mcp")))
     assert any("t.example.org" in r.getMessage() for r in caplog.records)
@@ -113,8 +115,10 @@ def test_qa_023_http_public_host_is_a_scheme_denial(caplog: pytest.LogCaptureFix
 
 def test_qa_024_loopback_http_passes_only_when_allowlisted() -> None:
     url = "http://127.0.0.1:9000/mcp"
-    allowed = SafeConnectionPolicy(frozenset({"127.0.0.1"}), as_resolver(FakeResolver()), {})
+    allowed = SafeConnectionPolicy(
+        frozenset({"127.0.0.1"}), as_resolver(FakeResolver()), lambda: {}
+    )
     assert asyncio.run(allowed.before_connect(remote(url))) == {}
-    bare = SafeConnectionPolicy(EMPTY, as_resolver(FakeResolver()), {})
+    bare = SafeConnectionPolicy(EMPTY, as_resolver(FakeResolver()), lambda: {})
     with pytest.raises(ConnectionDenied, match="loopback"):
         asyncio.run(bare.before_connect(remote(url)))
