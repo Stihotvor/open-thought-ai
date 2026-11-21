@@ -1,0 +1,166 @@
+{
+  "tasks": [
+    {
+      "id": "T1",
+      "title": "confirm_text: fixed texts and is_yes",
+      "size": "S",
+      "depends_on": [],
+      "done_when": "cd server && pytest tests/test_confirm_text.py passes: is_yes is true for yes, yeah (en), tak (pl), \u0442\u0430\u043a (uk) with case and end punctuation/space stripped (M2, 4 of 4); false for no, yes but later, empty text and a yes word of another language (M3, 4 of 4); every text exists for EN, PL, UK and the question holds source and bare tool name (T6); ruff and mypy report 0 errors",
+      "files": [
+        "server/src/ota_server/hub/confirm_text.py",
+        "server/tests/test_confirm_text.py"
+      ],
+      "agent": "python-lead"
+    },
+    {
+      "id": "T2",
+      "title": "Held and ConfirmGate state machine",
+      "size": "M",
+      "depends_on": [],
+      "done_when": "cd server && pytest tests/test_confirm_gate.py passes: hold, arm, expire, claim, pop, drop, drop_if_claimed, drop_if_held follow the phases held/armed/claimed; a second hold is refused; expire acts only for the same armed Held (a new Held with the same turn is not expired, turn wrap at 256); drop_if_held never drops an armed or claimed call; pop leaves the gate empty so a second pop gives None (T3); ruff and mypy report 0 errors",
+      "files": [
+        "server/src/ota_server/hub/confirm.py",
+        "server/tests/test_confirm_gate.py"
+      ],
+      "agent": "python-lead"
+    },
+    {
+      "id": "T3",
+      "title": "Confirm flags: no_confirm config, McpSource and DeviceSource",
+      "size": "M",
+      "depends_on": [],
+      "done_when": "cd server && pytest tests/test_mcp_config.py tests/test_mcp_source.py tests/test_device_source.py passes: a name in no_confirm that is not a key of tools rejects the entry, and default MCP specs have confirm=true (M6, 2 of 2); a no_confirm tool has confirm=false; set_volume has confirm=true, set_face and get_status confirm=false; ruff and mypy report 0 errors",
+      "files": [
+        "server/src/ota_server/mcp/config.py",
+        "server/src/ota_server/mcp/source.py",
+        "server/src/ota_server/hub/device_source.py",
+        "server/tests/test_mcp_config.py",
+        "server/tests/test_mcp_source.py",
+        "server/tests/test_device_source.py"
+      ],
+      "agent": "python-lead"
+    },
+    {
+      "id": "T4",
+      "title": "Turn and language plumbing: CallCtx.turn, McpHub language, turn_tools(turn)",
+      "size": "M",
+      "depends_on": [],
+      "done_when": "cd server && pytest passes with the new signatures: CallCtx has turn, McpHub(sources, language), McpHub.turn_context(turn) and DeviceSession.turn_tools(turn) pass the turn, produce() gets it from reply(turn, ...); a test_hub.py case shows ctx.turn reaches a fake source; ruff and mypy report 0 errors",
+      "files": [
+        "server/src/ota_server/hub/types.py",
+        "server/src/ota_server/hub/hub.py",
+        "server/src/ota_server/session.py",
+        "server/src/ota_server/main.py",
+        "server/tests/test_hub.py",
+        "server/src/ota_server/gateway.py"
+      ],
+      "agent": "python-lead"
+    },
+    {
+      "id": "T5",
+      "title": "confirm chain step after validate",
+      "size": "M",
+      "depends_on": [
+        "T2",
+        "T4",
+        "T3"
+      ],
+      "done_when": "cd server && pytest tests/test_confirm_step.py passes: a confirm=false spec passes to the terminal (E8); a confirm=true call is held, returns ToolOutcome(False, held: the user must say yes, confirm_required) and the fake source gets 0 calls (M1, device and MCP fake); a second confirm call returns confirm_busy (E1); an exception in the step logs an error and returns confirm_required with 0 calls (F4); chain order is wrap, resolve, limit, validate, confirm, terminal; the held call counts toward the cap of 4 (E9); ruff and mypy report 0 errors",
+      "files": [
+        "server/src/ota_server/hub/steps.py",
+        "server/src/ota_server/hub/hub.py",
+        "server/tests/test_confirm_step.py",
+        "server/tests/test_agent.py",
+        "server/tests/test_hub.py",
+        "server/tests/test_hub_chain.py",
+        "server/tests/test_device_tools_e2e.py",
+        "server/tests/qa_device_support.py",
+        "server/tests/test_mcp_e2e.py",
+        "server/tests/test_mcp_tool_safety.py",
+        "server/tests/test_qa_device_tools.py",
+        "server/tests/test_qa_mcp_transports.py",
+        "server/tests/test_qa_device_tools_failures.py"
+      ],
+      "agent": "python-lead"
+    },
+    {
+      "id": "T6",
+      "title": "TurnTools.confirmation, held_question and private _release",
+      "size": "M",
+      "depends_on": [
+        "T1",
+        "T5"
+      ],
+      "done_when": "cd server && pytest tests/test_confirm_release.py passes: with the gate claimed by ctx.turn, confirmation(yes word) runs the held call exactly once and returns Done.; a second yes runs 0 more (M2); no, yes but later, empty text return Cancelled. with 0 calls (M3); confirmation returns None when the gate is not claimed by this turn; a failing source returns the failure text and McpHub does not raise (F1, F2); an exception drops the call and returns Cancelled. (F4); held_question returns the fixed question only for the holding turn; _release does not count against the cap (E9) and is not on ToolContext; ruff and mypy report 0 errors",
+      "files": [
+        "server/src/ota_server/hub/hub.py",
+        "server/tests/test_confirm_release.py"
+      ],
+      "agent": "python-lead"
+    },
+    {
+      "id": "T7",
+      "title": "Pipeline: confirmation turn skips the LLM, question ends tool rounds",
+      "size": "M",
+      "depends_on": [
+        "T6"
+      ],
+      "done_when": "cd server && pytest tests/test_pipeline.py tests/test_agent.py passes: when tools.confirmation(text) returns text it is spoken and read_chat is not called; after a held call the fixed question is the last chunk and no second chat_turn is made; the question goes through speak() and is moderated; ruff and mypy report 0 errors",
+      "files": [
+        "server/src/ota_server/pipeline.py",
+        "server/src/ota_server/agent.py",
+        "server/tests/test_pipeline.py",
+        "server/tests/test_agent.py",
+        "server/src/ota_server/hub/types.py",
+        "server/tests/qa_support.py",
+        "server/tests/test_device_tools_e2e.py",
+        "server/tests/test_session.py",
+        "server/tests/test_qa_vad_transcript.py"
+      ],
+      "agent": "python-lead"
+    },
+    {
+      "id": "T8",
+      "title": "Session: arm, 10 s timer, listen.start, abort and close rules",
+      "size": "M",
+      "depends_on": [
+        "T6"
+      ],
+      "done_when": "cd server && pytest tests/test_session_confirm.py passes with a fake clock: order is reply.end, state confirm, confirm.request {timeout_ms: 10000} (M5); 10 s after reply.end the device gets error {code: confirm_timeout} and a later yes runs 0 calls (M4); a cap or moderation cut gives no confirm.request and 0 calls; too_many_turns keeps the call until the timeout (E7); listen.start then no_speech gives 0 calls and no timeout (E6); a claimed call with no listen.stop is dropped by a new listen.start; abort and close drop the call (E3, E4); a listen.start after the timeout is a normal turn (E5); ruff and mypy report 0 errors",
+      "files": [
+        "server/src/ota_server/session.py",
+        "server/tests/test_session_confirm.py"
+      ],
+      "agent": "python-lead"
+    },
+    {
+      "id": "T9",
+      "title": "Docs: confirm texts, matching rule, no_confirm",
+      "size": "S",
+      "depends_on": [
+        "T1"
+      ],
+      "done_when": "grep -n no_confirm docs/security.md docs/protocol.md shows the field, and the docs/protocol.md confirm section holds the fixed texts, the exact-match rule and the turn rules (D11)",
+      "files": [
+        "docs/protocol.md",
+        "docs/security.md",
+        "docs/examples/mcp/servers.json"
+      ]
+    },
+    {
+      "id": "T10",
+      "title": "End-to-end confirm tests and gate",
+      "size": "M",
+      "depends_on": [
+        "T3",
+        "T7",
+        "T8"
+      ],
+      "done_when": "cd server && pytest tests/test_confirm_e2e.py passes: a fake device tool and a fake MCP tool get 0 calls before the confirmation turn (M1); yes, yeah, tak, \u0442\u0430\u043a each run the held call once (M2); no, yes but later, empty, other-language yes give 0 calls (M3); timeout gives confirm_timeout and 0 calls (M4); message order (M5); then server/scripts/gate.sh exits 0: ruff 0 findings, mypy 0 errors, coverage >= 90 % (M7)",
+      "files": [
+        "server/tests/test_confirm_e2e.py"
+      ],
+      "agent": "python-lead"
+    }
+  ]
+}
