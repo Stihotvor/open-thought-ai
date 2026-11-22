@@ -65,10 +65,35 @@ Errors are never sent as audio, so they work even when TTS is down.
 3. Metric M5 is measured on the device: button press → I2S silent ≤ 300 ms.
 
 ## Confirm flow (risky tools)
-1. The LLM requests a tool flagged `confirm`. The **hub** (not the LLM) holds the call: tool name + exact args + turn id, single use.
-2. The server speaks a short question, then sends `confirm.request {turn, tool, timeout_ms: 10000}`. The timer starts after `reply.end`.
-3. The next `listen.start` within the timeout is the confirmation turn. The server classifies the transcript with a keyword list per language (EN yes/yeah, PL tak, UK так). No LLM in this decision.
-4. Yes → run the held call once. Anything else or timeout → cancel, `error {code: confirm_timeout}` on timeout.
+1. The LLM requests a tool flagged `confirm`. The **hub** (not the LLM) holds the call: tool name + exact args + turn id, single use. The hub holds one call per session. A second `confirm` call while a call is held gets `confirm_busy` and does not run.
+2. The server stops the LLM and speaks a fixed question. Then it sends, in this order: `reply.end {reason: done}`, `state {state: confirm}`, `confirm.request {turn, tool, timeout_ms: 10000}`. The timer starts after `reply.end`. If `reply.end` has a reason other than `done` (for example a cap or a moderation stop), the server sends no `confirm.request` and drops the call.
+3. The next `listen.start` within the timeout is the confirmation turn. The server cancels the timer at that `listen.start`. The confirmation turn makes no LLM call.
+4. The server matches the transcript of the confirmation turn with the exact-match rule (below). Yes → run the held call once, then speak "Done." or "That did not work.". Anything else → cancel and speak "Cancelled.".
+5. Timeout: 10 s after `reply.end` with no `listen.start`, the server drops the call and sends `error {turn, code: confirm_timeout}`.
+6. `abort` and the close of the connection drop the held call. A `listen.start` refused with `too_many_turns` does not drop it, and the timer goes on.
+
+### Exact-match rule
+1. Make the transcript lowercase.
+2. Remove punctuation and spaces at the start and at the end.
+3. The result must be equal to one yes word of the session language. Other languages do not count.
+
+| Language | Yes words |
+|---|---|
+| `en` | `yes`, `yeah` |
+| `pl` | `tak` |
+| `uk` | `так` |
+
+"Yes." and " YES! " are a yes. "Yes please" and "yes, do it" are not a yes.
+
+### Fixed texts
+The server speaks only these texts in the confirm flow. They are the same as in `server/src/ota_server/hub/confirm_text.py`. `{what}` is the source name and the bare tool name, for example `device set_volume`.
+
+| Text | `en` | `pl` | `uk` |
+|---|---|---|---|
+| Question | Should I run {what}? Say yes to confirm. | Czy mam uruchomić {what}? Powiedz tak, aby potwierdzić. | Запустити {what}? Скажіть так, щоб підтвердити. |
+| Done | Done. | Gotowe. | Готово. |
+| Failed | That did not work. | To się nie udało. | Це не вдалося. |
+| Cancelled | Cancelled. | Anulowano. | Скасовано. |
 
 ## Long replies ("continue")
 - TTS stops after 60 s of reply audio (a fixed cap): `reply.end {reason: cap}`.
@@ -79,6 +104,8 @@ Errors are never sent as audio, so they work even when TTS is down.
 
 ## Device tools
 Fixed on the server (the device cannot add tools): `set_volume {level 0..100}`, `set_face {face}`, `get_status {}`.
+`set_volume` needs a spoken yes (confirm flow). `set_face` and `get_status` do not.
+MCP tools need a spoken yes, unless the servers file lists them in `no_confirm` (see [security](security.md)).
 
 ## Versioning
 `proto` is an integer. Unknown → close 4426.
