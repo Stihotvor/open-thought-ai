@@ -64,6 +64,7 @@ class DeviceSession:  # pylint: disable=too-many-instance-attributes  # one devi
         turn_limit: TokenBucket | None = None,
         history_turns: int = 15,
         mcp_sources: Sequence[ToolSource] = (),
+        language: str = "en",
     ) -> None:
         # Chat memory of this connection only: what the device really played.
         self.history: deque[tuple[str, str]] = deque(maxlen=history_turns)
@@ -81,7 +82,7 @@ class DeviceSession:  # pylint: disable=too-many-instance-attributes  # one devi
         self.open_turn: int | None = None
         self.pending = PendingCalls()  # tool calls that wait for the device's tool.result
         # One hub per session; the external sources and their connections are shared.
-        self.hub = McpHub([DeviceSource(self.ws.send_json, self.pending), *mcp_sources])
+        self.hub = McpHub([DeviceSource(self.ws.send_json, self.pending), *mcp_sources], language)
 
     async def handle_text(self, msg: dict[str, Any]) -> None:
         match msg["type"]:
@@ -137,7 +138,7 @@ class DeviceSession:  # pylint: disable=too-many-instance-attributes  # one devi
             return
         await self.ws.send_json({"type": "state", "turn": turn, "state": "thinking"})
         queue: ReplyQueue = asyncio.Queue(maxsize=PREFETCH)
-        producer = asyncio.create_task(self.produce(pcm, history, queue, self.notifier(turn)))
+        producer = asyncio.create_task(self.produce(turn, pcm, history, queue, self.notifier(turn)))
         played: list[ReplyChunk] = []
         try:
             await self.play(turn, queue, played)
@@ -168,11 +169,11 @@ class DeviceSession:  # pylint: disable=too-many-instance-attributes  # one devi
         return notify
 
     async def produce(
-        self, pcm: bytes, history: History, queue: ReplyQueue, notify: Notify
+        self, turn: int, pcm: bytes, history: History, queue: ReplyQueue, notify: Notify
     ) -> None:
         """Put each reply chunk on the queue, then END, or the exception that ended it."""
         try:
-            source = self.reply_source(pcm, history, notify=notify, tools=self.turn_tools())
+            source = self.reply_source(pcm, history, notify=notify, tools=self.turn_tools(turn))
             async with contextlib.aclosing(source) as chunks:
                 async for chunk in chunks:
                     await queue.put(chunk)
@@ -180,9 +181,9 @@ class DeviceSession:  # pylint: disable=too-many-instance-attributes  # one devi
         except Exception as exc:  # pylint: disable=broad-exception-caught  # play() reports it
             await queue.put(exc)
 
-    def turn_tools(self) -> ToolContext:
+    def turn_tools(self, turn: int = 0) -> ToolContext:
         """The session's hub with a new CallCtx: the call cap lives for one turn (D5, D7)."""
-        return self.hub.turn_context()
+        return self.hub.turn_context(turn)
 
     async def play(self, turn: int, queue: ReplyQueue, played: list[ReplyChunk]) -> None:
         clock = time.monotonic()

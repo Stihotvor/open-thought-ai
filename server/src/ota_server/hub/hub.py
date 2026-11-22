@@ -70,7 +70,8 @@ class TurnTools:
 
 
 class McpHub:
-    def __init__(self, sources: Sequence[ToolSource]) -> None:
+    def __init__(self, sources: Sequence[ToolSource], language: str = "en") -> None:
+        self._language = language  # the session language (D5)
         self._sources = _keep_sources(sources)
         self._specs = _keep_specs(self._sources)
         self._chain = build_chain(
@@ -100,8 +101,8 @@ class McpHub:
         log.info("tool call %s ok=%s code=%s", call.name, outcome.ok, outcome.code)
         return outcome
 
-    def turn_context(self) -> TurnTools:
-        return TurnTools(self, CallCtx())
+    def turn_context(self, turn: int = 0) -> TurnTools:
+        return TurnTools(self, CallCtx(turn=turn))
 
     async def _terminal(self, call: ToolCall, ctx: CallCtx) -> ToolOutcome:
         source_name, _, tool = call.name.partition(SEP)

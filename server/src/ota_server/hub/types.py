@@ -40,10 +40,11 @@ class ToolOutcome:
 
 @dataclass
 class CallCtx:
-    """One per turn; counts calls across all rounds."""
+    """One per turn; counts calls across all rounds. turn is the session turn id."""
 
     calls: int = 0
     max_calls: int = MAX_TOOL_CALLS
+    turn: int = 0
 
 
 @dataclass(frozen=True)

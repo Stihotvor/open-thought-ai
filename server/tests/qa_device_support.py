@@ -109,7 +109,7 @@ class Run:
         self.session = new_session(self.endpoint, self.socket)
         self.outcomes: list[tuple[ToolOutcome, float]] = []
         real = self.session.turn_tools
-        self.session.turn_tools = lambda: Recorder(real(), self.outcomes)  # type: ignore[method-assign]
+        self.session.turn_tools = lambda turn=0: Recorder(real(turn), self.outcomes)  # type: ignore[method-assign]
 
     @property
     def codes(self) -> list[str | None]:

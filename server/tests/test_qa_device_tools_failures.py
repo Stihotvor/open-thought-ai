@@ -57,7 +57,7 @@ def test_qa_033_answer_at_1_9_s() -> None:
     run.socket = SlowDevice(result(result="real"), 1.9)
     run.socket.session = run.session = new_session(run.endpoint, run.socket)
     real = run.session.turn_tools
-    run.session.turn_tools = lambda: Recorder(real(), run.outcomes)  # type: ignore[method-assign]
+    run.session.turn_tools = lambda turn=0: Recorder(real(turn), run.outcomes)  # type: ignore[method-assign]
     run.go()
     assert run.codes == [None]
     assert tool_messages(run.endpoint.chats[1])[0].endswith("real")

@@ -82,9 +82,9 @@ def test_qa_005_extra_tool_source() -> None:
     ping = Ping()
     run = Run([("", [("fake__ping", "{}")]), TEXT])
     session = run.session
-    session.turn_tools = lambda: McpHub(  # type: ignore[method-assign]
+    session.turn_tools = lambda turn=0: McpHub(  # type: ignore[method-assign]
         [DeviceSource(session.ws.send_json, session.pending), ping]
-    ).turn_context()
+    ).turn_context(turn)
     run.go()
     assert ping.ran == 1
     assert tool_messages(run.endpoint.chats[1])[0].endswith("pong")

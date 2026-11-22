@@ -155,7 +155,7 @@ def test_no_tool_result_times_out(monkeypatch: pytest.MonkeyPatch) -> None:
     session = new_session(endpoint, socket)
     outcomes: list[tuple[ToolOutcome, float]] = []
     real = session.turn_tools
-    monkeypatch.setattr(session, "turn_tools", lambda: Recorder(real(), outcomes))
+    monkeypatch.setattr(session, "turn_tools", lambda turn=0: Recorder(real(turn), outcomes))
     asyncio.run(run_turn(session))
     [(outcome, waited)] = outcomes
     assert outcome.code == "tool_timeout"
