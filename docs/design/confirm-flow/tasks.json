@@ -105,7 +105,9 @@
       "done_when": "cd server && pytest tests/test_confirm_release.py passes: with the gate claimed by ctx.turn, confirmation(yes word) runs the held call exactly once and returns Done.; a second yes runs 0 more (M2); no, yes but later, empty text return Cancelled. with 0 calls (M3); confirmation returns None when the gate is not claimed by this turn; a failing source returns the failure text and McpHub does not raise (F1, F2); an exception drops the call and returns Cancelled. (F4); held_question returns the fixed question only for the holding turn; _release does not count against the cap (E9) and is not on ToolContext; ruff and mypy report 0 errors",
       "files": [
         "server/src/ota_server/hub/hub.py",
-        "server/tests/test_confirm_release.py"
+        "server/tests/test_confirm_release.py",
+        "server/src/ota_server/hub/confirm.py",
+        "server/tests/test_confirm_gate.py"
       ],
       "agent": "python-lead"
     },

@@ -79,11 +79,14 @@ class ConfirmGate:
         if self.holding_turn() == turn:
             self.drop()
 
+    def holding(self) -> Held | None:
+        """The call in phase held, else None."""
+        return self._held if self._phase == "held" else None
+
     def holding_turn(self) -> int | None:
         """The turn of a call in phase held, else None."""
-        if self._held is None or self._phase != "held":
-            return None
-        return self._held.turn
+        held = self.holding()
+        return None if held is None else held.turn
 
     def claimed_by(self, turn: int) -> bool:
         """True when a call is claimed by `turn`."""

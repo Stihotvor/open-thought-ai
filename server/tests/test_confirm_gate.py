@@ -106,3 +106,14 @@ def test_arm_and_claim_need_the_right_phase() -> None:
     gate.arm(3)
     assert gate.pop() is None
     assert gate.holding_turn() is None
+
+
+def test_holding_returns_the_call_only_in_phase_held() -> None:
+    gate, h = ConfirmGate(), held(3)
+    assert gate.holding() is None
+    gate.hold(h)
+    assert gate.holding() is h
+    gate.arm(3)
+    assert gate.holding() is None
+    gate.claim(4)
+    assert gate.holding() is None

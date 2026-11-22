@@ -7,8 +7,9 @@ import logging
 from collections.abc import Sequence
 from typing import Any
 
+from ota_server.hub import confirm_text
 from ota_server.hub.chain import build_chain
-from ota_server.hub.confirm import ConfirmGate
+from ota_server.hub.confirm import ConfirmGate, Held
 from ota_server.hub.steps import confirm, limit, resolve, validate, wrap
 from ota_server.hub.types import (
     SEP,
@@ -56,6 +57,11 @@ def _keep_specs(sources: dict[str, ToolSource]) -> dict[str, ToolSpec]:
     return kept
 
 
+def _text(texts: dict[str, str], language: str) -> str:
+    """The fixed text for `language`; English for an unknown language, so it never raises."""
+    return texts.get(language, texts["en"])
+
+
 class TurnTools:
     """The ToolContext of one turn: one CallCtx shared by all its calls."""
 
@@ -68,6 +74,36 @@ class TurnTools:
 
     async def run(self, call: ToolCall) -> ToolOutcome:
         return await self._hub.run(call, self._ctx)
+
+    def held_question(self) -> str | None:
+        """The fixed question when this turn holds a call in phase held, else None (D7)."""
+        held = self._hub.gate.holding()
+        if held is None or held.turn != self._ctx.turn:
+            return None
+        source, _, tool = held.name.partition(SEP)
+        language = self._hub._language
+        return confirm_text.question(
+            language if language in confirm_text.QUESTION else "en", source, tool
+        )
+
+    async def confirmation(self, text: str) -> str | None:
+        """Answer a call claimed by this turn: run it once on a yes, else cancel (D6).
+
+        None when no call is claimed by this turn. Never raises, except on cancel (F4).
+        """
+        gate, language = self._hub.gate, self._hub._language
+        if not gate.claimed_by(self._ctx.turn):
+            return None
+        try:
+            held = gate.pop()  # gone before the run: a second yes runs nothing (T3)
+            if held is None or not confirm_text.is_yes(text, language):
+                return _text(confirm_text.CANCELLED, language)
+            outcome = await self._hub._release(held)
+            return _text(confirm_text.DONE if outcome.ok else confirm_text.FAILED, language)
+        except Exception:
+            log.exception("confirmation failed; the held call is dropped")
+            gate.drop()
+            return _text(confirm_text.CANCELLED, language)
 
 
 class McpHub:
@@ -84,6 +120,7 @@ class McpHub:
             confirm(self._specs, self._gate),
         ]
         self._chain = build_chain(steps, self._terminal)
+        self._release_chain = build_chain([wrap()], self._terminal)  # no limit (E9)
 
     @property
     def gate(self) -> ConfirmGate:
@@ -115,6 +152,17 @@ class McpHub:
 
     def turn_context(self, turn: int = 0) -> TurnTools:
         return TurnTools(self, CallCtx(turn=turn))
+
+    async def _release(self, held: Held) -> ToolOutcome:
+        """Run a confirmed call: wrap and terminal only. Never raises, except on cancel."""
+        call = ToolCall(held.call_id, held.name, held.args)
+        try:
+            outcome = await self._release_chain(call, CallCtx(turn=held.turn))
+        except Exception:
+            log.exception("released tool call %s failed", held.name)
+            outcome = ToolOutcome(False, "tool failed", "internal")
+        log.info("released tool call %s ok=%s code=%s", held.name, outcome.ok, outcome.code)
+        return outcome
 
     async def _terminal(self, call: ToolCall, ctx: CallCtx) -> ToolOutcome:
         source_name, _, tool = call.name.partition(SEP)
