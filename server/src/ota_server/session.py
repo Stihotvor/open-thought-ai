@@ -5,12 +5,13 @@ import contextlib
 import logging
 import time
 from collections import deque
-from collections.abc import AsyncGenerator, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 from dataclasses import replace
 from typing import Any
 
 from fastapi import WebSocket
 
+from .hub.confirm import Held
 from .hub.device_source import DeviceSource
 from .hub.hub import McpHub
 from .hub.pending import PendingCalls
@@ -38,6 +39,7 @@ log = logging.getLogger(__name__)
 
 PREFETCH = 2  # reply chunks made ahead of playback: TTS runs while the device plays
 END = None  # the queue item after the last chunk
+CONFIRM_TIMEOUT_S = 10  # a held call waits this long for its answer turn (confirm.request)
 # Chunks, then END, or the exception that ended the source.
 ReplyQueue = asyncio.Queue[ReplyChunk | Exception | None]
 
@@ -65,6 +67,7 @@ class DeviceSession:  # pylint: disable=too-many-instance-attributes  # one devi
         history_turns: int = 15,
         mcp_sources: Sequence[ToolSource] = (),
         language: str = "en",
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         # Chat memory of this connection only: what the device really played.
         self.history: deque[tuple[str, str]] = deque(maxlen=history_turns)
@@ -83,6 +86,8 @@ class DeviceSession:  # pylint: disable=too-many-instance-attributes  # one devi
         self.pending = PendingCalls()  # tool calls that wait for the device's tool.result
         # One hub per session; the external sources and their connections are shared.
         self.hub = McpHub([DeviceSource(self.ws.send_json, self.pending), *mcp_sources], language)
+        self.sleep = sleep  # injectable clock for the confirm timer
+        self.confirm_timer: asyncio.Task[None] | None = None
 
     async def handle_text(self, msg: dict[str, Any]) -> None:
         match msg["type"]:
@@ -93,18 +98,14 @@ class DeviceSession:  # pylint: disable=too-many-instance-attributes  # one devi
                         {"type": "error", "turn": self.turn, "code": "too_many_turns"}
                     )
                     return
-                await self.cancel_reply()
-                self.turn = (self.turn + 1) % 256
-                self.audio.clear()
-                self.listening = True
-                self.credit = START_CREDIT  # credit counts per turn and adds up from here
-                await self.ws.send_json({"type": "turn.start", "turn": self.turn})
+                await self.start_listening()
             case "listen.stop":
                 if msg.get("turn") == self.turn and self.listening:
                     self.start_reply()
             case "abort":
                 if msg.get("turn") == self.turn:
                     await self.cancel_reply()
+                    await self.drop_confirm()
             case "audio.credit":
                 granted = msg.get("bytes")
                 if not isinstance(granted, int) or granted <= 0:
@@ -115,6 +116,19 @@ class DeviceSession:  # pylint: disable=too-many-instance-attributes  # one devi
                 self.pending.resolve(msg)
             case other:
                 log.info("ignored message type %s", other)
+
+    async def start_listening(self) -> None:
+        old = self.turn
+        await self.cancel_reply()
+        self.turn = (self.turn + 1) % 256
+        # A claim left by the older turn (its listen.stop never came) is dropped first (D9).
+        self.hub.gate.drop_if_claimed(old)
+        if self.hub.gate.claim(self.turn):  # E2: this turn answers the armed call
+            await self.stop_timer()
+        self.audio.clear()
+        self.listening = True
+        self.credit = START_CREDIT  # credit counts per turn and adds up from here
+        await self.ws.send_json({"type": "turn.start", "turn": self.turn})
 
     def handle_audio(self, frame: bytes) -> None:
         turn, pcm = split_audio(frame)
@@ -134,6 +148,7 @@ class DeviceSession:  # pylint: disable=too-many-instance-attributes  # one devi
     async def reply(self, turn: int, pcm: bytes, history: History = ()) -> None:
         # A cheap length pre-filter: MIN_SPEECH_MS in vad.py is the real speech check.
         if len(pcm) < MIN_SPEECH:
+            self.hub.gate.drop_if_claimed(turn)  # E6: no answer, the call is gone
             await self.finish({"type": "error", "turn": turn, "code": "no_speech"})
             return
         await self.ws.send_json({"type": "state", "turn": turn, "state": "thinking"})
@@ -141,12 +156,50 @@ class DeviceSession:  # pylint: disable=too-many-instance-attributes  # one devi
         producer = asyncio.create_task(self.produce(turn, pcm, history, queue, self.notifier(turn)))
         played: list[ReplyChunk] = []
         try:
-            await self.play(turn, queue, played)
+            if await self.play(turn, queue, played) == "done":
+                await self.ask_confirm(turn)
         finally:
+            # Also on cancel: a call held but never asked, or claimed but never answered.
+            self.hub.gate.drop_if_held(turn)
+            self.hub.gate.drop_if_claimed(turn)
             self.remember(played)  # also after the cap, an error or an abort
             producer.cancel()  # cap, abort or error: stop the remaining TTS calls
             with contextlib.suppress(asyncio.CancelledError):
                 await producer
+
+    async def ask_confirm(self, turn: int) -> None:
+        """After a full reply: arm a call this turn held, ask the device, start the timer."""
+        token = self.hub.gate.arm(turn)
+        if token is None:
+            return
+        await self.ws.send_json({"type": "state", "turn": turn, "state": "confirm"})
+        await self.ws.send_json(
+            {
+                "type": "confirm.request",
+                "turn": turn,
+                "tool": token.name,
+                "timeout_ms": CONFIRM_TIMEOUT_S * 1000,
+            }
+        )
+        self.confirm_timer = asyncio.create_task(self.expire_later(token))
+
+    async def expire_later(self, token: Held) -> None:
+        await self.sleep(CONFIRM_TIMEOUT_S)
+        if self.hub.gate.expire(token):
+            msg = {"type": "error", "turn": token.turn, "code": "confirm_timeout"}
+            await self.ws.send_json(msg)
+
+    async def stop_timer(self) -> None:
+        timer, self.confirm_timer = self.confirm_timer, None
+        if timer is not None:
+            timer.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await timer
+
+    async def drop_confirm(self) -> None:
+        """Abort or close: the held call is gone in any phase (E3, E4)."""
+        self.hub.gate.drop()
+        await self.stop_timer()
 
     def remember(self, played: list[ReplyChunk]) -> None:
         """Keep the question and the chunks the device played. A chunk cut by the cap, an
@@ -185,7 +238,8 @@ class DeviceSession:  # pylint: disable=too-many-instance-attributes  # one devi
         """The session's hub with a new CallCtx: the call cap lives for one turn (D5, D7)."""
         return self.hub.turn_context(turn)
 
-    async def play(self, turn: int, queue: ReplyQueue, played: list[ReplyChunk]) -> None:
+    async def play(self, turn: int, queue: ReplyQueue, played: list[ReplyChunk]) -> str:
+        """Play the reply; return the reply.end reason, or "error" when it failed first."""
         clock = time.monotonic()
         sent, reason, speaking = 0, "done", False  # speaking: reply.start was sent
         while (item := await queue.get()) is not END:
@@ -195,7 +249,7 @@ class DeviceSession:  # pylint: disable=too-many-instance-attributes  # one devi
                     log.error("reply failed", exc_info=item)
                 if not speaking:
                     await self.finish({"type": "error", "turn": turn, "code": code})
-                    return
+                    return "error"
                 log.warning("reply failed after audio started: %s", code)
                 reason = "error"
                 break
@@ -218,6 +272,7 @@ class DeviceSession:  # pylint: disable=too-many-instance-attributes  # one devi
         if not speaking:
             await self.start_speaking(turn)  # an empty reply still starts and ends
         await self.finish({"type": "reply.end", "turn": turn, "reason": reason})
+        return reason
 
     async def start_speaking(self, turn: int) -> bool:
         await self.ws.send_json({"type": "state", "turn": turn, "state": "speaking"})
@@ -264,6 +319,7 @@ class DeviceSession:  # pylint: disable=too-many-instance-attributes  # one devi
         """The socket closed: end every waiting tool call, then the reply."""
         self.pending.fail_all()
         await self.cancel_reply()
+        await self.drop_confirm()
 
     async def cancel_reply(self) -> None:
         task, self.reply_task = self.reply_task, None
