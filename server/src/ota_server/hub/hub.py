@@ -57,11 +57,6 @@ def _keep_specs(sources: dict[str, ToolSource]) -> dict[str, ToolSpec]:
     return kept
 
 
-def _text(texts: dict[str, str], language: str) -> str:
-    """The fixed text for `language`; English for an unknown language, so it never raises."""
-    return texts.get(language, texts["en"])
-
-
 class TurnTools:
     """The ToolContext of one turn: one CallCtx shared by all its calls."""
 
@@ -81,29 +76,26 @@ class TurnTools:
         if held is None or held.turn != self._ctx.turn:
             return None
         source, _, tool = held.name.partition(SEP)
-        language = self._hub._language
-        return confirm_text.question(
-            language if language in confirm_text.QUESTION else "en", source, tool
-        )
+        return confirm_text.question(self._hub.language, source, tool)
 
     async def confirmation(self, text: str) -> str | None:
         """Answer a call claimed by this turn: run it once on a yes, else cancel (D6).
 
         None when no call is claimed by this turn. Never raises, except on cancel (F4).
         """
-        gate, language = self._hub.gate, self._hub._language
+        gate, language = self._hub.gate, self._hub.language
         if not gate.claimed_by(self._ctx.turn):
             return None
         try:
             held = gate.pop()  # gone before the run: a second yes runs nothing (T3)
             if held is None or not confirm_text.is_yes(text, language):
-                return _text(confirm_text.CANCELLED, language)
+                return confirm_text.cancelled(language)
             outcome = await self._hub._release(held)
-            return _text(confirm_text.DONE if outcome.ok else confirm_text.FAILED, language)
+            return confirm_text.done(language) if outcome.ok else confirm_text.failed(language)
         except Exception:
             log.exception("confirmation failed; the held call is dropped")
             gate.drop()
-            return _text(confirm_text.CANCELLED, language)
+            return confirm_text.cancelled(language)
 
 
 class McpHub:
@@ -121,6 +113,11 @@ class McpHub:
         ]
         self._chain = build_chain(steps, self._terminal)
         self._release_chain = build_chain([wrap()], self._terminal)  # no limit (E9)
+
+    @property
+    def language(self) -> str:
+        """The session language (D5); read-only."""
+        return self._language
 
     @property
     def gate(self) -> ConfirmGate:

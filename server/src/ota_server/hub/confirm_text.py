@@ -25,21 +25,26 @@ YES_WORDS: dict[str, frozenset[str]] = {
 _STRIP = string.whitespace + string.punctuation + "…«»„“”‘’¡¿–—"
 
 
+def _pick(texts: dict[str, str], language: str) -> str:
+    """The text for ``language``; English for an unknown language, so it never raises."""
+    return texts.get(language, texts["en"])
+
+
 def question(language: str, source: str, tool: str) -> str:
     """The fixed question; ``tool`` is the bare name (the caller splits on ``SEP``)."""
-    return QUESTION[language].format(what=f"{source} {tool}")
+    return _pick(QUESTION, language).format(what=f"{source} {tool}")
 
 
 def done(language: str) -> str:
-    return DONE[language]
+    return _pick(DONE, language)
 
 
 def failed(language: str) -> str:
-    return FAILED[language]
+    return _pick(FAILED, language)
 
 
 def cancelled(language: str) -> str:
-    return CANCELLED[language]
+    return _pick(CANCELLED, language)
 
 
 def is_yes(text: str, language: str) -> bool:

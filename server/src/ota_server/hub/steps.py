@@ -1,5 +1,6 @@
 """Chain steps: resolve, limit, validate, confirm and wrap. Each factory returns a Step."""
 
+import copy
 import logging
 from collections.abc import Mapping
 from typing import Any
@@ -74,7 +75,7 @@ def confirm(specs: Mapping[str, ToolSpec], gate: ConfirmGate) -> Step:
 def _hold(gate: ConfirmGate, call: ToolCall, ctx: CallCtx) -> ToolOutcome:
     try:
         args = call.args if isinstance(call.args, dict) else {}
-        held = Held(call.name, dict(args), call.id, ctx.turn)
+        held = Held(call.name, copy.deepcopy(args), call.id, ctx.turn)
         return HELD if gate.hold(held) else BUSY
     except Exception:
         log.error("confirm step failed for %s; nothing runs", call.name, exc_info=True)

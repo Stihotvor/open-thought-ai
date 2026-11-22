@@ -58,3 +58,12 @@ def test_the_question_names_what_runs(language: str) -> None:
     text = question(language, "device", "set_volume")
     assert "device" in text
     assert "set_volume" in text
+
+
+def test_an_unknown_language_falls_back_to_english() -> None:
+    assert question("xx", "device", "set_volume") == question("en", "device", "set_volume")
+    assert (done("xx"), failed("xx"), cancelled("xx")) == (
+        "Done.",
+        "That did not work.",
+        "Cancelled.",
+    )

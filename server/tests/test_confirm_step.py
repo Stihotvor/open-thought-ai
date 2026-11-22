@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 
 import ota_server.hub.hub as hub_module
+import ota_server.hub.steps as steps_module
 from ota_server.hub.confirm import ConfirmGate, Held
 from ota_server.hub.hub import McpHub
 from ota_server.hub.types import CallCtx, Next, Step, ToolCall, ToolOutcome, ToolSpec
@@ -167,3 +168,22 @@ def test_held_call_counts_toward_the_cap() -> None:
     outcome = run(hub, "device__set_face", ctx, call_id="c5")
     assert outcome.code == "call_limit"
     assert source.calls == []
+
+
+def test_held_args_are_a_deep_copy() -> None:
+    gate = ConfirmGate()
+    step = steps_module.confirm({}, gate)
+    tags: list[str] = ["a"]
+    inner: list[int] = [1]
+    call = ToolCall("c1", "notes__add", {"tags": tags, "meta": {"k": inner}})
+
+    async def never(_call: ToolCall, _ctx: CallCtx) -> ToolOutcome:
+        raise AssertionError("a held call never runs")
+
+    outcome = asyncio.run(asyncio.wait_for(step(call, CallCtx(turn=1), never), 1))
+    assert outcome.code == "confirm_required"
+    tags.append("b")
+    inner.append(2)
+    held = held_call(gate, 1)
+    assert held is not None
+    assert held.args == {"tags": ["a"], "meta": {"k": [1]}}

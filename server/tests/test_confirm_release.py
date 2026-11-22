@@ -162,3 +162,18 @@ def test_release_is_private() -> None:
     members = set(vars(ToolContext))
     assert "_release" not in members
     assert "run" in members
+
+
+def test_hub_language_is_public_and_read_only() -> None:
+    hub = McpHub([CountingSource()], "pl")
+    assert hub.language == "pl"
+    with pytest.raises(AttributeError):
+        hub.language = "en"  # type: ignore[misc]
+
+
+def test_unknown_language_question_is_english() -> None:
+    hub = McpHub([CountingSource()], "xx")
+    assert hub.gate.hold(held(3))
+    assert (
+        hub.turn_context(3).held_question() == "Should I run device set_volume? Say yes to confirm."
+    )
