@@ -80,6 +80,14 @@ class ToolContext(Protocol):
         """Run one call through the chain; never raises."""
         ...
 
+    async def confirmation(self, text: str) -> str | None:
+        """The reply to a confirmation turn, or None for a normal turn (confirm-flow D6)."""
+        ...
+
+    def held_question(self) -> str | None:
+        """The fixed question when this turn holds a call, else None (confirm-flow D7)."""
+        ...
+
 
 Next = Callable[[ToolCall, CallCtx], Awaitable[ToolOutcome]]
 Step = Callable[[ToolCall, CallCtx, Next], Awaitable[ToolOutcome]]

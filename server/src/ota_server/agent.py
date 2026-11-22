@@ -4,7 +4,8 @@ With a ToolContext, chat runs in rounds. A round that asks for tools runs them i
 (the wait extends the turn budget) and the next round sees their results. After
 MAX_TOOL_ROUNDS a last round gets tool_choice "none". Text of every round is spoken; the
 unfinished tail is flushed at each round end (D11). Tool messages go to a local copy of
-the chat messages only: never to History or moderation.
+the chat messages only: never to History or moderation. A call held for confirmation
+ends the rounds: its fixed question is the last sentence (confirm-flow D8).
 """
 
 import contextlib
@@ -135,6 +136,21 @@ async def tool_rounds(
         if final:
             raise ProviderError(CHAT)
         messages = [*messages, *await run_tools(text, done, tools, budget)]
+        question = tools.held_question()
+        if question is not None:  # a held call: only its fixed question follows (D8)
+            feed.put(question)
+            return
+
+
+async def confirmation_reply(tools: ToolContext | None, text: str, feed: Feed) -> bool:
+    """Ask the hub whether text answers a held call. If so, its reply is the whole feed and
+    the turn makes no chat call (confirm-flow D8); return True."""
+    reply = None if tools is None else await tools.confirmation(text)
+    if reply is None:
+        return False
+    feed.put(reply)
+    feed.end()
+    return True
 
 
 async def read_chat(

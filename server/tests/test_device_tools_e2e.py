@@ -96,6 +96,12 @@ class Recorder:
         self.log.append((outcome, time.monotonic() - started))
         return outcome
 
+    async def confirmation(self, text: str) -> str | None:
+        return await self.inner.confirmation(text)
+
+    def held_question(self) -> str | None:
+        return self.inner.held_question()
+
 
 class NoConfirmDevice(DeviceSource):
     """The device source with confirm off: these tests run the tools, not the yes flow."""
