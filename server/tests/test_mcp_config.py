@@ -192,3 +192,28 @@ def test_example_servers_file_loads(caplog: pytest.LogCaptureFixture) -> None:
     assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
     assert all(isinstance(e["tools"], dict) for e in raw)
     assert servers[0].headers == {"Authorization": "MCP_SECRET_N8N"}
+
+
+def test_no_confirm_unknown_tool_skips_entry(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    with caplog.at_level(logging.ERROR):
+        servers = load_servers(_write(tmp_path, [_entry(tools={"a": PIN}, no_confirm=["b"])]))
+    assert servers == []
+    assert any(r.levelno == logging.ERROR for r in caplog.records)
+
+
+@pytest.mark.parametrize("transport", ["http", "stdio"])
+def test_no_confirm_valid(tmp_path: Path, transport: str) -> None:
+    entry = _entry(transport, tools={"a": PIN}, no_confirm=["a"])
+    servers = load_servers(_write(tmp_path, [entry]))
+    assert servers[0].no_confirm == ["a"]
+
+
+def test_no_confirm_defaults_to_empty(tmp_path: Path) -> None:
+    assert load_servers(_write(tmp_path, [_entry()]))[0].no_confirm == []
+
+
+@pytest.mark.parametrize("value", ["a", [1], {"a": True}, None])
+def test_no_confirm_not_a_list_of_strings(tmp_path: Path, value: Any) -> None:
+    assert load_servers(_write(tmp_path, [_entry(no_confirm=value)])) == []

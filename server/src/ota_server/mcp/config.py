@@ -53,6 +53,7 @@ class McpServerConfig:
     timeout: float = DEFAULT_TIMEOUT
     tools: dict[str, str] = field(default_factory=dict)
     headers: dict[str, str] = field(default_factory=dict)
+    no_confirm: list[str] = field(default_factory=list)
 
 
 def load_servers(path: str) -> list[McpServerConfig]:
@@ -116,16 +117,30 @@ def _parse_entry(entry: Any) -> McpServerConfig:
     timeout = _check_timeout(entry.get("timeout", DEFAULT_TIMEOUT))
     tools = _check_tools(name, entry.get("tools"))
     headers = _check_headers(entry)
+    no_confirm = _check_no_confirm(entry.get("no_confirm", []), tools)
     if transport in REMOTE:
         if "env" in entry:
             raise ValueError("env is allowed for stdio only")
         url = _check_url(entry.get("url"))
         return McpServerConfig(
-            name, transport, url=url, timeout=timeout, tools=tools, headers=headers
+            name,
+            transport,
+            url=url,
+            timeout=timeout,
+            tools=tools,
+            headers=headers,
+            no_confirm=no_confirm,
         )
     command, args, env = _check_stdio(entry)
     return McpServerConfig(
-        name, transport, command=command, args=args, env=env, timeout=timeout, tools=tools
+        name,
+        transport,
+        command=command,
+        args=args,
+        env=env,
+        timeout=timeout,
+        tools=tools,
+        no_confirm=no_confirm,
     )
 
 
@@ -217,6 +232,16 @@ def _check_tools(server: str, tools: Any) -> dict[str, str]:
         else:
             log.error("mcp config server %r: tool name %r dropped (bad name)", server, tool)
     return kept
+
+
+def _check_no_confirm(no_confirm: Any, tools: Mapping[str, str]) -> list[str]:
+    """no_confirm opts allowlisted tools out of the spoken yes (D10); unknown names reject."""
+    if not _is_str_list(no_confirm):
+        raise ValueError("no_confirm must be a list of strings")
+    for tool in no_confirm:
+        if tool not in tools:
+            raise ValueError(f"no_confirm: {tool!r} is not a key of tools")
+    return list(no_confirm)
 
 
 def _is_str_list(value: Any) -> TypeGuard[list[str]]:

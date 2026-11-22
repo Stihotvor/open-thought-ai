@@ -208,3 +208,24 @@ def test_caller_cancel_is_reraised() -> None:
         assert task.cancelled()
 
     asyncio.run(run())
+
+
+def _flags(source: McpSource) -> dict[str, bool]:
+    return {spec.name: spec.confirm for spec in source.specs()}
+
+
+def test_default_mcp_specs_confirm() -> None:
+    source = _build(FakeConnection(["a", "b"]), ["a", "b"])
+    assert _flags(source) == {"a": True, "b": True}
+
+
+def test_opted_out_mcp_tool_does_not_confirm() -> None:
+    config = McpServerConfig(
+        name="srv",
+        transport="http",
+        url="https://h/mcp",
+        tools=dict.fromkeys(["a", "b"], PIN),
+        no_confirm=["a"],
+    )
+    source = asyncio.run(McpSource.build(config, FakeConnection(["a", "b"])))
+    assert _flags(source) == {"a": False, "b": True}

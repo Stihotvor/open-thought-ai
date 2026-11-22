@@ -93,10 +93,11 @@ def _build_specs(
                 "mcp %s: allowlisted tool %r is not on the server, ignored", config.name, name
             )
     allowed = set(config.tools)
+    no_confirm = set(config.no_confirm)
     specs: list[ToolSpec] = []
     for tool in tools:
         if tool.name in allowed and _admitted(config, tool, tool_filter):
-            spec = _to_spec(config.name, tool)
+            spec = _to_spec(config.name, tool, no_confirm)
             if spec is not None:
                 specs.append(spec)
     return specs
@@ -117,8 +118,15 @@ def _admitted(config: McpServerConfig, tool: RawTool, tool_filter: ToolFilter) -
         return False
 
 
-def _to_spec(server: str, tool: RawTool) -> ToolSpec | None:
-    spec = ToolSpec(source=server, name=tool.name, description=tool.description, schema=tool.schema)
+def _to_spec(server: str, tool: RawTool, no_confirm: set[str]) -> ToolSpec | None:
+    """MCP tools fail closed: confirm unless the operator opted the tool out (D10)."""
+    spec = ToolSpec(
+        source=server,
+        name=tool.name,
+        description=tool.description,
+        schema=tool.schema,
+        confirm=tool.name not in no_confirm,
+    )
     if not TOOL_NAME.fullmatch(spec.full_name):
         log.error("mcp %s: tool %r dropped, bad full name %r", server, tool.name, spec.full_name)
         return None
