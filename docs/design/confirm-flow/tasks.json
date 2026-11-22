@@ -52,7 +52,11 @@
         "server/src/ota_server/session.py",
         "server/src/ota_server/main.py",
         "server/tests/test_hub.py",
-        "server/src/ota_server/gateway.py"
+        "server/src/ota_server/gateway.py",
+        "server/tests/qa_device_support.py",
+        "server/tests/test_device_tools_e2e.py",
+        "server/tests/test_qa_device_tools_failures.py",
+        "server/tests/test_qa_device_tools.py"
       ],
       "agent": "python-lead"
     },
