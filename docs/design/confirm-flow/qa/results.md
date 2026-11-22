@@ -1,6 +1,6 @@
 # QA results — confirm flow (issue #30)
 
-All tests: /home/yevhend/claude-projects/open-thought-ai/server/tests/test_qa_confirm_flow.py (test_qa_NNN_*). Full pytest: 928 passed, 1 skipped, 1 failed (QA-045).
+All tests: /home/yevhend/claude-projects/open-thought-ai/server/tests/test_qa_confirm_hub.py and server/tests/test_qa_confirm_session.py (helpers in qa_confirm_support.py) (test_qa_NNN_*). Full pytest (2026-11-23, after the split): 933 passed, 1 skipped, 0 failed.
 
 - QA-001 pass: test_qa_001_device_risky_tool_is_not_run_in_its_own_turn
 - QA-002 pass: test_qa_002_mcp_risky_tool_is_not_run_in_its_own_turn
