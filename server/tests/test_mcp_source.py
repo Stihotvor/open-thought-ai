@@ -63,16 +63,24 @@ class DenyFilter:
         return tool.name != self.denied
 
 
-def _config(tools: list[str], timeout: float = 10.0) -> McpServerConfig:
+def _config(
+    tools: list[str], timeout: float = 10.0, no_confirm: list[str] | None = None
+) -> McpServerConfig:
     pins = dict.fromkeys(tools, PIN)
     return McpServerConfig(
-        name="srv", transport="http", url="https://h/mcp", timeout=timeout, tools=pins
+        name="srv",
+        transport="http",
+        url="https://h/mcp",
+        timeout=timeout,
+        tools=pins,
+        no_confirm=no_confirm or [],
     )
 
 
 def _build(conn: FakeConnection, tools: list[str], **kw: Any) -> McpSource:
     timeout = kw.pop("timeout", 10.0)
-    return asyncio.run(McpSource.build(_config(tools, timeout), conn, **kw))
+    no_confirm = kw.pop("no_confirm", None)
+    return asyncio.run(McpSource.build(_config(tools, timeout, no_confirm), conn, **kw))
 
 
 def _names(source: McpSource) -> list[str]:
@@ -124,7 +132,9 @@ class RaisingFilter:
 
 def test_filter_raises_drops_only_that_tool(caplog: pytest.LogCaptureFixture) -> None:
     with caplog.at_level(logging.ERROR, logger="ota_server.mcp.source"):
-        source = _build(FakeConnection(["a", "b"]), ["a", "b"], tool_filter=RaisingFilter("a"))
+        source = _build(
+            FakeConnection(["a", "b"]), ["a", "b"], tool_filter=RaisingFilter("a"), no_confirm=["b"]
+        )
     assert _names(source) == ["srv__b"]
     errors = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
     assert any("srv" in m and "'a'" in m and "ValueError" in m for m in errors)

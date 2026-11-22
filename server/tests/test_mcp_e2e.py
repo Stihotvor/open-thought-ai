@@ -25,8 +25,10 @@ from fastapi.testclient import TestClient
 from mcp.server.fastmcp import FastMCP
 from mcp_fakes import STDIO_SCRIPT, FakeServer, assert_pid_gone, free_port
 from starlette.testclient import WebSocketTestSession
+from test_device_tools_e2e import NoConfirmDevice
 
 from ota_server import gateway
+from ota_server import session as session_module
 from ota_server.config import get_settings
 from ota_server.hub.hub import McpHub
 from ota_server.hub.types import CallCtx, ToolCall, ToolOutcome
@@ -211,6 +213,7 @@ def test_voice_turn_calls_an_mcp_tool(monkeypatch: pytest.MonkeyPatch, tmp_path:
     pins = real_pins(build())
     with served("http") as server:
         entry = {"name": "fake", "transport": "http", "url": server.url, "tools": pins}
+        entry["no_confirm"] = list(pins)
         use_servers(monkeypatch, tmp_path, [entry])
         with run_app(chat) as (app, client), connect(client) as ws:
             assert [s.name for s in app.state.mcp_sources] == ["fake"]
@@ -234,6 +237,7 @@ def test_server_down_device_tools_work(
         "tools": {"echo": "sha256:" + "0" * 64},
     }
     use_servers(monkeypatch, tmp_path, [entry])
+    monkeypatch.setattr(session_module, "DeviceSource", NoConfirmDevice)
     chat = ScriptChat(VOLUME)
     caplog.set_level(logging.WARNING, logger="ota_server.mcp.registry")
     with run_app(chat) as (app, client), connect(client) as ws:
@@ -303,7 +307,8 @@ def test_lifespan_wires_policy_and_filter(monkeypatch: pytest.MonkeyPatch, tmp_p
     pin = real_pins(pinned_build())["pinned"]
     with served("http") as server:
         tools = {"pinned": pin, "unpinned": "sha256:" + "1" * 64}  # a stale pin: not admitted
-        entry = {"name": "fake", "transport": "http", "url": server.url, "tools": tools}
+        entry = {"name": "fake", "transport": "http", "url": server.url, "tools": tools,
+                 "no_confirm": ["pinned"]}  # fmt: skip
         use_servers(monkeypatch, tmp_path, [entry])
         app = create_app()
         with TestClient(app) as client:

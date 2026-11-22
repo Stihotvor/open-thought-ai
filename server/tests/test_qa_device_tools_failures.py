@@ -23,6 +23,7 @@ from qa_device_support import (
 )
 from test_device_tools_e2e import (
     DeviceSocket,
+    NoConfirmDevice,
     Recorder,
     ends,
     never,
@@ -34,7 +35,6 @@ from test_device_tools_e2e import (
     wait_for_calls,
 )
 
-from ota_server.hub.device_source import DeviceSource
 from ota_server.hub.hub import McpHub
 from ota_server.hub.pending import DeviceResult, PendingCalls
 from ota_server.hub.steps import UNTRUSTED_PREFIX
@@ -170,7 +170,7 @@ def test_qa_045_call_frame_size() -> None:
             return DeviceResult(True, "ok")
 
     sent = ListSocket()
-    hub = McpHub([DeviceSource(sent.send_json, Fixed())])
+    hub = McpHub([NoConfirmDevice(sent.send_json, Fixed())])
     tools = hub.turn_context()
 
     async def scenario() -> None:

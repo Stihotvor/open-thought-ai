@@ -65,6 +65,7 @@ async def secret_entry(server: FakeServer, **over: Any) -> dict[str, Any]:
         "url": server.url,
         "tools": {"echo": pins["echo"]},
         "headers": {"X-Api-Key": "MCP_SECRET_N8N"},
+        "no_confirm": ["echo"],
     }
     return entry | over
 
@@ -122,7 +123,9 @@ class BoomPolicy:
 async def _dropped_then_called(policy: Any, caplog_name: str) -> tuple[list[ToolOutcome], bool]:
     server = FakeServer("http")
     await server.start()
-    config = McpServerConfig("alpha", "http", url=server.url, tools={"echo": PIN0})
+    config = McpServerConfig(
+        "alpha", "http", url=server.url, tools={"echo": PIN0}, no_confirm=["echo"]
+    )
     conn = await SdkConnection.open(config, policy)
     try:
         source = McpSource(config, conn, await conn.list_tools())
@@ -175,7 +178,9 @@ def test_qa_032_redirect_after_reconnect_fails_again() -> None:
     async def run() -> tuple[list[ToolOutcome], bool]:
         server = RedirectAfterServer("http")
         await server.start()
-        config = McpServerConfig("alpha", "http", url=server.url, tools={"echo": PIN0})
+        config = McpServerConfig(
+            "alpha", "http", url=server.url, tools={"echo": PIN0}, no_confirm=["echo"]
+        )
         conn = await SdkConnection.open(config, ALLOW_ALL)
         try:
             hub = McpHub([McpSource(config, conn, await conn.list_tools())])
@@ -205,6 +210,7 @@ def test_qa_037_secret_not_logged_on_failed_connect(
                 "url": server.url("http"),
                 "tools": {"echo": (await fake_pins())["echo"]},
                 "headers": {"X-Api-Key": "MCP_SECRET_N8N"},
+                "no_confirm": ["echo"],
             }
             names, _ = await start_and_echo(settings_for(tmp_path, [entry]))
             return names
@@ -320,6 +326,7 @@ def test_qa_090_n8n_config_only_setup(tmp_path: Path) -> None:
             "url": "http://n8n:5678/mcp",
             "tools": {"echo": pins["echo"]},
             "headers": {"X-Api-Key": "MCP_SECRET_N8N"},
+            "no_confirm": ["echo"],
         }
         settings = settings_for(tmp_path, [entry], allowed="n8n")
         configs = load_servers(settings.mcp_servers_file)
@@ -355,7 +362,9 @@ def test_qa_092_no_error_body_for_a_failed_call(caplog: pytest.LogCaptureFixture
     async def run() -> ToolOutcome:
         server = FakeServer("http")
         await server.start()
-        config = McpServerConfig("fake", "http", url=server.url, tools={"echo": PIN0})
+        config = McpServerConfig(
+            "fake", "http", url=server.url, tools={"echo": PIN0}, no_confirm=["echo"]
+        )
         conn = await SdkConnection.open(config, ALLOW_ALL)
         try:
             hub = McpHub([McpSource(config, conn, await conn.list_tools())])

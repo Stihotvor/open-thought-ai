@@ -8,6 +8,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 import pytest
+from test_device_tools_e2e import NoConfirmDevice
 
 from ota_server.hub.device_source import FACES, DeviceSource
 from ota_server.hub.hub import McpHub
@@ -60,7 +61,7 @@ def make_hub(
     pending: PendingCalls | None = None, send: FakeSend | None = None
 ) -> tuple[McpHub, FakeSend]:
     send = send or FakeSend()
-    source = DeviceSource(send, pending if pending is not None else FakePending())
+    source = NoConfirmDevice(send, pending if pending is not None else FakePending())
     return McpHub([source]), send
 
 
@@ -104,6 +105,14 @@ def test_timeout() -> None:
     assert "the device did not answer in time" in outcome.text
     assert 1.8 <= elapsed <= 2.2
     assert len(send.frames) == 1
+
+
+def test_real_volume_call_is_held() -> None:
+    send = FakeSend()
+    hub = McpHub([DeviceSource(send, FakePending())])
+    outcome = run(hub, "device__set_volume", {"level": 30})
+    assert outcome.code == "confirm_required"
+    assert send.frames == []
 
 
 def test_device_error() -> None:

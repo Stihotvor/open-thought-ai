@@ -83,7 +83,14 @@
         "server/tests/test_mcp_tool_safety.py",
         "server/tests/test_qa_device_tools.py",
         "server/tests/test_qa_mcp_transports.py",
-        "server/tests/test_qa_device_tools_failures.py"
+        "server/tests/test_qa_device_tools_failures.py",
+        "server/tests/mcp_qa_support.py",
+        "server/tests/mcp_fakes.py",
+        "server/tests/qa_support.py",
+        "server/tests/test_mcp_source.py",
+        "server/tests/test_qa_mcp_config.py",
+        "server/tests/test_qa_mcp_failures.py",
+        "server/tests/test_qa_tool_safety_net.py"
       ],
       "agent": "python-lead"
     },

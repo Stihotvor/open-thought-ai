@@ -8,7 +8,8 @@ from collections.abc import Sequence
 from typing import Any
 
 from ota_server.hub.chain import build_chain
-from ota_server.hub.steps import limit, resolve, validate, wrap
+from ota_server.hub.confirm import ConfirmGate
+from ota_server.hub.steps import confirm, limit, resolve, validate, wrap
 from ota_server.hub.types import (
     SEP,
     TOOL_NAME,
@@ -74,9 +75,20 @@ class McpHub:
         self._language = language  # the session language (D5)
         self._sources = _keep_sources(sources)
         self._specs = _keep_specs(self._sources)
-        self._chain = build_chain(
-            [wrap(), resolve(self._specs), limit(), validate(self._specs)], self._terminal
-        )
+        self._gate = ConfirmGate()  # one held call per session (D2)
+        steps = [
+            wrap(),
+            resolve(self._specs),
+            limit(),
+            validate(self._specs),
+            confirm(self._specs, self._gate),
+        ]
+        self._chain = build_chain(steps, self._terminal)
+
+    @property
+    def gate(self) -> ConfirmGate:
+        """The session's confirm gate; the session arms it (D9)."""
+        return self._gate
 
     def list_tools(self) -> list[dict[str, Any]]:
         return [

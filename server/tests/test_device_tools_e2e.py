@@ -5,13 +5,16 @@ import asyncio
 import json
 import time
 from collections.abc import AsyncGenerator, Callable
+from dataclasses import replace
 from typing import Any
 
 import httpx
 import pytest
 from fakes import SPEECH, Endpoint, ListSocket, pipeline_for, sse, tts_wav
 
-from ota_server.hub.types import ToolCall, ToolContext, ToolOutcome
+from ota_server.hub.device_source import DeviceSource
+from ota_server.hub.hub import McpHub
+from ota_server.hub.types import ToolCall, ToolContext, ToolOutcome, ToolSpec
 from ota_server.protocol import MAX_CREDIT
 from ota_server.reply import History, Notify, ReplyChunk, no_notify
 from ota_server.session import DeviceSession, echo
@@ -94,8 +97,16 @@ class Recorder:
         return outcome
 
 
+class NoConfirmDevice(DeviceSource):
+    """The device source with confirm off: these tests run the tools, not the yes flow."""
+
+    def specs(self) -> list[ToolSpec]:
+        return [replace(spec, confirm=False) for spec in super().specs()]
+
+
 def new_session(endpoint: Endpoint, socket: DeviceSocket) -> DeviceSession:
     session = DeviceSession(socket, pipeline_for(endpoint))  # type: ignore[arg-type]
+    session.hub = McpHub([NoConfirmDevice(socket.send_json, session.pending)])
     socket.session = session
     return session
 
