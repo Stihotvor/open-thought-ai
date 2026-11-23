@@ -15,6 +15,7 @@ from typing import Any
 
 import pytest
 from mcp_fakes import AlwaysRedirectServer, FakeServer, HeaderRecordingServer, build_fake
+from test_device_tools_e2e import NoConfirmDevice
 
 from ota_server import config as ota_config
 from ota_server.config import Settings
@@ -59,7 +60,7 @@ def instant_device() -> DeviceSource:
     async def send(frame: dict[str, Any]) -> None:
         pending.resolve({"type": "tool.result", "id": frame["id"], "ok": True, "result": "done"})
 
-    return DeviceSource(send, pending)
+    return NoConfirmDevice(send, pending)
 
 
 async def hub_run(hub: McpHub, name: str, args: dict[str, Any]) -> ToolOutcome:
@@ -132,6 +133,7 @@ def test_secret_header_reaches_server_not_logs(
                 "url": server.url,
                 "tools": {"echo": (await fake_pins())["echo"]},
                 "headers": {"Authorization": SECRET_VAR},
+                "no_confirm": ["echo"],
             }
             outcome = await _call_with_secret(settings_for(tmp_path, [entry]), server)
         finally:
@@ -156,7 +158,9 @@ async def _start_with_denied() -> tuple[list[str], ToolOutcome, ToolOutcome]:
     denied = McpServerConfig(
         "inner", "http", url=f"https://{DENIED_HOST}/mcp", tools={"echo": pins["echo"]}
     )
-    good = McpServerConfig("fake", "http", url=server.url, tools={"echo": pins["echo"]})
+    good = McpServerConfig(
+        "fake", "http", url=server.url, tools={"echo": pins["echo"]}, no_confirm=["echo"]
+    )
     policy = SafeConnectionPolicy(ALLOWED, resolver=fake_resolver, environ=lambda: {})
     tool_filter = HashToolFilter({c.name: c.tools for c in (denied, good)})
     try:

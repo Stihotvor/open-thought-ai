@@ -40,10 +40,11 @@ class ToolOutcome:
 
 @dataclass
 class CallCtx:
-    """One per turn; counts calls across all rounds."""
+    """One per turn; counts calls across all rounds. turn is the session turn id."""
 
     calls: int = 0
     max_calls: int = MAX_TOOL_CALLS
+    turn: int = 0
 
 
 @dataclass(frozen=True)
@@ -77,6 +78,14 @@ class ToolContext(Protocol):
 
     async def run(self, call: ToolCall) -> ToolOutcome:
         """Run one call through the chain; never raises."""
+        ...
+
+    async def confirmation(self, text: str) -> str | None:
+        """The reply to a confirmation turn, or None for a normal turn (confirm-flow D6)."""
+        ...
+
+    def held_question(self) -> str | None:
+        """The fixed question when this turn holds a call, else None (confirm-flow D7)."""
         ...
 
 

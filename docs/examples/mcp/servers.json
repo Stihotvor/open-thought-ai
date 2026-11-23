@@ -22,6 +22,7 @@
     "timeout": 10,
     "tools": {
       "get_current_time": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
-    }
+    },
+    "no_confirm": ["get_current_time"]
   }
 ]

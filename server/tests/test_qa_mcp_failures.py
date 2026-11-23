@@ -244,8 +244,9 @@ def test_qa_028_malformed_reply_becomes_error(caplog: pytest.LogCaptureFixture) 
     async def scenario() -> None:
         async with AsyncExitStack() as stack:
             cfg = McpServerConfig(
-                "raw", "stdio", command=sys.executable, args=[RAW], tools=pins(["boom"]), timeout=5
-            )
+                "raw", "stdio", command=sys.executable, args=[RAW], tools=pins(["boom"]), timeout=5,
+                no_confirm=["boom"],
+            )  # fmt: skip
             sources = await McpRegistry.start([cfg], stack)
             out = await call(new_session(sources), "raw__boom")
             assert not out.ok

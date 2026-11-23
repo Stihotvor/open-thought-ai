@@ -7,8 +7,10 @@ from collections.abc import AsyncIterator, Callable
 from typing import Any, cast
 
 import pytest
-from fakes import SPEECH, Endpoint, pipeline_for
+from fakes import SPEECH, Endpoint, pipeline_for, self_test_only
 
+from ota_server import pipeline as pipeline_module
+from ota_server.agent import tool_rounds
 from ota_server.hub.types import ToolCall, ToolOutcome
 from ota_server.pipeline import SentenceFeed, TurnClock
 from ota_server.protocol import TurnError
@@ -37,8 +39,24 @@ class FakeChat:
 
 
 class FakeTools:
-    def __init__(self, text: str = "ok", wait: Callable[[], None] = lambda: None) -> None:
+    """A ToolContext: `reply` answers confirmation(), `question` is the held question."""
+
+    def __init__(
+        self,
+        text: str = "ok",
+        wait: Callable[[], None] = lambda: None,
+        reply: str | None = None,
+        question: str | None = None,
+    ) -> None:
         self.text, self.wait, self.ran = text, wait, cast(list[ToolCall], [])
+        self.reply, self.question, self.confirmed = reply, question, cast(list[str], [])
+
+    async def confirmation(self, text: str) -> str | None:
+        self.confirmed.append(text)
+        return self.reply
+
+    def held_question(self) -> str | None:
+        return self.question
 
     def list_tools(self) -> list[dict[str, Any]]:
         return TOOLS_LIST
@@ -135,3 +153,79 @@ def test_bad_json_arguments_give_none_args(monkeypatch: pytest.MonkeyPatch) -> N
     assert tool_turn(monkeypatch, chat, tools, Endpoint()) == ["Done."]
     assert [c.args for c in tools.ran] == [None, {}]
     assert chat.calls[1][0][-1] == {"role": "tool", "tool_call_id": "c1", "content": "invalid args"}
+
+
+QUESTION = "Run device set_volume? Say yes or no."
+
+
+class ListFeed:
+    """A Feed that keeps every put."""
+
+    def __init__(self) -> None:
+        self.items: list[str] = []
+
+    def put(self, sentence: str) -> None:
+        self.items.append(sentence)
+
+    def end(self, error: Exception | None = None) -> None:
+        raise AssertionError("tool_rounds never ends the feed")
+
+
+def test_a_confirmation_reply_skips_the_llm(monkeypatch: pytest.MonkeyPatch) -> None:
+    read: list[Any] = []
+
+    async def fake_read_chat(*args: Any) -> None:
+        read.append(args)
+        args[3].end()  # the feed: the turn never waits forever
+
+    monkeypatch.setattr(pipeline_module, "read_chat", fake_read_chat)
+    endpoint, chat, tools = Endpoint(), FakeChat([TextDelta("No.")]), FakeTools(reply="Done.")
+    assert tool_turn(monkeypatch, chat, tools, endpoint) == ["Done."]
+    assert not read and not chat.calls and "completions" not in endpoint.calls
+    assert tools.confirmed == ["Jak się masz?"]
+
+
+def test_a_confirmation_reply_is_moderated(monkeypatch: pytest.MonkeyPatch) -> None:
+    endpoint = Endpoint(flag=lambda t: self_test_only(t) or "Done." in t)
+    played: list[str] = []
+    pipeline = pipeline_for(endpoint)
+
+    async def turn() -> None:
+        async for chunk in pipeline(SPEECH, (), tools=FakeTools(reply="Done.")):
+            played.append(chunk.text)
+
+    with pytest.raises(TurnError) as err:
+        asyncio.run(turn())
+    assert err.value.code == "moderated" and not played  # TTS may run, its audio is dropped
+
+
+def test_no_confirmation_is_a_normal_turn(monkeypatch: pytest.MonkeyPatch) -> None:
+    chat, tools = FakeChat([TextDelta("Dobrze.")]), FakeTools()
+    assert tool_turn(monkeypatch, chat, tools, Endpoint()) == ["Dobrze."]
+    assert tools.confirmed == ["Jak się masz?"] and len(chat.calls) == 1
+
+
+def rounds_feed(chat: FakeChat, tools: FakeTools) -> list[str]:
+    pipeline, feed = pipeline_for(Endpoint()), ListFeed()
+    pipeline.client.chat_turn = chat  # type: ignore[method-assign,assignment]
+    asyncio.run(tool_rounds(pipeline.client, [], TurnBudget(), feed, TurnClock(1), tools))
+    return feed.items
+
+
+def test_a_held_call_ends_the_tool_rounds() -> None:
+    chat = FakeChat([VOLUME], [TextDelta("Done.")])
+    items = rounds_feed(chat, FakeTools(question=QUESTION))
+    assert items[-1] == QUESTION and len(chat.calls) == 1
+
+
+def test_no_held_call_the_loop_goes_on() -> None:
+    chat = FakeChat([VOLUME], [TextDelta("Done.")])
+    assert rounds_feed(chat, FakeTools())[-1] == "Done."
+    assert len(chat.calls) == 2
+
+
+def test_text_before_a_held_call_plays_first(monkeypatch: pytest.MonkeyPatch) -> None:
+    chat = FakeChat([TextDelta("One moment."), VOLUME], [TextDelta("Done.")])
+    tools = FakeTools(question=QUESTION)
+    assert tool_turn(monkeypatch, chat, tools, Endpoint()) == ["One moment.", QUESTION]
+    assert len(chat.calls) == 1

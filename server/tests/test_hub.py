@@ -8,13 +8,22 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 import pytest
+from test_device_tools_e2e import NoConfirmDevice
 
 from ota_server.hub.device_source import FACES, DeviceSource
 from ota_server.hub.hub import McpHub
 from ota_server.hub.pending import DeviceResult, PendingCalls, PendingClosed
 from ota_server.hub.steps import UNTRUSTED_PREFIX
-from ota_server.hub.types import MAX_RESULT_CHARS, CallCtx, ToolCall, ToolOutcome, ToolSpec
-from ota_server.protocol import MAX_TEXT_FRAME
+from ota_server.hub.types import (
+    MAX_RESULT_CHARS,
+    CallCtx,
+    ToolCall,
+    ToolContext,
+    ToolOutcome,
+    ToolSpec,
+)
+from ota_server.protocol import MAX_TEXT_FRAME, MIN_SPEECH
+from ota_server.session import END, DeviceSession, ReplyQueue
 
 
 class FakeSend:
@@ -52,7 +61,7 @@ def make_hub(
     pending: PendingCalls | None = None, send: FakeSend | None = None
 ) -> tuple[McpHub, FakeSend]:
     send = send or FakeSend()
-    source = DeviceSource(send, pending if pending is not None else FakePending())
+    source = NoConfirmDevice(send, pending if pending is not None else FakePending())
     return McpHub([source]), send
 
 
@@ -96,6 +105,14 @@ def test_timeout() -> None:
     assert "the device did not answer in time" in outcome.text
     assert 1.8 <= elapsed <= 2.2
     assert len(send.frames) == 1
+
+
+def test_real_volume_call_is_held() -> None:
+    send = FakeSend()
+    hub = McpHub([DeviceSource(send, FakePending())])
+    outcome = run(hub, "device__set_volume", {"level": 30})
+    assert outcome.code == "confirm_required"
+    assert send.frames == []
 
 
 def test_device_error() -> None:
@@ -332,3 +349,67 @@ def test_device_timeout_fires_before_the_outer_guard(caplog: pytest.LogCaptureFi
     assert outcome.code == "tool_timeout"
     names = [r.name for r in caplog.records if "timed out" in r.getMessage()]
     assert names == ["ota_server.hub.device_source"]
+
+
+def test_turn_context_passes_the_turn_to_the_chain() -> None:
+    hub = McpHub([FakeSource("a", [spec("a", "x")])])
+    seen: list[int] = []
+    chain = hub._chain
+
+    async def recording(call: ToolCall, ctx: CallCtx) -> ToolOutcome:
+        seen.append(ctx.turn)
+        return await chain(call, ctx)
+
+    hub._chain = recording
+    outcome = asyncio.run(hub.turn_context(7).run(ToolCall("c1", "a__x", {})))
+    assert outcome.ok
+    assert seen == [7]
+
+
+def test_hub_keeps_the_language() -> None:
+    hub = McpHub([FakeSource("a", [spec("a", "x")])], "pl")
+    assert hub._language == "pl"
+
+
+def test_hub_language_defaults_to_en() -> None:
+    assert McpHub([])._language == "en"
+
+
+class TurnSocket:
+    async def send_json(self, msg: dict[str, Any]) -> None:
+        pass
+
+
+def test_session_produce_passes_its_turn() -> None:
+    session = DeviceSession(TurnSocket(), language="pl")  # type: ignore[arg-type]
+    turns: list[int] = []
+    original = session.turn_tools
+
+    def recording(turn: int = 0) -> ToolContext:
+        turns.append(turn)
+        return original(turn)
+
+    session.turn_tools = recording  # type: ignore[method-assign]
+    queue: ReplyQueue = asyncio.Queue()
+
+    async def produce() -> None:
+        await session.produce(5, b"", (), queue, session.notifier(5))
+
+    asyncio.run(produce())
+    assert turns == [5]
+    assert session.hub._language == "pl"
+
+
+def test_session_reply_hands_the_turn_to_produce() -> None:
+    session = DeviceSession(TurnSocket())  # type: ignore[arg-type]
+    turns: list[object] = []
+
+    async def produce(turn: object, *args: object) -> None:
+        turns.append(turn)
+        for arg in args:
+            if isinstance(arg, asyncio.Queue):
+                await arg.put(END)
+
+    session.produce = produce  # type: ignore[method-assign,assignment]
+    asyncio.run(asyncio.wait_for(session.reply(5, b"\0" * MIN_SPEECH), 2))
+    assert turns == [5]

@@ -94,12 +94,13 @@ class QaServer:
 
     def entry(self, name: str, tools: list[str], timeout: float = 10) -> dict[str, Any]:
         return {"name": name, "transport": self.transport, "url": self.url,
-                "tools": pins(tools), "timeout": timeout}  # fmt: skip
+                "tools": pins(tools), "no_confirm": list(tools), "timeout": timeout}  # fmt: skip
 
     def config(self, name: str, tools: list[str], timeout: float = 10) -> McpServerConfig:
         return McpServerConfig(
-            name, self.transport, url=self.url, tools=pins(tools), timeout=timeout
-        )
+            name, self.transport, url=self.url, tools=pins(tools), timeout=timeout,
+            no_confirm=list(tools),
+        )  # fmt: skip
 
     def _build(self) -> FastMCP:  # noqa: C901
         mcp = FastMCP("qa-fake")
@@ -298,7 +299,8 @@ def stdio_entry(
     script: str = STDIO,
 ) -> dict[str, Any]:
     entry: dict[str, Any] = {"name": name, "transport": "stdio", "command": sys.executable,
-                             "args": [script, *extra], "tools": pins(tools)}  # fmt: skip
+                             "args": [script, *extra], "tools": pins(tools),
+                             "no_confirm": list(tools)}  # fmt: skip
     if env is not None:
         entry["env"] = env
     return entry
@@ -307,7 +309,8 @@ def stdio_entry(
 def stdio_config(name: str, tools: list[str], *extra: str, **kw: Any) -> McpServerConfig:
     entry = stdio_entry(name, tools, *extra, **kw)
     return McpServerConfig(name, "stdio", command=entry["command"], args=entry["args"],
-                           env=entry.get("env", {}), tools=pins(tools))  # fmt: skip
+                           env=entry.get("env", {}), tools=pins(tools),
+                           no_confirm=list(tools))  # fmt: skip
 
 
 async def start_file(tmp_path: Path, entries: Any, stack: AsyncExitStack) -> list[McpSource]:

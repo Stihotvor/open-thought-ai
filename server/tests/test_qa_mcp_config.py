@@ -83,6 +83,7 @@ def test_qa_016_bad_tool_name(tmp_path: Path, caplog: pytest.LogCaptureFixture) 
     async def scenario() -> None:
         async with serving() as server, AsyncExitStack() as stack:
             entry = server.entry("notes", ["bad.tool", "ok_tool"])
+            entry["no_confirm"] = ["ok_tool"]  # a dropped name in no_confirm rejects the entry
             sources = await start_file(tmp_path, [entry], stack)
             assert tool_names(sources) == ["notes__ok_tool"]
             assert any("bad.tool" in e for e in errors(caplog))

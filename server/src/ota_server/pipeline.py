@@ -25,7 +25,7 @@ provider call (`no_speech`), and STT gets only the speech span. Once the transcr
 moderation, `notify` gets the full text; the session sends it as the `transcript` message.
 
 Tools: with a ToolContext, chat runs the tool loop of agent.py. Tool messages never reach
-History or moderation.
+History or moderation. A confirmation turn speaks only the hub's reply, with no chat.
 
 Timing: each turn logs one info line `turn.latency ...` (timing.py) with its code, the
 time to the first audio chunk and the time of each stage. No text goes in the line, and a
@@ -40,7 +40,7 @@ from typing import Any
 
 # LANGUAGE_NAMES and system_prompt are re-exported: the prompt is in agent.py
 from .agent import LANGUAGE_NAMES as LANGUAGE_NAMES
-from .agent import SENTENCE_END, read_chat
+from .agent import SENTENCE_END, confirmation_reply, read_chat
 from .agent import system_prompt as system_prompt
 from .audio import AudioError, pcm_to_wav, wav_to_pcm
 from .endpoints import TTS
@@ -71,7 +71,6 @@ STAGE_CODES = {
     "chat": "llm_failed",
     "tts": "tts_failed",
 }
-
 
 # Self-test phrases: (harmful, harmless) per device language. The harmful one must be flagged.
 SELF_TEST = {
@@ -393,8 +392,7 @@ class VoicePipeline:  # pylint: disable=too-few-public-methods  # a callable Rep
         clock: TurnClock,
         tools: ToolContext | None = None,
     ) -> None:
-        """Put each complete sentence of the chat stream on feed as it arrives.
-        Runs as its own task, so chat goes on while the turn moderates and speaks."""
+        """The chat task: sentences go on feed while the turn moderates and speaks."""
         await read_chat(self.client, messages, budget, feed, clock, tools)
 
     async def speak(
@@ -486,14 +484,17 @@ class VoicePipeline:  # pylint: disable=too-few-public-methods  # a callable Rep
         clock.chat_started()
         await notify(text)  # the full text: the session cuts it for the device
         feed = SentenceFeed()
+        chat: asyncio.Task[None] | None = None
         # The chat task never waits for playback (the feed has no size limit), so the
         # turn deadline bounds only its own work.
-        chat = asyncio.create_task(
-            self.read_chat(self.messages(text, history), budget, feed, clock, tools)
-        )
+        if not await confirmation_reply(tools, text, feed):  # else no chat at all (D8)
+            chat = asyncio.create_task(
+                self.read_chat(self.messages(text, history), budget, feed, clock, tools)
+            )
         try:
             async with contextlib.aclosing(self.speak(text, feed, budget, clock)) as audio:
                 async for chunk in audio:
                     yield chunk
         finally:
-            _cancel_quietly(chat)
+            if chat is not None:
+                _cancel_quietly(chat)

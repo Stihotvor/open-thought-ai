@@ -32,9 +32,9 @@ def _specs() -> list[ToolSpec]:
     }
     status = {"type": "object", "properties": {}, "additionalProperties": False}
     return [
-        ToolSpec("device", "set_volume", "Set the speaker volume, 0 to 100.", volume),
-        ToolSpec("device", "set_face", "Show a face on the device screen.", face),
-        ToolSpec("device", "get_status", "Read the device status.", status),
+        ToolSpec("device", "set_volume", "Set the speaker volume, 0 to 100.", volume, confirm=True),
+        ToolSpec("device", "set_face", "Show a face on the device screen.", face, confirm=False),
+        ToolSpec("device", "get_status", "Read the device status.", status, confirm=False),
     ]
 
 

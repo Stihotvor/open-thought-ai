@@ -1,0 +1,63 @@
+# QA results — confirm flow (issue #30)
+
+All tests: /home/yevhend/claude-projects/open-thought-ai/server/tests/test_qa_confirm_hub.py and server/tests/test_qa_confirm_session.py (helpers in qa_confirm_support.py) (test_qa_NNN_*). Full pytest (2026-11-23, after the split): 933 passed, 1 skipped, 0 failed.
+
+- QA-001 pass: test_qa_001_device_risky_tool_is_not_run_in_its_own_turn
+- QA-002 pass: test_qa_002_mcp_risky_tool_is_not_run_in_its_own_turn
+- QA-003 pass: test_qa_003_llm_sees_confirm_required
+- QA-004 pass: test_qa_004_question_is_fixed_text_with_source_and_tool
+- QA-005 pass: test_qa_005_question_exists_in_pl_and_uk
+- QA-006 pass: test_qa_006_yes_runs_the_held_call_once
+- QA-007 pass: test_qa_007_008_009_yes_words_run_the_held_call_once[007]
+- QA-008 pass: test_qa_007_008_009_yes_words_run_the_held_call_once[008]
+- QA-009 pass: test_qa_007_008_009_yes_words_run_the_held_call_once[009]
+- QA-010 pass: test_qa_010_yes_with_case_and_punctuation
+- QA-011 pass: test_qa_011_second_yes_runs_nothing
+- QA-012 pass: test_qa_012_no_cancels
+- QA-013 pass: test_qa_013_yes_but_later_cancels
+- QA-014 pass: test_qa_014_empty_transcript_cancels
+- QA-015 pass: test_qa_015_yes_word_of_another_language_cancels
+- QA-016 pass: test_qa_016_cancelled_turn_does_not_use_the_llm
+- QA-017 pass: test_qa_017_cancelled_call_is_gone_for_a_later_yes
+- QA-018 pass: test_qa_018_message_order_after_the_question
+- QA-019 pass: test_qa_019_timeout_cancels_and_sends_error
+- QA-020 partial: test_qa_020_no_timeout_error_before_the_delay; the fake sleep cannot stop at 9.9 s, so it checks a 10 s wait is pending and no error was sent
+- QA-021 pass: test_qa_021_yes_after_timeout_runs_nothing
+- QA-022 pass: test_qa_022_unknown_no_confirm_name_is_rejected
+- QA-023 pass: test_qa_023_default_mcp_tool_needs_confirm
+- QA-024 pass: test_qa_024_no_confirm_tool_runs_at_once
+- QA-025 pass: test_qa_025_no_confirm_keeps_the_other_tool_held
+- QA-026 partial: test_qa_026_device_tool_flags; case data defect: face "happy" is not a device face (FACES in hub/device_source.py), so "listening" is used
+- QA-027 pass: test_qa_027_two_confirm_calls_in_one_turn
+- QA-028 pass: test_qa_028_only_the_first_held_call_runs_after_yes
+- QA-029 pass: test_qa_029_new_turn_during_the_wait_is_the_confirmation_turn
+- QA-030 pass: test_qa_030_timer_stops_when_the_confirmation_turn_starts
+- QA-031 pass: test_qa_031_abort_during_the_question
+- QA-032 pass: test_qa_032_abort_with_a_wrong_turn_id
+- QA-033 pass: test_qa_033_socket_closes_while_held
+- QA-034 pass: test_qa_034_listen_start_after_timeout_is_a_normal_turn
+- QA-035 pass: test_qa_035_no_speech_in_the_confirmation_turn
+- QA-036 pass: test_qa_036_too_many_turns_refusal_keeps_the_call
+- QA-037 pass: test_qa_037_yes_after_a_refused_turn_still_works
+- QA-038 pass: test_qa_038_non_confirm_call_beside_a_held_call
+- QA-039 pass: test_qa_039_held_call_counts_in_the_cap_of_4
+- QA-040 pass: test_qa_040_release_after_yes_does_not_use_the_cap
+- QA-041 pass: test_qa_041_source_fails_after_yes
+- QA-042 pass: test_qa_042_source_times_out_after_yes
+- QA-043 pass: test_qa_043_mcp_server_disconnected_before_yes
+- QA-044 pass: test_qa_044_bug_in_the_confirm_step_fails_closed
+- QA-045 pass: test_qa_045_bug_in_the_yes_decision_fails_closed (is_yes patched to raise: ERROR log, "Cancelled.", gate empty, 0 source calls)
+- QA-046 pass: test_qa_046_moderation_refusal_in_the_confirmation_turn
+- QA-047 pass: test_qa_047_speech_to_text_failure_in_the_confirmation_turn
+- QA-048 pass: test_qa_048_moderation_cut_of_the_question
+- QA-049 pass: test_qa_049_cap_cut_during_the_question
+- QA-050 pass: test_qa_050_held_call_with_changed_args_is_not_used
+- QA-051 pass: test_qa_051_prompt_injection_cannot_confirm
+- QA-052 pass: test_qa_052_listen_start_during_the_question
+- QA-053 pass: test_qa_053_claimed_call_with_no_listen_stop
+- QA-054 pass: test_qa_054_confirmation_turn_does_not_repeat_the_hold
+- QA-055 pass: test_qa_055_repeated_listen_start_without_speech
+- QA-056 pass: the main session ran `server/scripts/gate.sh` (2026-11-23): ruff 0 findings, format OK, mypy 0 errors in 100 files, 929 passed, 1 skipped, coverage 96.77 %.
+- QA-057 pass: test_qa_057_new_risky_tool_by_config_only
+
+Summary: pass 55, partial 2 (QA-020, QA-026), fail 0, not-automated 0.

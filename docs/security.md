@@ -38,7 +38,12 @@ Threat model: a home LAN with guests and IoT devices, family members including c
 - A tool with a description over 1 000 chars, or an input schema over 4 000 chars of canonical JSON, is not admitted.
 - Tool args and results are validated against the JSON Schema. Results are wrapped as untrusted data.
 - At most 4 tool calls per turn.
-- Confirmation is enforced by the hub, bound to the tool name, args and turn, single use. Accepted risk: anyone in earshot can say "yes".
+- Confirmation is enforced by the hub, bound to the tool name, args and turn, single use. The rules and the fixed texts are in [protocol](protocol.md#confirm-flow-risky-tools).
+  - Every MCP tool needs a spoken yes by default.
+  - `no_confirm` in a servers file entry is an optional list of bare tool names. Each name must be a key of `tools`. An unknown name rejects the entry. The default is empty, so all MCP tools of the entry confirm. Add only read-only tools, for example `"no_confirm": ["get_current_time"]`.
+  - Device tools: `set_volume` needs a spoken yes. `set_face` and `get_status` do not.
+  - The yes match is exact and has no LLM. The LLM cannot answer for the user.
+  - Accepted risk: anyone in earshot can say "yes".
 - SSRF: MCP URLs only `http`/`https`. The hub resolves DNS and checks the IP on save, on connect and on each reconnect. It blocks loopback, link-local, metadata ranges and compose service names, except hosts on an explicit allowlist (for example the n8n host).
   - The allowlist is `OTA_MCP_ALLOWED_HOSTS`. It is a comma-separated list of hosts. The default is empty.
   - `http` is allowed only to a loopback host or an allowlisted host. Other hosts must use `https`.
