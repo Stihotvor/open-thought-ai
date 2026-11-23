@@ -146,6 +146,12 @@ def test_insert_confirm_step() -> None:
         ({"type": "object", "properties": {"x": {"enum": ["a", "b"]}}}, {"x": "c"}),
         ({"type": "object", "properties": {"x": {"type": "string"}}}, {"x": 1}),
         ({"type": "object", "additionalProperties": False}, {"y": 1}),
+        ({"type": "object", "properties": {"x": {"type": "number"}}}, {"x": True}),
+        ({"type": "object", "properties": {"x": {"type": "number"}}}, {"x": "1"}),
+        ({"type": "object", "properties": {"x": {"type": "boolean"}}}, {"x": 0}),
+        ({"type": "object", "properties": {"x": {"type": "boolean"}}}, {"x": 1}),
+        ({"type": "object", "properties": {"x": {"type": "array"}}}, {"x": "ab"}),
+        ({"type": "object", "properties": {"x": {"type": "array"}}}, {"x": {}}),
     ],
 )
 def test_validate_subset_rejects(schema: dict[str, Any], args: object) -> None:
@@ -155,6 +161,27 @@ def test_validate_subset_rejects(schema: dict[str, Any], args: object) -> None:
     outcome = run_step(step, ToolCall(id="c1", name="device__t", args=args), terminal)
     assert outcome.code == "invalid_args"
     assert terminal.calls == []
+
+
+@pytest.mark.parametrize(
+    ("kind", "value"),
+    [
+        ("number", 1),
+        ("number", 1.5),
+        ("boolean", True),
+        ("boolean", False),
+        ("array", []),
+        ("array", [1, "a"]),
+    ],
+)
+def test_validate_accepts_kind(kind: str, value: object) -> None:
+    schema = {"type": "object", "properties": {"x": {"type": kind}}}
+    spec = ToolSpec(source="device", name="t", description="", schema=schema, confirm=False)
+    terminal = FakeTerminal()
+    call = ToolCall(id="c1", name="device__t", args={"x": value})
+    outcome = run_step(validate({spec.full_name: spec}), call, terminal)
+    assert outcome.code != "invalid_args"
+    assert len(terminal.calls) == 1
 
 
 def test_wrap_keeps_error_code() -> None:
@@ -176,7 +203,7 @@ def test_validate_unknown_name_gives_unknown_tool() -> None:
 
 def test_validate_rejects_unknown_type_kind() -> None:
     spec = ToolSpec(
-        source="device", name="t", description="", schema={"type": "number"}, confirm=False
+        source="device", name="t", description="", schema={"type": "tuple"}, confirm=False
     )
     terminal = FakeTerminal()
     call = ToolCall(id="c1", name="device__t", args={})

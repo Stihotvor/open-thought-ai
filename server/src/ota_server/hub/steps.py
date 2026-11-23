@@ -96,8 +96,14 @@ def _type_ok(kind: object, value: object) -> bool:
         return isinstance(value, dict)
     if kind == "integer":
         return isinstance(value, int) and not isinstance(value, bool)
+    if kind == "number":
+        return isinstance(value, int | float) and not isinstance(value, bool)
+    if kind == "boolean":
+        return isinstance(value, bool)
     if kind == "string":
         return isinstance(value, str)
+    if kind == "array":
+        return isinstance(value, list)
     return False
 
 
