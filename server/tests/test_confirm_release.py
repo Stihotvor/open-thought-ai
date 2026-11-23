@@ -174,6 +174,5 @@ def test_hub_language_is_public_and_read_only() -> None:
 def test_unknown_language_question_is_english() -> None:
     hub = McpHub([CountingSource()], "xx")
     assert hub.gate.hold(held(3))
-    assert (
-        hub.turn_context(3).held_question() == "Should I run device set_volume? Say yes to confirm."
-    )
+    expected = "Should I run device set_volume with level 3? Say yes to confirm."
+    assert hub.turn_context(3).held_question() == expected

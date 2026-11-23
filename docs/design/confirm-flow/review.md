@@ -17,9 +17,9 @@ Fixed:
 - Security low: `Held.args` was a shallow copy. Now `copy.deepcopy`, with a test.
 - Style medium and structure low: `TurnTools` read `McpHub._language`. Now a public `language` property.
 - Style medium and structure low: the English fallback was written twice. Now one fallback inside `confirm_text`. The dead `_text` helper was removed.
+- Security medium: the question named the tool but not its args. Closed in a follow-up PR: the question now speaks a bounded summary of the validated args (`confirm_text.args_summary`, rules in `docs/protocol.md`).
 
 Stays, with the reason:
-- Security medium: the question names the tool but not its args. An injected call with attacker args can get a habitual "yes". Changing the spoken text is a design change (D1, T6). Follow-up: speak a short args summary built from the validated args.
 - Security low: a claimed call has no wall-clock expiry when `listen.stop` never comes. The next `listen.start`, `abort` or `close` drops it. Follow-up: a claim timer.
 - Security low: `ToolSpec.confirm` defaults to `False` (code from #27). Both sources set it explicitly. Follow-up: make it required or default `True`. That change touches many #27 and #28 tests.
 - Structure medium: the session calls gate phase methods at 6 sites. Structure medium: `DeviceSession` owns the confirm timer. Both follow D9. A `ConfirmTimer` helper and intent-level hub methods are a refactor follow-up.

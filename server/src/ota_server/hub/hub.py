@@ -76,7 +76,7 @@ class TurnTools:
         if held is None or held.turn != self._ctx.turn:
             return None
         source, _, tool = held.name.partition(SEP)
-        return confirm_text.question(self._hub.language, source, tool)
+        return confirm_text.question(self._hub.language, source, tool, held.args)
 
     async def confirmation(self, text: str) -> str | None:
         """Answer a call claimed by this turn: run it once on a yes, else cancel (D6).

@@ -86,7 +86,13 @@ Errors are never sent as audio, so they work even when TTS is down.
 "Yes." and " YES! " are a yes. "Yes please" and "yes, do it" are not a yes.
 
 ### Fixed texts
-The server speaks only these texts in the confirm flow. They are the same as in `server/src/ota_server/hub/confirm_text.py`. `{what}` is the source name and the bare tool name, for example `device set_volume`.
+The server speaks only these texts in the confirm flow. They are the same as in `server/src/ota_server/hub/confirm_text.py`. `{what}` is the source name, the bare tool name, and a short summary of the validated args, for example `device set_volume with level 30`.
+The args summary follows fixed rules, so an injected call cannot hide its args behind the tool name:
+- The server speaks at most 3 args. More args add `and more` (`i więcej`, `та інше`).
+- A key or a string value is spoken only if it is a short token: 1 to 24 characters of `A-Z a-z 0-9 _ . -`. A key that is not a token is spoken as `?`.
+- Booleans and numbers up to 24 characters are spoken as is.
+- Any other value (free text, a list, an object) is spoken as `some text` (`jakiś tekst`, `якийсь текст`). The server never speaks free text verbatim.
+- The connector word is `with` (`z`, `з`). A call with no args gets no summary.
 
 | Text | `en` | `pl` | `uk` |
 |---|---|---|---|
