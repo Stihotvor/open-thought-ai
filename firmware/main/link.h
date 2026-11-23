@@ -17,6 +17,7 @@ typedef enum {
     LINK_REPLY_START,  // value = turn
     LINK_REPLY_END,    // value = turn
     LINK_ERROR,        // value = turn
+    LINK_CONFIRM,      // state confirm or confirm.request: value = turn
     LINK_REFUSED,      // listen.start refused (too_many_turns): no new turn
 } link_event_t;
 

@@ -177,6 +177,10 @@ static void draw(face_t face)
             x_eye(90);
             text(46, 50, "ERROR");
             break;
+        case FACE_CONFIRM:  // the font has no '?'
+            eyes(0, 4, 26);
+            text(43, 50, "SAY YES");
+            break;
     }
 }
 

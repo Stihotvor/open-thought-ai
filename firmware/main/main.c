@@ -35,6 +35,7 @@ typedef enum {
     STATE_LISTENING,     // listen.start sent: audio streams after turn.start
     STATE_THINKING,
     STATE_SPEAKING,
+    STATE_CONFIRM,       // a risky tool call waits for a spoken yes (docs/protocol.md)
 } app_state_t;
 
 typedef enum {
@@ -58,6 +59,8 @@ static QueueHandle_t s_events;
 static config_t s_config;
 static bool s_link_started;
 static int s_turn = -1;                    // the current turn, -1 = none (app task only)
+static int s_done_turn = -1;               // the last turn that played to the end
+static int s_confirm_turn = -1;            // a confirm that waits for the reply to drain
 static bool s_stop_pending;                // send listen.stop once the mic has streamed
 static volatile int s_stream_turn = -1;    // the mic task streams this turn, -1 = off
 static volatile bool s_boot_check = true;  // the mic task logs one level at boot
@@ -165,6 +168,7 @@ static app_state_t enter(app_state_t state)
         case STATE_LISTENING: face_show(FACE_LISTENING); break;
         case STATE_THINKING: face_show(FACE_THINKING); break;
         case STATE_SPEAKING: face_show(FACE_SPEAKING); break;
+        case STATE_CONFIRM: face_show(FACE_CONFIRM); break;
     }
     return state;
 }
@@ -235,6 +239,9 @@ static app_state_t end_listening(void)
 static app_state_t on_press(app_state_t state)
 {
     switch (state) {
+        case STATE_CONFIRM:
+            s_turn = -1;  // the answer is a new turn: the server ends the wait at listen.start
+            // fall through
         case STATE_IDLE:
             link_send_listen_start();
             return enter(STATE_LISTENING);
@@ -253,6 +260,21 @@ static app_state_t on_press(app_state_t state)
         default:
             return state;
     }
+}
+
+// The server sends confirm after reply.end, so the question can still play. Show the
+// confirm face when the reply has drained.
+static app_state_t on_confirm(app_state_t state, int turn)
+{
+    if (state == STATE_SPEAKING && turn == s_turn) {
+        s_confirm_turn = turn;
+        return state;
+    }
+    if (state == STATE_IDLE && turn == s_done_turn) {
+        s_turn = turn;  // error confirm_timeout comes with this turn
+        return enter(STATE_CONFIRM);
+    }
+    return state;
 }
 
 static app_state_t on_link_event(app_state_t state, link_event_t event, int arg)
@@ -289,6 +311,9 @@ static app_state_t on_link_event(app_state_t state, link_event_t event, int arg)
             return state;
         default:
             break;
+    }
+    if (event == LINK_CONFIRM) {
+        return on_confirm(state, arg);
     }
     if (event == LINK_REFUSED) {
         return (state == STATE_LISTENING && s_turn < 0) ? turn_failed() : state;
@@ -337,6 +362,11 @@ static app_state_t on_event(app_state_t state, const app_event_t *e)
             return on_link_event(state, (link_event_t)e->value, e->arg);
         case EVENT_DRAINED:
             if (state == STATE_SPEAKING) {
+                if (s_confirm_turn == s_turn) {
+                    s_confirm_turn = -1;
+                    return enter(STATE_CONFIRM);  // keep s_turn for error confirm_timeout
+                }
+                s_done_turn = s_turn;
                 s_turn = -1;
                 return enter(STATE_IDLE);
             }
