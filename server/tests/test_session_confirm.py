@@ -240,7 +240,7 @@ def test_abort() -> None:
         return session
 
     session = asyncio.run(scenario())
-    assert session.hub.gate.claim(2) is False  # nothing armed
+    assert session.hub.gate.claim(2) is None  # nothing armed
     assert timer_stopped(session)
 
 
@@ -256,7 +256,7 @@ def test_close(claimed: bool) -> None:
 
     session = asyncio.run(scenario())
     assert not session.hub.gate.claimed_by(2)
-    assert session.hub.gate.claim(3) is False
+    assert session.hub.gate.claim(3) is None
     assert timer_stopped(session)
 
 
@@ -290,4 +290,45 @@ def test_listen_start_during_the_question() -> None:
     assert [o.code for o in script.outcomes] == ["confirm_required", "confirm_required"]
     requests = [m for m in ws.json() if m["type"] == "confirm.request"]
     assert [m["turn"] for m in requests] == [2]
-    assert session.hub.gate.claim(3) is True  # the new call is armed
+    assert session.hub.gate.claim(3) is not None  # the new call is armed
+
+
+def test_a_claimed_call_expires_without_listen_stop() -> None:
+    async def scenario() -> tuple[DeviceSession, FakeSleep, Lamp, Script]:
+        session, _, sleep, lamp, script = make("hold", "yes")
+        await turn(session)
+        await session.handle_text({"type": "listen.start"})  # claims; no listen.stop
+        await asyncio.sleep(0)  # the claim timer starts
+        assert session.hub.gate.claimed_by(2)
+        await fire(session, sleep)
+        assert not session.hub.gate.claimed_by(2)
+        session.audio.extend(SPEECH)  # a late listen.stop finds no call
+        await session.handle_text({"type": "listen.stop", "turn": 2})
+        assert session.reply_task is not None
+        await session.reply_task
+        return session, sleep, lamp, script
+
+    _, sleep, lamp, script = asyncio.run(scenario())
+    assert sleep.delays == [10, session_module.CLAIM_TIMEOUT_S]
+    assert script.answers == [None]
+    assert lamp.calls == []
+
+
+def test_listen_stop_stops_the_claim_timer() -> None:
+    async def scenario() -> tuple[Lamp, Script]:
+        session, _, sleep, lamp, script = make("hold", "yes")
+        await turn(session)
+        await session.handle_text({"type": "listen.start"})
+        await asyncio.sleep(0)
+        assert session.confirm_timer is not None
+        session.audio.extend(SPEECH)
+        await session.handle_text({"type": "listen.stop", "turn": 2})
+        assert session.confirm_timer is None
+        sleep.released.set()  # a late clock tick must not drop the answer
+        assert session.reply_task is not None
+        await session.reply_task
+        return lamp, script
+
+    lamp, script = asyncio.run(scenario())
+    assert script.answers == ["Done."]
+    assert lamp.calls == [{"level": 3}]

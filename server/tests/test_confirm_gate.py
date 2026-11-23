@@ -117,3 +117,16 @@ def test_holding_returns_the_call_only_in_phase_held() -> None:
     assert gate.holding() is None
     gate.claim(4)
     assert gate.holding() is None
+
+
+def test_release_drops_only_the_same_claimed_call() -> None:
+    gate = ConfirmGate()
+    gate.hold(Held("t", {}, "c1", 3))
+    token = gate.arm(3)
+    assert token is not None
+    assert not gate.release(token)  # armed, not claimed
+    assert gate.claim(4) is token
+    assert not gate.release(Held("t", {}, "c1", 3))  # equal fields, another object
+    assert gate.release(token)
+    assert not gate.claimed_by(4)
+    assert not gate.release(token)  # already gone
