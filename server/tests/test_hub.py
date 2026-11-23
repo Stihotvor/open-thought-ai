@@ -233,7 +233,7 @@ class SlowSource:
     timeout = 0.05
 
     def specs(self) -> list[ToolSpec]:
-        return [ToolSpec("slow", "wait", "Wait.", {"type": "object"})]
+        return [ToolSpec("slow", "wait", "Wait.", {"type": "object"}, confirm=False)]
 
     async def call(self, tool: str, args: dict[str, Any]) -> ToolOutcome:
         await asyncio.sleep(10)
@@ -253,7 +253,7 @@ def test_outer_guard_ends_a_slow_source() -> None:
 def named(source: str, tool: str) -> SlowSource:
     fake = SlowSource()
     fake.name = source
-    fake.specs = lambda: [ToolSpec(source, tool, "", {"type": "object"})]  # type: ignore[method-assign]
+    fake.specs = lambda: [ToolSpec(source, tool, "", {"type": "object"}, confirm=False)]  # type: ignore[method-assign]
     return fake
 
 
@@ -274,7 +274,7 @@ class FakeSource:
 
 
 def spec(source: str, tool: str, description: str = "") -> ToolSpec:
-    return ToolSpec(source, tool, description, {"type": "object"})
+    return ToolSpec(source, tool, description, {"type": "object"}, confirm=False)
 
 
 def held(hub: McpHub) -> list[str]:

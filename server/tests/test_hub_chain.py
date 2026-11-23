@@ -27,6 +27,7 @@ VOLUME = ToolSpec(
         "required": ["level"],
         "additionalProperties": False,
     },
+    confirm=False,
 )
 SPECS = {VOLUME.full_name: VOLUME}
 
@@ -148,7 +149,7 @@ def test_insert_confirm_step() -> None:
     ],
 )
 def test_validate_subset_rejects(schema: dict[str, Any], args: object) -> None:
-    spec = ToolSpec(source="device", name="t", description="", schema=schema)
+    spec = ToolSpec(source="device", name="t", description="", schema=schema, confirm=False)
     terminal = FakeTerminal()
     step = validate({spec.full_name: spec})
     outcome = run_step(step, ToolCall(id="c1", name="device__t", args=args), terminal)
@@ -174,7 +175,9 @@ def test_validate_unknown_name_gives_unknown_tool() -> None:
 
 
 def test_validate_rejects_unknown_type_kind() -> None:
-    spec = ToolSpec(source="device", name="t", description="", schema={"type": "number"})
+    spec = ToolSpec(
+        source="device", name="t", description="", schema={"type": "number"}, confirm=False
+    )
     terminal = FakeTerminal()
     call = ToolCall(id="c1", name="device__t", args={})
     outcome = run_step(validate({spec.full_name: spec}), call, terminal)

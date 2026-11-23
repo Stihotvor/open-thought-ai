@@ -73,7 +73,11 @@ def test_qa_005_extra_tool_source() -> None:
             self.ran = 0
 
         def specs(self) -> list[ToolSpec]:
-            return [ToolSpec("fake", "ping", "Ping.", {"type": "object", "properties": {}})]
+            return [
+                ToolSpec(
+                    "fake", "ping", "Ping.", {"type": "object", "properties": {}}, confirm=False
+                )
+            ]
 
         async def call(self, tool: str, args: dict[str, Any]) -> ToolOutcome:
             self.ran += 1

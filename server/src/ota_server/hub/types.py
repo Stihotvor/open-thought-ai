@@ -53,7 +53,7 @@ class ToolSpec:
     name: str
     description: str
     schema: dict[str, Any]
-    confirm: bool = False
+    confirm: bool  # required: each source decides, so none skips the gate by mistake
 
     @property
     def full_name(self) -> str:

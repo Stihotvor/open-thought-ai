@@ -402,7 +402,7 @@ class OneToolSource:
     timeout = 1.0
 
     def specs(self) -> list[ToolSpec]:
-        return [ToolSpec(self.name, "t", "A test tool.", {"type": "object"})]
+        return [ToolSpec(self.name, "t", "A test tool.", {"type": "object"}, confirm=False)]
 
     async def call(self, tool: str, args: dict[str, Any]) -> ToolOutcome:
         return ToolOutcome(True, tool)
