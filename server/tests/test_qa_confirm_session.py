@@ -19,7 +19,7 @@ from qa_confirm_support import (
 from test_confirm_release import DisconnectedSource, claimed_hub, confirm
 from test_confirm_step import BrokenGate
 from test_mcp_source import FakeConnection
-from test_session_confirm import FakeSocket, Refuse, make, timer_stopped, turn
+from test_session_confirm import FakeSocket, Refuse, make, turn
 from test_session_confirm import fire as session_fire
 
 import ota_server.hub.hub as hub_module
@@ -46,8 +46,9 @@ def test_qa_030_timer_stops_when_the_confirmation_turn_starts() -> None:
     async def scenario() -> tuple[FakeSocket, bool]:
         session, ws, sleep, *_ = make("hold", "yes")
         await turn(session)
+        armed_timer = session.confirm_timer
         await session.handle_text({"type": "listen.start"})
-        stopped = timer_stopped(session)
+        stopped = armed_timer is not None and armed_timer.cancelled()
         sleep.released.set()
         await asyncio.sleep(0)
         await asyncio.sleep(0)

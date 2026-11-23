@@ -50,11 +50,18 @@ class ConfirmGate:
         self.drop()
         return True
 
-    def claim(self, turn: int) -> bool:
-        """An armed call becomes claimed by `turn`."""
+    def claim(self, turn: int) -> Held | None:
+        """An armed call becomes claimed by `turn`; the `Held` is the token for `release`."""
         if self._held is None or self._phase != "armed":
-            return False
+            return None
         self._phase, self._claimer = "claimed", turn
+        return self._held
+
+    def release(self, token: Held) -> bool:
+        """Drop the call if `token` is the same object and still claimed."""
+        if self._held is not token or self._phase != "claimed":
+            return False
+        self.drop()
         return True
 
     def pop(self) -> Held | None:

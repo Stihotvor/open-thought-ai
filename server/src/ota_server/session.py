@@ -40,6 +40,8 @@ log = logging.getLogger(__name__)
 PREFETCH = 2  # reply chunks made ahead of playback: TTS runs while the device plays
 END = None  # the queue item after the last chunk
 CONFIRM_TIMEOUT_S = 10  # a held call waits this long for its answer turn (confirm.request)
+# A claimed call waits this long for listen.stop: the 30 s audio cap plus a margin.
+CLAIM_TIMEOUT_S = 35
 # Chunks, then END, or the exception that ended the source.
 ReplyQueue = asyncio.Queue[ReplyChunk | Exception | None]
 
@@ -86,7 +88,7 @@ class DeviceSession:  # pylint: disable=too-many-instance-attributes  # one devi
         self.pending = PendingCalls()  # tool calls that wait for the device's tool.result
         # One hub per session; the external sources and their connections are shared.
         self.hub = McpHub([DeviceSource(self.ws.send_json, self.pending), *mcp_sources], language)
-        self.sleep = sleep  # injectable clock for the confirm timer
+        self.sleep = sleep  # injectable clock for the confirm and claim timers
         self.confirm_timer: asyncio.Task[None] | None = None
 
     async def handle_text(self, msg: dict[str, Any]) -> None:
@@ -123,8 +125,10 @@ class DeviceSession:  # pylint: disable=too-many-instance-attributes  # one devi
         self.turn = (self.turn + 1) % 256
         # A claim left by the older turn (its listen.stop never came) is dropped first (D9).
         self.hub.gate.drop_if_claimed(old)
-        if self.hub.gate.claim(self.turn):  # E2: this turn answers the armed call
+        token = self.hub.gate.claim(self.turn)  # E2: this turn answers the armed call
+        if token is not None:
             await self.stop_timer()
+            self.confirm_timer = asyncio.create_task(self.release_later(token))
         self.audio.clear()
         self.listening = True
         self.credit = START_CREDIT  # credit counts per turn and adds up from here
@@ -141,6 +145,9 @@ class DeviceSession:  # pylint: disable=too-many-instance-attributes  # one devi
 
     def start_reply(self) -> None:
         self.listening = False
+        if self.confirm_timer is not None:  # the answer came: the claim timer stops
+            self.confirm_timer.cancel()
+            self.confirm_timer = None
         self.open_turn = self.turn
         history = tuple(self.history)  # a snapshot: the source never sees later changes
         self.reply_task = asyncio.create_task(self.reply(self.turn, bytes(self.audio), history))
@@ -188,6 +195,12 @@ class DeviceSession:  # pylint: disable=too-many-instance-attributes  # one devi
         if self.hub.gate.expire(token):
             msg = {"type": "error", "turn": token.turn, "code": "confirm_timeout"}
             await self.ws.send_json(msg)
+
+    async def release_later(self, token: Held) -> None:
+        """Drop a claimed call when listen.stop never comes."""
+        await self.sleep(CLAIM_TIMEOUT_S)
+        if self.hub.gate.release(token):
+            log.info("claimed confirm call expired on turn %s", self.turn)
 
     async def stop_timer(self) -> None:
         timer, self.confirm_timer = self.confirm_timer, None
