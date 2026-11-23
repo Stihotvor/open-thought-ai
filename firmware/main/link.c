@@ -192,7 +192,14 @@ static void on_text(const char *data, int len)
         const cJSON *state = cJSON_GetObjectItemCaseSensitive(msg, "state");
         if (cJSON_IsString(state) && strcmp(state->valuestring, "thinking") == 0) {
             s_handler(LINK_THINKING, turn);
+        } else if (cJSON_IsString(state) && strcmp(state->valuestring, "confirm") == 0) {
+            s_handler(LINK_CONFIRM, turn);
         }
+    } else if (strcmp(t, "confirm.request") == 0) {
+        // The server times out the wait and sends error confirm_timeout, so no local timer.
+        const cJSON *tool = cJSON_GetObjectItemCaseSensitive(msg, "tool");
+        ESP_LOGI(TAG, "turn %d: confirm %.48s", turn, cJSON_IsString(tool) ? tool->valuestring : "?");
+        s_handler(LINK_CONFIRM, turn);
     } else if (strcmp(t, "reply.start") == 0) {
         s_handler(LINK_REPLY_START, turn);
     } else if (strcmp(t, "reply.end") == 0) {

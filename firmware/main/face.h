@@ -8,6 +8,7 @@ typedef enum {
     FACE_SPEAKING,
     FACE_OFFLINE,
     FACE_ERROR,
+    FACE_CONFIRM,  // the server waits for a spoken yes
 } face_t;
 
 void face_init(void);

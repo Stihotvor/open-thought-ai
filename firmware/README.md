@@ -39,6 +39,9 @@ make -C firmware/test
 - Turn: press (listening face), speak, press again (thinking, then speaking face).
 - Barge-in: a press while the device thinks or speaks stops the reply at once and starts a
   new turn.
+- Confirm: a risky tool asks a question, then the screen shows "SAY YES". Press, say "yes",
+  press again. With no press in 10 s, the server sends `confirm_timeout`: a low beep, then
+  the idle face.
 - Errors (for example `no_speech` or `too_many_turns`): a low beep, then the idle face.
 - "SERVER REFUSED": a bad token (4401), an old firmware (4426) or another device took the
   session (4000). The device does not reconnect. Hold the button 5 s to set it up again.
