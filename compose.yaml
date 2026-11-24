@@ -7,6 +7,9 @@
 services:
   server:
     build: ./server
+    # All settings in .env (OTA_PIPELINE, model roles, MCP secrets) reach the server.
+    # The entries below add defaults and required checks on top.
+    env_file: .env
     environment:
       OTA_DEVICE_ID: ${OTA_DEVICE_ID:?set OTA_DEVICE_ID in .env}
       OTA_DEVICE_TOKEN_SHA256: ${OTA_DEVICE_TOKEN_SHA256:?set OTA_DEVICE_TOKEN_SHA256 in .env}
