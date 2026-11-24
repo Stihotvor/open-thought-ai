@@ -7,6 +7,7 @@ import pytest
 from fakes import (
     CANARY,
     CLEAN,
+    MISTRAL_SPLIT_CLEAN,
     OPENAI_CLEAN,
     SILENCE,
     SPEECH,
@@ -258,6 +259,9 @@ def test_flagged_text_is_moderated_and_logged(
         {"categories": {**CLEAN, "sexual": "true"}},  # not a boolean
         {"flagged": False},  # no categories: a stub
         {"flagged": "no", "categories": CLEAN},
+        {"categories": {**MISTRAL_SPLIT_CLEAN, "criminal": True}},
+        {"categories": {**MISTRAL_SPLIT_CLEAN, "jailbreaking": True}},
+        {"categories": {k: v for k, v in MISTRAL_SPLIT_CLEAN.items() if k != "criminal"}},
     ],
 )
 @pytest.mark.parametrize(("at", "blocked"), STAGES)
@@ -271,6 +275,8 @@ def test_suspect_results_fail_closed(result: dict[str, Any], at: int, blocked: s
     [
         {"categories": {**CLEAN, "health": True}},  # allowed: a child may ask about a headache
         {"flagged": False, "categories": OPENAI_CLEAN},
+        # Mistral since 2026: dangerous and criminal split, jailbreaking added, no "flagged"
+        {"categories": MISTRAL_SPLIT_CLEAN, "category_scores": {}},
     ],
 )
 def test_clean_results_pass(result: dict[str, Any]) -> None:

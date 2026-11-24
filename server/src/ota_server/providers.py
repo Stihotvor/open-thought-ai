@@ -12,6 +12,8 @@ A call raises one of these, and nothing else:
 """
 
 import asyncio
+import base64
+import binascii
 import contextlib
 import json
 import logging
@@ -23,6 +25,7 @@ from typing import Any
 import httpx
 
 from .endpoints import CHAT, MODERATION, STT, TTS, ConfigError, RoleConfig
+from .moderation_schema import flagged
 from .ratelimit import DeadlineExceeded, Retryable429, TokenBucket, TurnBudget, limited_call
 
 log = logging.getLogger(__name__)
@@ -35,20 +38,6 @@ MAX_BODY = 8 * 1024 * 1024  # bytes, any response
 MAX_UPLOAD = 4 * 1024 * 1024  # bytes, STT input
 MAX_TTS_TEXT = 1000  # characters per TTS call
 MAX_TRANSCRIPT = 4000  # characters, about 2 min of speech
-# Moderation (docs/security.md). Every category is blocked except these: a child may ask
-# about a headache. An unknown category that is true also blocks.
-ALLOWED_CATEGORIES = frozenset({"health", "financial", "law", "pii"})
-# A result must carry one complete known schema, so a stub or a partial answer fails closed.
-MISTRAL_CORE = frozenset(
-    {
-        "sexual",
-        "hate_and_discrimination",
-        "violence_and_threats",
-        "dangerous_and_criminal_content",
-        "selfharm",
-    }
-)
-OPENAI_CORE = frozenset({"sexual", "hate", "harassment", "self-harm", "violence"})
 MAX_SSE_LINE = 64 * 1024  # bytes
 MAX_CHAT_TEXT = 16 * 1024  # characters per chat reply
 MAX_TOOL_INDEXES = 8  # distinct tool calls per chat reply
@@ -132,22 +121,18 @@ async def _lines(resp: httpx.Response) -> AsyncGenerator[str]:
         yield pending.decode("utf-8", "replace")
 
 
-def _flagged(result: dict[str, Any]) -> bool:
-    """One moderation result: flagged when "flagged" is true or any category outside
-    ALLOWED_CATEGORIES is true. An unknown shape raises ValueError, so the turn fails closed."""
-    categories = result.get("categories")
-    if not isinstance(categories, dict):
-        raise ValueError("moderation result without categories")
-    if not (categories.keys() >= MISTRAL_CORE or categories.keys() >= OPENAI_CORE):
-        raise ValueError("unknown moderation schema")
-    if not all(isinstance(value, bool) for value in categories.values()):
-        raise ValueError("moderation categories must be booleans")
-    flagged = result.get("flagged", False)
-    if not isinstance(flagged, bool):
-        raise ValueError("moderation flag must be a boolean")
-    return flagged or any(
-        value for name, value in categories.items() if name not in ALLOWED_CATEGORIES
-    )
+def _tts_audio(body: bytes) -> bytes:
+    """Raw audio bytes from a TTS response. Most endpoints send the file itself. Mistral
+    sends JSON: {"audio_data": "<base64 WAV>"}. Any other JSON raises ProviderError."""
+    if body.lstrip()[:1] not in (b"{", b"["):
+        return body  # a WAV file starts with "RIFF"
+    try:
+        audio = json.loads(body)["audio_data"]
+        if not isinstance(audio, str):
+            raise TypeError("audio_data must be a string")
+        return base64.b64decode(audio, validate=True)
+    except (ValueError, LookupError, TypeError, binascii.Error):
+        raise ProviderError(TTS) from None
 
 
 def _sse_data(line: str) -> str | None:
@@ -427,7 +412,7 @@ class ModelClient:
             results = json.loads(raw)["results"]
             if not isinstance(results, list) or len(results) != len(texts):
                 raise ValueError("one moderation result per text expected")
-            return [_flagged(result) for result in results]
+            return [flagged(result) for result in results]
         except (ValueError, LookupError, TypeError, AttributeError, RecursionError):
             raise ProviderError(MODERATION) from None
 
@@ -440,7 +425,7 @@ class ModelClient:
             "voice": voice,
             "response_format": WAV_FORMAT,
         }
-        return await self._post(TTS, "/audio/speech", budget, json=body)
+        return _tts_audio(await self._post(TTS, "/audio/speech", budget, json=body))
 
     async def chat(self, messages: list[dict[str, Any]], budget: TurnBudget) -> AsyncGenerator[str]:
         """Stream text deltas. A 429 is retried only before the first byte arrives.

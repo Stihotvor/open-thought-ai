@@ -12,9 +12,9 @@ import httpx
 from fake_endpoint import make_client
 from model_env import ENDPOINTS
 
+from ota_server.moderation_schema import MISTRAL_CORE, OPENAI_CORE
 from ota_server.pipeline import SELF_TEST, VoicePipeline
 from ota_server.protocol import BYTES_PER_SECOND, SAMPLE_RATE
-from ota_server.providers import MISTRAL_CORE, OPENAI_CORE
 
 ENV = {
     **ENDPOINTS,
@@ -26,6 +26,23 @@ ENV = {
 }
 CLEAN = {name: False for name in [*MISTRAL_CORE, "health", "pii"]}  # Mistral schema
 OPENAI_CLEAN = {name: False for name in OPENAI_CORE}
+# The live Mistral moderation categories, as the API returned them on 2026-11-24.
+MISTRAL_SPLIT_CLEAN = {
+    name: False
+    for name in [
+        "sexual",
+        "hate_and_discrimination",
+        "violence_and_threats",
+        "dangerous",
+        "criminal",
+        "selfharm",
+        "health",
+        "financial",
+        "law",
+        "pii",
+        "jailbreaking",
+    ]
+}
 SELF_TEST_WORD = "zabić"  # in the harmful Polish self-test phrase
 CANARY = SELF_TEST["pl"][0]  # rides along in every moderation batch
 

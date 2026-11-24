@@ -4,7 +4,15 @@ from array import array
 
 import pytest
 
-from ota_server.audio import AudioError, pcm_to_wav, resample, wav_to_pcm
+from ota_server.audio import (
+    MAX_GAIN,
+    TARGET_PEAK,
+    AudioError,
+    normalize_peak,
+    pcm_to_wav,
+    resample,
+    wav_to_pcm,
+)
 from ota_server.protocol import BYTES_PER_SECOND
 
 
@@ -58,3 +66,31 @@ def test_stereo_is_downmixed() -> None:
 def test_unplayable_audio_is_refused(data: bytes) -> None:
     with pytest.raises(AudioError):
         wav_to_pcm(data)
+
+
+def pcm(samples: list[int]) -> bytes:
+    return array("h", samples).tobytes()
+
+
+def test_normalize_raises_quiet_speech_to_the_target_peak() -> None:
+    # Mistral TTS peaks near -9 dBFS: about 11400 of 32767.
+    out = array("h", normalize_peak(pcm([11400, -5700, 0])))
+    assert max(abs(s) for s in out) == TARGET_PEAK
+    assert out[1] == -round(5700 * TARGET_PEAK / 11400)
+    assert out[2] == 0
+
+
+def test_normalize_gain_is_capped() -> None:
+    # Near silence must not turn into loud noise.
+    out = array("h", normalize_peak(pcm([100, -50])))
+    assert list(out) == [100 * MAX_GAIN, -50 * MAX_GAIN]
+
+
+def test_normalize_never_lowers_loud_audio() -> None:
+    loud = pcm([32767, -32768, 1000])
+    assert normalize_peak(loud) == loud
+
+
+def test_normalize_keeps_silence_and_empty_audio() -> None:
+    assert normalize_peak(pcm([0, 0])) == pcm([0, 0])
+    assert normalize_peak(b"") == b""

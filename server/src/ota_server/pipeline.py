@@ -42,7 +42,7 @@ from typing import Any
 from .agent import LANGUAGE_NAMES as LANGUAGE_NAMES
 from .agent import SENTENCE_END, confirmation_reply, read_chat
 from .agent import system_prompt as system_prompt
-from .audio import AudioError, pcm_to_wav, wav_to_pcm
+from .audio import AudioError, normalize_peak, pcm_to_wav, wav_to_pcm
 from .endpoints import TTS
 from .hub.types import ToolContext
 from .protocol import TurnError
@@ -359,7 +359,7 @@ class VoicePipeline:  # pylint: disable=too-few-public-methods  # a callable Rep
         wav = await self.client.speak(chunk, self.voice, budget)
         # A thread, so the event loop keeps running (it gets GIL time slices). The thread
         # cannot be cancelled, so check the deadline once it is done.
-        pcm = await asyncio.to_thread(wav_to_pcm, wav)
+        pcm = await asyncio.to_thread(lambda: normalize_peak(wav_to_pcm(wav)))
         if budget.left() <= 0:
             raise DeadlineExceeded()
         return pcm
