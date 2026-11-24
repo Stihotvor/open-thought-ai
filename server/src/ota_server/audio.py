@@ -15,6 +15,9 @@ from .protocol import SAMPLE_RATE
 
 MIN_RATE, MAX_RATE = 8_000, 48_000  # TTS voices are 16-24 kHz; anything else is refused
 MAX_CHUNK_SECONDS = 30  # one TTS chunk (<= 300 chars, about 20 s of speech); longer is refused
+# TTS loudness: some voices peak near -9 dBFS, too quiet for the small speaker.
+TARGET_PEAK = 29204  # about -1 dBFS
+MAX_GAIN = 4  # about +12 dB at most, so near silence does not become loud noise
 
 
 class AudioError(Exception):
@@ -45,6 +48,17 @@ def _to_bytes(samples: array[int]) -> bytes:
         samples = array("h", samples)
         samples.byteswap()
     return samples.tobytes()
+
+
+def normalize_peak(pcm: bytes) -> bytes:
+    """Raise device PCM so its peak reaches TARGET_PEAK, with at most MAX_GAIN.
+    Audio that is already loud is returned as is: this never lowers the level."""
+    samples = _samples(pcm)
+    peak = max((abs(s) for s in samples), default=0)
+    if peak == 0 or peak >= TARGET_PEAK:
+        return pcm
+    gain = min(TARGET_PEAK / peak, MAX_GAIN)  # peak * gain <= TARGET_PEAK: no clipping
+    return _to_bytes(array("h", (round(s * gain) for s in samples)))
 
 
 def _downmix(samples: array[int], channels: int) -> array[int]:
