@@ -46,15 +46,21 @@ int proto_volume(double value)
     return whole_in_range(value, 100);
 }
 
-bool proto_safe_id(const char *id)
+int proto_tool_id(double value)
 {
-    if (strlen(id) > PROTO_MAX_ID) {
-        return false;
-    }
-    for (const unsigned char *c = (const unsigned char *)id; *c; c++) {
-        if (*c < 0x20 || *c == '"' || *c == '\\') {
-            return false;
+    int id = whole_in_range(value, PROTO_MAX_TOOL_ID);
+    return id >= 1 ? id : -1;
+}
+
+int proto_face(const char *name)
+{
+    // The order of face_t in face.h. "confirm" is not here: only the server shows it.
+    static const char *const names[] = {"idle", "listening", "thinking",
+                                        "speaking", "offline", "error"};
+    for (int i = 0; i < (int)(sizeof(names) / sizeof(names[0])); i++) {
+        if (strcmp(name, names[i]) == 0) {
+            return i;
         }
     }
-    return true;
+    return -1;
 }

@@ -11,7 +11,8 @@ typedef enum {
     LINK_UP,           // server hello: value = volume 0..100, or -1 when it has none
     LINK_DOWN,         // connection lost: the link reconnects with backoff
     LINK_STOPPED,      // a close code that forbids reconnect: value = close code
-    LINK_VOLUME,       // settings.update: value = volume
+    LINK_VOLUME,       // settings.update or tool set_volume: value = volume
+    LINK_FACE,         // tool set_face: value = a face_t
     LINK_TURN_START,   // value = turn
     LINK_THINKING,     // value = turn
     LINK_REPLY_START,  // value = turn
