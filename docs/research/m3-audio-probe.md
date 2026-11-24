@@ -7,6 +7,10 @@ Test: TTS makes a WAV, then STT reads it back.
 - A `voice` (or `ref_audio`) is required. All preset voices listed are `en_us`.
 - Works on the free tier. About 1.1 s for a 3–5 s phrase (not streamed).
 - Output: WAV 24 kHz, mono, 16 bit. The server must resample to 16 kHz.
+- Update 2026-11-24: the WAV now comes base64-encoded in JSON (`{"audio_data": ...}`).
+  The peak is about -9 dBFS, so the server raises it to about -1 dBFS (`normalize_peak`).
+- Update 2026-11-24: `mistral-moderation-latest` now returns `dangerous` and `criminal`
+  in place of `dangerous_and_criminal_content`, and adds `jailbreaking`.
 - EN, PL and UK text all produce audio with the English voice `en_paul_neutral`.
   PL and UK quality is not judged yet: a human must listen.
 
