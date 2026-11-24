@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import contextlib
 import json
 import logging
@@ -150,6 +151,28 @@ def test_transcribe_sends_key_only_to_its_endpoint() -> None:
 def test_speak_returns_audio() -> None:
     client = client_with(lambda req: httpx.Response(200, content=b"WAVDATA"))
     assert asyncio.run(client.speak("hi", "v", new_turn_budget())) == b"WAVDATA"
+
+
+def test_speak_decodes_json_audio_data() -> None:
+    # Mistral since 2026: {"audio_data": "<base64 WAV>"} with application/json.
+    body = {"audio_data": base64.b64encode(b"RIFFWAVDATA").decode()}
+    client = client_with(lambda req: httpx.Response(200, json=body))
+    assert asyncio.run(client.speak("hi", "v", new_turn_budget())) == b"RIFFWAVDATA"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"audio_data": "not base64!"},
+        {"audio_data": 5},
+        {"audio": "UklGRg=="},
+        ["UklGRg=="],
+    ],
+)
+def test_speak_rejects_other_json(body: Any) -> None:
+    client = client_with(lambda req: httpx.Response(200, json=body))
+    with pytest.raises(ProviderError):
+        asyncio.run(client.speak("hi", "v", new_turn_budget()))
 
 
 def test_too_long_tts_text_is_refused() -> None:

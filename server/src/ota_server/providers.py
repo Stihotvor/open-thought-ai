@@ -12,6 +12,8 @@ A call raises one of these, and nothing else:
 """
 
 import asyncio
+import base64
+import binascii
 import contextlib
 import json
 import logging
@@ -133,6 +135,20 @@ async def _lines(resp: httpx.Response) -> AsyncGenerator[str]:
             raise ProviderError(CHAT)
     if pending:
         yield pending.decode("utf-8", "replace")
+
+
+def _tts_audio(body: bytes) -> bytes:
+    """Raw audio bytes from a TTS response. Most endpoints send the file itself. Mistral
+    sends JSON: {"audio_data": "<base64 WAV>"}. Any other JSON raises ProviderError."""
+    if body.lstrip()[:1] not in (b"{", b"["):
+        return body  # a WAV file starts with "RIFF"
+    try:
+        audio = json.loads(body)["audio_data"]
+        if not isinstance(audio, str):
+            raise TypeError("audio_data must be a string")
+        return base64.b64decode(audio, validate=True)
+    except (ValueError, LookupError, TypeError, binascii.Error):
+        raise ProviderError(TTS) from None
 
 
 def _flagged(result: dict[str, Any]) -> bool:
@@ -443,7 +459,7 @@ class ModelClient:
             "voice": voice,
             "response_format": WAV_FORMAT,
         }
-        return await self._post(TTS, "/audio/speech", budget, json=body)
+        return _tts_audio(await self._post(TTS, "/audio/speech", budget, json=body))
 
     async def chat(self, messages: list[dict[str, Any]], budget: TurnBudget) -> AsyncGenerator[str]:
         """Stream text deltas. A 429 is retried only before the first byte arrives.
