@@ -48,7 +48,10 @@ MISTRAL_CORE = frozenset(
         "selfharm",
     }
 )
+# Mistral since 2026: "dangerous_and_criminal_content" split in two.
+MISTRAL_SPLIT_CORE = (MISTRAL_CORE - {"dangerous_and_criminal_content"}) | {"dangerous", "criminal"}
 OPENAI_CORE = frozenset({"sexual", "hate", "harassment", "self-harm", "violence"})
+KNOWN_CORES = (MISTRAL_CORE, MISTRAL_SPLIT_CORE, OPENAI_CORE)
 MAX_SSE_LINE = 64 * 1024  # bytes
 MAX_CHAT_TEXT = 16 * 1024  # characters per chat reply
 MAX_TOOL_INDEXES = 8  # distinct tool calls per chat reply
@@ -138,7 +141,7 @@ def _flagged(result: dict[str, Any]) -> bool:
     categories = result.get("categories")
     if not isinstance(categories, dict):
         raise ValueError("moderation result without categories")
-    if not (categories.keys() >= MISTRAL_CORE or categories.keys() >= OPENAI_CORE):
+    if not any(categories.keys() >= core for core in KNOWN_CORES):
         raise ValueError("unknown moderation schema")
     if not all(isinstance(value, bool) for value in categories.values()):
         raise ValueError("moderation categories must be booleans")
