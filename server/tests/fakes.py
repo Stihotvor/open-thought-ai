@@ -12,9 +12,9 @@ import httpx
 from fake_endpoint import make_client
 from model_env import ENDPOINTS
 
+from ota_server.moderation_schema import MISTRAL_CORE, OPENAI_CORE
 from ota_server.pipeline import SELF_TEST, VoicePipeline
 from ota_server.protocol import BYTES_PER_SECOND, SAMPLE_RATE
-from ota_server.providers import MISTRAL_CORE, OPENAI_CORE
 
 ENV = {
     **ENDPOINTS,

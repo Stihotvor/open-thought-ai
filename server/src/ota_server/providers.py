@@ -25,6 +25,7 @@ from typing import Any
 import httpx
 
 from .endpoints import CHAT, MODERATION, STT, TTS, ConfigError, RoleConfig
+from .moderation_schema import flagged
 from .ratelimit import DeadlineExceeded, Retryable429, TokenBucket, TurnBudget, limited_call
 
 log = logging.getLogger(__name__)
@@ -37,23 +38,6 @@ MAX_BODY = 8 * 1024 * 1024  # bytes, any response
 MAX_UPLOAD = 4 * 1024 * 1024  # bytes, STT input
 MAX_TTS_TEXT = 1000  # characters per TTS call
 MAX_TRANSCRIPT = 4000  # characters, about 2 min of speech
-# Moderation (docs/security.md). Every category is blocked except these: a child may ask
-# about a headache. An unknown category that is true also blocks.
-ALLOWED_CATEGORIES = frozenset({"health", "financial", "law", "pii"})
-# A result must carry one complete known schema, so a stub or a partial answer fails closed.
-MISTRAL_CORE = frozenset(
-    {
-        "sexual",
-        "hate_and_discrimination",
-        "violence_and_threats",
-        "dangerous_and_criminal_content",
-        "selfharm",
-    }
-)
-# Mistral since 2026: "dangerous_and_criminal_content" split in two.
-MISTRAL_SPLIT_CORE = (MISTRAL_CORE - {"dangerous_and_criminal_content"}) | {"dangerous", "criminal"}
-OPENAI_CORE = frozenset({"sexual", "hate", "harassment", "self-harm", "violence"})
-KNOWN_CORES = (MISTRAL_CORE, MISTRAL_SPLIT_CORE, OPENAI_CORE)
 MAX_SSE_LINE = 64 * 1024  # bytes
 MAX_CHAT_TEXT = 16 * 1024  # characters per chat reply
 MAX_TOOL_INDEXES = 8  # distinct tool calls per chat reply
@@ -149,24 +133,6 @@ def _tts_audio(body: bytes) -> bytes:
         return base64.b64decode(audio, validate=True)
     except (ValueError, LookupError, TypeError, binascii.Error):
         raise ProviderError(TTS) from None
-
-
-def _flagged(result: dict[str, Any]) -> bool:
-    """One moderation result: flagged when "flagged" is true or any category outside
-    ALLOWED_CATEGORIES is true. An unknown shape raises ValueError, so the turn fails closed."""
-    categories = result.get("categories")
-    if not isinstance(categories, dict):
-        raise ValueError("moderation result without categories")
-    if not any(categories.keys() >= core for core in KNOWN_CORES):
-        raise ValueError("unknown moderation schema")
-    if not all(isinstance(value, bool) for value in categories.values()):
-        raise ValueError("moderation categories must be booleans")
-    flagged = result.get("flagged", False)
-    if not isinstance(flagged, bool):
-        raise ValueError("moderation flag must be a boolean")
-    return flagged or any(
-        value for name, value in categories.items() if name not in ALLOWED_CATEGORIES
-    )
 
 
 def _sse_data(line: str) -> str | None:
@@ -446,7 +412,7 @@ class ModelClient:
             results = json.loads(raw)["results"]
             if not isinstance(results, list) or len(results) != len(texts):
                 raise ValueError("one moderation result per text expected")
-            return [_flagged(result) for result in results]
+            return [flagged(result) for result in results]
         except (ValueError, LookupError, TypeError, AttributeError, RecursionError):
             raise ProviderError(MODERATION) from None
 
