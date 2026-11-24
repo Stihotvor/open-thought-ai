@@ -49,6 +49,7 @@ static bool s_up;          // hello received on this connection
 static bool s_stopping;    // a no-reconnect close code arrived
 static bool s_in_binary;   // the message in progress is audio
 static int s_audio_turn;   // its turn id
+static int s_volume = 60;  // the last volume set, for get_status (audio.c starts at 60)
 
 // Queue a text message. Never blocks: callers include the player and the link task.
 static void send_json(const char *json)
@@ -141,18 +142,54 @@ static bool is_code(const cJSON *msg, const char *code)
     return cJSON_IsString(item) && strcmp(item->valuestring, code) == 0;
 }
 
-// Answer a tool call at once: device tools come in M4, and the server waits 2 s.
-static void refuse_tool(const cJSON *msg)
+static void tool_result(int id, bool ok, const char *text)
 {
-    const cJSON *id = cJSON_GetObjectItemCaseSensitive(msg, "id");
-    if (!cJSON_IsString(id) || !proto_safe_id(id->valuestring)) {
+    char json[TX_SIZE];
+    snprintf(json, sizeof(json), "{\"type\":\"tool.result\",\"id\":%d,\"ok\":%s,\"%s\":\"%s\"}",
+             id, ok ? "true" : "false", ok ? "result" : "error", text);
+    send_json(json);
+}
+
+// Run a device tool and answer at once: the server waits 2 s (docs/protocol.md).
+// The app task applies the change: this only posts an event.
+static void run_tool(const cJSON *msg)
+{
+    const cJSON *id_item = cJSON_GetObjectItemCaseSensitive(msg, "id");
+    int id = cJSON_IsNumber(id_item) ? proto_tool_id(id_item->valuedouble) : -1;
+    if (id < 0) {
+        ESP_LOGW(TAG, "tool.call without a valid id");
         return;
     }
-    char json[TX_SIZE];
-    snprintf(json, sizeof(json),
-             "{\"type\":\"tool.result\",\"id\":\"%s\",\"ok\":false,\"error\":\"unsupported\"}",
-             id->valuestring);
-    send_json(json);
+    const cJSON *name = cJSON_GetObjectItemCaseSensitive(msg, "name");
+    const cJSON *args = cJSON_GetObjectItemCaseSensitive(msg, "args");
+    const char *tool = cJSON_IsString(name) ? name->valuestring : "";
+    char text[48];
+    if (strcmp(tool, "set_volume") == 0) {
+        const cJSON *level = cJSON_GetObjectItemCaseSensitive(args, "level");
+        int volume = cJSON_IsNumber(level) ? proto_volume(level->valuedouble) : -1;
+        if (volume < 0) {
+            tool_result(id, false, "level must be 0 to 100");
+            return;
+        }
+        s_volume = volume;
+        s_handler(LINK_VOLUME, volume);
+        snprintf(text, sizeof(text), "volume set to %d", volume);
+        tool_result(id, true, text);
+    } else if (strcmp(tool, "set_face") == 0) {
+        const cJSON *face_item = cJSON_GetObjectItemCaseSensitive(args, "face");
+        int face = cJSON_IsString(face_item) ? proto_face(face_item->valuestring) : -1;
+        if (face < 0) {
+            tool_result(id, false, "unknown face");
+            return;
+        }
+        s_handler(LINK_FACE, face);
+        tool_result(id, true, "face shown");
+    } else if (strcmp(tool, "get_status") == 0) {
+        snprintf(text, sizeof(text), "volume %d", s_volume);
+        tool_result(id, true, text);
+    } else {
+        tool_result(id, false, "unsupported");
+    }
 }
 
 static void on_text(const char *data, int len)
@@ -173,14 +210,19 @@ static void on_text(const char *data, int len)
     if (strcmp(t, "hello") == 0) {
         s_up = true;
         s_backoff_ms = BACKOFF_MIN_MS;
-        s_handler(LINK_UP, volume_field(msg));
+        int volume = volume_field(msg);
+        if (volume >= 0) {
+            s_volume = volume;
+        }
+        s_handler(LINK_UP, volume);
     } else if (strcmp(t, "settings.update") == 0) {
         int volume = volume_field(msg);
         if (volume >= 0) {
+            s_volume = volume;
             s_handler(LINK_VOLUME, volume);
         }
     } else if (strcmp(t, "tool.call") == 0) {
-        refuse_tool(msg);
+        run_tool(msg);
     } else if (strcmp(t, "error") == 0 && is_code(msg, "too_many_turns")) {
         ESP_LOGW(TAG, "listen.start refused: too_many_turns");  // its turn is the old one
         s_handler(LINK_REFUSED, 0);

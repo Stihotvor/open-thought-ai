@@ -49,17 +49,24 @@ int main(void)
     CHECK(proto_volume(101) == -1);
     CHECK(proto_volume(-0.5) == -1);
 
-    CHECK(proto_safe_id("call_1-abc"));
-    CHECK(proto_safe_id(""));
-    CHECK(proto_safe_id("zażółć"));                  // UTF-8 needs no escape
-    CHECK(!proto_safe_id("a\"b"));
-    CHECK(!proto_safe_id("a\\b"));
-    CHECK(!proto_safe_id("a\nb"));
-    char id[64];
-    memset(id, 'x', PROTO_MAX_ID), id[PROTO_MAX_ID] = '\0';
-    CHECK(proto_safe_id(id));
-    id[PROTO_MAX_ID] = 'x', id[PROTO_MAX_ID + 1] = '\0';
-    CHECK(!proto_safe_id(id));
+    // The server numbers tool calls 1, 2, 3, ... per session (an integer, not a string).
+    CHECK(proto_tool_id(1) == 1);
+    CHECK(proto_tool_id(PROTO_MAX_TOOL_ID) == PROTO_MAX_TOOL_ID);
+    CHECK(proto_tool_id(0) == -1);
+    CHECK(proto_tool_id(PROTO_MAX_TOOL_ID + 1.0) == -1);
+    CHECK(proto_tool_id(2.5) == -1);
+    CHECK(proto_tool_id(NAN) == -1);
+
+    // set_face names, in the order of face_t (server: hub/device_source.py FACES).
+    CHECK(proto_face("idle") == 0);
+    CHECK(proto_face("listening") == 1);
+    CHECK(proto_face("thinking") == 2);
+    CHECK(proto_face("speaking") == 3);
+    CHECK(proto_face("offline") == 4);
+    CHECK(proto_face("error") == 5);
+    CHECK(proto_face("confirm") == -1);  // the server owns this face
+    CHECK(proto_face("") == -1);
+    CHECK(proto_face("Idle") == -1);
 
     printf("%s (%d failures)\n", failures ? "FAILED" : "OK", failures);
     return failures ? 1 : 0;

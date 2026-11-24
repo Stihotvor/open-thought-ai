@@ -300,6 +300,9 @@ static app_state_t on_link_event(app_state_t state, link_event_t event, int arg)
         case LINK_VOLUME:
             audio_set_volume(arg);
             return state;
+        case LINK_FACE:
+            face_show((face_t)arg);  // until the next state change shows its own face
+            return state;
         case LINK_TURN_START:
             if (state != STATE_LISTENING || s_turn >= 0) {
                 link_send_abort(arg);  // the press was cancelled: close the turn on the server

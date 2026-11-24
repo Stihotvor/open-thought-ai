@@ -50,8 +50,8 @@ One WebSocket connection between the device and the server.
 | `abort` | D→S | `turn` | Stop the turn now. |
 | `audio.credit` | D→S | `bytes` | Flow control. |
 | `confirm.request` | S→D | `turn`, `tool`, `timeout_ms` | A risky tool needs a spoken "yes". Device shows the confirm face. |
-| `tool.call` | S→D | `id`, `name`, `args` | Run a device tool. Handled in any state. |
-| `tool.result` | D→S | `id`, `ok`, `result` or `error` | Must arrive within **2 s**, else the server records a timeout error. |
+| `tool.call` | S→D | `id`, `name`, `args` | Run a device tool. Handled in any state. `id` is an integer, counted from 1 per session. |
+| `tool.result` | D→S | `id`, `ok`, `result` or `error` | `id` is the same integer. Must arrive within **2 s**, else the server records a timeout error. |
 | `settings.update` | S→D | `volume?`, `language?` | Pushed when the web UI changes a device setting. |
 | `error` | S→D | `turn`, `code` | Turn failed. Device plays a **local** beep and shows a face per code. |
 
