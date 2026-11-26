@@ -56,7 +56,7 @@ One WebSocket connection between the device and the server.
 | `error` | S→D | `turn`, `code` | Turn failed. Device plays a **local** beep and shows a face per code. |
 
 ### Error codes
-`no_speech` (< 300 ms speech), `stt_failed`, `llm_failed` (chat call failed, not a 429), `rate_limited` (provider limit still hit after retries), `tts_failed`, `too_many_turns` (turn start refused: more than `OTA_TURNS_PER_MINUTE`, burst `OTA_TURN_BURST`; the current turn goes on), `tool_timeout`, `moderated`, `confirm_timeout`, `internal`.
+`no_speech` (< 300 ms speech), `stt_failed`, `llm_failed` (chat call failed, not a 429), `rate_limited` (provider limit still hit after retries), `tts_failed`, `too_many_turns` (turn start refused: more than `OTA_TURNS_PER_MINUTE`, burst `OTA_TURN_BURST`; the current turn goes on), `tool_timeout`, `confirm_timeout`, `internal`.
 Errors are never sent as audio, so they work even when TTS is down.
 
 ## Abort and barge-in
@@ -66,7 +66,7 @@ Errors are never sent as audio, so they work even when TTS is down.
 
 ## Confirm flow (risky tools)
 1. The LLM requests a tool flagged `confirm`. The **hub** (not the LLM) holds the call: tool name + exact args + turn id, single use. The hub holds one call per session. A second `confirm` call while a call is held gets `confirm_busy` and does not run.
-2. The server stops the LLM and speaks a fixed question. Then it sends, in this order: `reply.end {reason: done}`, `state {state: confirm}`, `confirm.request {turn, tool, timeout_ms: 10000}`. The timer starts after `reply.end`. If `reply.end` has a reason other than `done` (for example a cap or a moderation stop), the server sends no `confirm.request` and drops the call.
+2. The server stops the LLM and speaks a fixed question. Then it sends, in this order: `reply.end {reason: done}`, `state {state: confirm}`, `confirm.request {turn, tool, timeout_ms: 10000}`. The timer starts after `reply.end`. If `reply.end` has a reason other than `done` (for example a cap), the server sends no `confirm.request` and drops the call.
 3. The next `listen.start` within the timeout is the confirmation turn. The server cancels the timer at that `listen.start`. The confirmation turn makes no LLM call.
 4. The server matches the transcript of the confirmation turn with the exact-match rule (below). Yes → run the held call once, then speak "Done." or "That did not work.". Anything else → cancel and speak "Cancelled.".
 5. Timeout: 10 s after `reply.end` with no `listen.start`, the server drops the call and sends `error {turn, code: confirm_timeout}`.
@@ -103,7 +103,7 @@ The args summary follows fixed rules, so an injected call cannot hide its args b
 
 ## Long replies ("continue")
 - TTS stops after 60 s of reply audio (a fixed cap): `reply.end {reason: cap}`.
-- Reply audio streams per TTS chunk: the first sentence plays while the next one is synthesized. The whole reply is moderated before `reply.start`.
+- Reply audio streams per TTS chunk: the first sentence plays while the next one is synthesized.
 - A failure before `reply.start` sends `error {code}`. A failure after it sends `reply.end {reason: error}`, because audio already played.
 - The server keeps the unspoken text in memory for 5 min. History stores the spoken part and marks the turn `truncated`.
 - A transcript that matches the "continue" keyword list (EN continue, PL dalej, UK далі) plays the rest, without an LLM call.

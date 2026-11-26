@@ -48,10 +48,8 @@ OTA_TTS_BASE_URL=http://192.168.1.30:4000/v1
 OTA_TTS_KEY=<tts virtual key>
 OTA_TTS_MODEL=tts
 
-# Moderation stays direct to Mistral. Do not set OTA_MODERATION_BASE_URL.
 OTA_MODEL_BASE_URL=https://api.mistral.ai/v1
 OTA_MODEL_KEY=<Mistral API key>
-OTA_MODERATION_MODEL=mistral-moderation-latest
 ```
 
 ## Notes
@@ -84,10 +82,6 @@ Leave out the `OTA_STT_BASE_URL`, `OTA_STT_KEY`, `OTA_TTS_BASE_URL` and `OTA_TTS
 STT and TTS then use the default endpoint (`OTA_MODEL_BASE_URL` and `OTA_MODEL_KEY`), or their own direct endpoint.
 For a direct local speaches server, see [speech-server.md](speech-server.md).
 In this split, set `OTA_TTS_MODEL` to the model id of your TTS endpoint, not to `tts`.
-
-### Moderation
-Moderation does not go through LiteLLM. The server sends it direct to Mistral.
-The example config has no moderation group. Keep `OTA_MODERATION_BASE_URL` unset.
 
 ### LAN and http://
 The server requires https, except for loopback.

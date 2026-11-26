@@ -13,7 +13,7 @@ Items marked **verify** are not confirmed.
 - A local speaches server. See [speech-server.md](speech-server.md).
 - The server virtual environment in `server/.venv`, with the server package installed.
 - Your own keys in the `.env` file in the repo root. Do not commit `.env`. Do not share it.
-- Time and quota for about 90 voice turns. Each turn makes about five provider calls (STT, two moderation calls, chat and TTS).
+- Time and quota for about 90 voice turns. Each turn makes about five provider calls (STT, chat and TTS).
 - A free-tier plan has a low rate limit. Use a pause between turns (`--pause`, default 5 s). Increase it if you get `rate_limited`.
 
 Run all commands from the repo root. The run reads `.env` from the current directory.
@@ -48,7 +48,7 @@ Run all commands from the repo root. The run reads `.env` from the current direc
    - If speaches does not run, the script stops with an error before any speech call.
 
 3. Set the model roles in `.env`.
-   - Set `OTA_CHAT_*`, `OTA_STT_*`, `OTA_TTS_*` and `OTA_MODERATION_*` as for the real server. See `.env.example`.
+   - Set `OTA_CHAT_*`, `OTA_STT_*`, and `OTA_TTS_*` as for the real server. See `.env.example`.
    - Voice mode needs all four roles. Without one, the run stops with `config error`.
    - The run uses one TTS voice from `OTA_TTS_VOICE`. Set the voice for each language on the command line (step 4). Variables on the command line win over `.env`.
    - Piper on speaches can use a different TTS model id for each voice. In that case, also set `OTA_TTS_MODEL` on the command line.
@@ -87,7 +87,7 @@ Run all commands from the repo root. The run reads `.env` from the current direc
 
 ### Input and warm-up
 - The input is synthetic Piper audio. It is cleaner than a real microphone. Real STT times and WER can be worse.
-- The first turn of each run is a warm-up. It includes the moderation self-test (`selftest`) and the connection setup. The report leaves it out of all numbers.
+- The first turn of each run is a warm-up. It includes the connection setup. The report leaves it out of all numbers.
 - Each start of `latency_run` is a new run. A resumed run also loses its first turn to warm-up.
 - Failed turns are not in the numbers. The report counts them by code in "Failures by code".
 
@@ -99,12 +99,9 @@ The stage names describe what the code does today. The budget rows come from `do
 | Upload tail | Upload tail + VAD end (0.2 s) | not measured: no device in the run |
 | `vad` | Upload tail + VAD end (0.2 s) | server VAD end |
 | `stt` | STT (1.2 s) | |
-| `mod_transcript` | no budget row | moderation of the STT text |
 | `chat_first_sentence` | LLM to first sentence (2.0 s) | time from the chat start to the first sentence end |
 | `chat_full` | no budget row | the full chat reply |
-| `mod_s1` | Moderation of sentence 1 (0.5 s) | runs at the same time as `tts1` |
 | `tts1` | TTS of sentence 1 + resample (0.8 s) | |
-| `selftest` | no budget row | first turn only, so it is in the warm-up |
 | Network + device buffer | 0.3 s | not measured: no device in the run |
 | `latency_ms (total)` | p50 target 5 s | |
 
@@ -114,8 +111,8 @@ The stage names describe what the code does today. The budget rows come from `do
 
 ### The chat-overlap line
 - The line "Chat time after sentence 1, which overlaps audio" shows `chat_full - chat_first_sentence`.
-- The pipeline streams per sentence, so this chat time runs while sentence 1 is moderated and played.
-- First sound waits for `chat_first_sentence`, then the longer of `mod_s1` and `tts1`.
+- The pipeline streams per sentence, so this chat time runs while sentence 1 is played.
+- First sound waits for `chat_first_sentence`, then `tts1`.
 
 ### WER
 - WER compares the STT text with the phrase text. It is a side number. It does not fail the run.

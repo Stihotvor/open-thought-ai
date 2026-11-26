@@ -59,13 +59,6 @@ uvx speaches-cli model download Systran/faster-whisper-small
 Add these lines to the server `.env`. The speech server is on the LAN over plain `http://`,
 so the insecure flag is needed. It allows `http://` only to a private LAN IP.
 
-Voice mode also needs a moderation role: without it, the server does not start. speaches has
-no moderation, so keep moderation on the default endpoint (Mistral, `OTA_MODERATION_MODEL`).
-Mistral does not list Polish and Ukrainian as supported moderation languages. A self-test
-runs before the first voice turn. If the log says "moderation self-test failed", moderation
-missed a blatant phrase in your language, and every voice turn is refused. A pass is only a
-smoke test: test real phrases in your language yourself before children use the device.
-
 ```bash
 OTA_PIPELINE=voice
 OTA_ALLOW_INSECURE_MODEL_ENDPOINT=1

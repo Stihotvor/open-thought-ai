@@ -17,7 +17,6 @@ flowchart LR
     AG --> HUB[MCP hub]
     HUB --> DTP[device tool proxy]
     HUB --> EXT[external MCP clients]
-    AG --> MOD[moderation]
     UI[web UI] --> CFG[settings + MCP config]
   end
   LINK <-- protocol v1 --> GW
@@ -33,7 +32,7 @@ flowchart LR
 
 ## Principles
 - One server instance = one device. No tenant logic. Scale by running more instances.
-- The server talks only to OpenAI-compatible endpoints. Each role (chat, STT, TTS, moderation, embeddings) has its own base URL, key and model in `.env`. A role with no base URL uses the default endpoint and key. A role with its own base URL needs its own key.
+- The server talks only to OpenAI-compatible endpoints. Each role (chat, STT, TTS, embeddings) has its own base URL, key and model in `.env`. A role with no base URL uses the default endpoint and key. A role with its own base URL needs its own key.
 - Terms: an "endpoint" is the OpenAI-compatible base URL of one role. A "provider" is the vendor or local service behind it (Mistral, Gemini, Ollama, LM Studio).
 - LiteLLM is optional and runs outside this stack. Point a role at it to get provider fallback. Without it there is no fallback: a failed call ends the turn with an error code.
 - The device is thin: capture audio, play audio, show a face, run hardware tools. All logic is on the server.
@@ -60,8 +59,8 @@ flowchart LR
 | Package | Job |
 |---|---|
 | `gateway` | WebSocket endpoint, auth, one session (a new connection replaces the old one), frame and time limits. |
-| `pipeline` | One turn: VAD → STT → agent (streamed) → per-sentence moderation → TTS → resample to 16 kHz → paced stream. Cancel on abort. |
-| `providers` | Thin OpenAI-client wrappers for STT, LLM, TTS, moderation, embeddings (base URL per role). TTS output is decoded and resampled to PCM 16 kHz s16le. A token bucket per endpoint limits the call rate. Each call has a timeout, and each turn has a hard deadline. A 429 gets a short backoff, then the turn ends with `rate_limited`. |
+| `pipeline` | One turn: VAD → STT → agent (streamed) → per-sentence TTS → resample to 16 kHz → paced stream. Cancel on abort. |
+| `providers` | Thin OpenAI-client wrappers for STT, LLM, TTS, embeddings (base URL per role). TTS output is decoded and resampled to PCM 16 kHz s16le. A token bucket per endpoint limits the call rate. Each call has a timeout, and each turn has a hard deadline. A 429 gets a short backoff, then the turn ends with `rate_limited`. |
 | `agent` | Prompt, history, tool loop, 60 s speech cap, "continue". |
 | `mcp_hub` | MCP client sessions; fixed device tools + external tools, namespaced; enforces `confirm`, schema hash, SSRF checks, 4 calls/turn. |
 | `store` | Postgres repositories (history, settings, MCP servers, tools). Qdrant memory. |
@@ -87,7 +86,6 @@ sequenceDiagram
   end
   S-->>D: reply.start
   loop each sentence as the LLM streams
-    S->>L: moderation (fail closed)
     S->>L: TTS
     S-->>D: PCM frames, paced by audio.credit
   end
@@ -105,7 +103,6 @@ sequenceDiagram
 | Upload tail + VAD end | 0.2 s |
 | STT (batch, ≤ 10 s audio) | 1.2 s |
 | LLM to first sentence | 2.0 s |
-| Moderation of sentence 1 | 0.5 s |
 | TTS of sentence 1 + resample | 0.8 s |
 | Network + device buffer | 0.3 s |
 Measured per stage in M3 (`turn.latency_ms` plus stage logs).
