@@ -15,13 +15,9 @@ from ota_server import latency_run
 from ota_server.audio import pcm_to_wav
 from ota_server.latency_report import parse_records
 from ota_server.latency_run import RunConfig, drop_damaged_tail, read_records, run
-from ota_server.pipeline import SELF_TEST, VoicePipeline
+from ota_server.pipeline import VoicePipeline
 
 IDS = ("p01", "p02", "p03")
-
-
-def en_harmful(text: str) -> bool:
-    return SELF_TEST["en"][0] in text
 
 
 class ChatFails(Endpoint):
@@ -41,9 +37,7 @@ class ChatFails(Endpoint):
 
 
 def endpoint(failing: set[int] | None = None) -> ChatFails:
-    return ChatFails(
-        failing or set(), transcript="Hello there.", reply="Hi. Nice day.", flag=en_harmful
-    )
+    return ChatFails(failing or set(), transcript="Hello there.", reply="Hi. Nice day.")
 
 
 def pipeline(ep: Endpoint) -> VoicePipeline:

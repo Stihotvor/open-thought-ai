@@ -70,7 +70,7 @@ class Lamp:
 class Script:
     """A reply source. Each turn runs the next mode:
     hold: holds a call, then one short chunk; cap: holds, then a chunk over the cap;
-    moderation: holds, one chunk, then a TurnError; question: holds, one chunk, then waits;
+    error: holds, one chunk, then a TurnError; question: holds, one chunk, then waits;
     yes: answers the held call with "yes"; plain: one chunk."""
 
     def __init__(self, *modes: str) -> None:
@@ -95,8 +95,8 @@ class Script:
             self.outcomes.append(await tools.run(ToolCall("c1", TOOL, {"level": 3})))
         size = 2 * AUDIO_CHUNK if mode == "cap" else AUDIO_CHUNK
         yield ReplyChunk(b"\0" * size, text="question")
-        if mode == "moderation":
-            raise TurnError("moderation")
+        if mode == "error":
+            raise TurnError("tts_failed")
         if mode == "question":
             await self.forever.wait()
 
@@ -168,7 +168,7 @@ def test_timeout() -> None:
     assert lamp.calls == []
 
 
-@pytest.mark.parametrize("mode", ["cap", "moderation"])
+@pytest.mark.parametrize("mode", ["cap", "error"])
 def test_a_cut_reply_gives_no_request(mode: str, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(session_module, "SPEECH_CAP", AUDIO_CHUNK)
 

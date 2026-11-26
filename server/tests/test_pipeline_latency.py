@@ -18,10 +18,8 @@ from ota_server.timing import StageTimer, TurnTiming, parse_line
 GOOD_STAGES = {
     "vad",
     "stt",
-    "mod_transcript",
     "chat_first_sentence",
     "chat_full",
-    "mod_s1",
     "tts1",
 }
 
@@ -69,12 +67,11 @@ def test_chat_first_sentence_is_within_chat_full(caplog: pytest.LogCaptureFixtur
     assert line.stages["chat_first_sentence"] <= line.stages["chat_full"]
 
 
-def test_selftest_shows_on_the_first_turn_only(caplog: pytest.LogCaptureFixture) -> None:
+def test_each_turn_logs_its_own_line(caplog: pytest.LogCaptureFixture) -> None:
     turns(Endpoint(), count=2)
     first, second = lines(caplog)
     assert (first.turn_id, second.turn_id) == (1, 2)
-    assert "selftest" in first.stages
-    assert "selftest" not in second.stages
+    assert set(first.stages) == set(second.stages)
 
 
 def test_a_failed_turn_logs_its_code(caplog: pytest.LogCaptureFixture) -> None:
@@ -83,7 +80,7 @@ def test_a_failed_turn_logs_its_code(caplog: pytest.LogCaptureFixture) -> None:
     [line] = lines(caplog)
     assert line.code == "llm_failed"
     assert line.latency_ms is None
-    assert {"vad", "stt", "mod_transcript"} <= set(line.stages)
+    assert {"vad", "stt"} <= set(line.stages)
     assert "chat_full" not in line.stages
 
 
@@ -261,10 +258,10 @@ def test_chat_is_cut_into_sentences(
     assert ("chat_first_sentence" in line.stages) is seen
 
 
-def test_mod_s1_and_tts1_are_logged(caplog: pytest.LogCaptureFixture) -> None:
+def test_tts1_is_logged(caplog: pytest.LogCaptureFixture) -> None:
     turns(Endpoint(reply="Dobrze. A ty?"))
     [line] = lines(caplog)
-    assert {"mod_s1", "tts1"} <= set(line.stages)
+    assert "tts1" in line.stages
 
 
 def test_closed_keeps_the_latency(caplog: pytest.LogCaptureFixture) -> None:

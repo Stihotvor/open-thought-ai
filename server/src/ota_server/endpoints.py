@@ -3,7 +3,7 @@
 Environment:
 - OTA_MODEL_BASE_URL, OTA_MODEL_KEY: the default endpoint and its key.
 - OTA_<ROLE>_BASE_URL, OTA_<ROLE>_KEY, OTA_<ROLE>_MODEL, OTA_<ROLE>_RATE, OTA_<ROLE>_BURST
-  for ROLE in CHAT, STT, TTS, MODERATION, EMBEDDINGS. A role without a model is not used.
+  for ROLE in CHAT, STT, TTS, EMBEDDINGS. A role without a model is not used.
 - OTA_ALLOW_INSECURE_MODEL_ENDPOINT=1 allows http:// to a private LAN IP (logs a warning).
 
 Key rules (docs/security.md): a role with its own base URL needs its own key. A key is only
@@ -19,9 +19,9 @@ from urllib.parse import urlsplit
 
 log = logging.getLogger(__name__)
 
-CHAT, STT, TTS, MODERATION, EMBEDDINGS = "chat", "stt", "tts", "moderation", "embeddings"
-ROLES = (CHAT, STT, TTS, MODERATION, EMBEDDINGS)
-VOICE_ROLES = (STT, MODERATION, CHAT, TTS)  # no voice without moderation
+CHAT, STT, TTS, EMBEDDINGS = "chat", "stt", "tts", "embeddings"
+ROLES = (CHAT, STT, TTS, EMBEDDINGS)
+VOICE_ROLES = (STT, CHAT, TTS)
 INSECURE_FLAG = "OTA_ALLOW_INSECURE_MODEL_ENDPOINT"
 MAX_BURST = 100
 DEFAULT_RATE = "1"  # calls per second
@@ -153,7 +153,7 @@ def load_roles(env: Mapping[str, str]) -> dict[str, RoleConfig]:
 
 def voice_roles(env: Mapping[str, str]) -> dict[str, RoleConfig]:
     """Check that the voice pipeline may start, and return its model roles.
-    Raises ConfigError when a role is missing, moderation included."""
+    Raises ConfigError when a role is missing."""
     roles = load_roles(env)
     missing = [role for role in VOICE_ROLES if role not in roles]
     if missing:

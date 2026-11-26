@@ -2,7 +2,6 @@
 # Chat: Mistral -> Gemini -> local Ollama. STT and TTS: cloud -> local speaches.
 # Each tier is its own model group, because LiteLLM falls back between groups.
 # Secrets and URLs come from the environment of the LiteLLM proxy (os.environ/<NAME>).
-# Moderation is not here: the server sends it straight to Mistral.
 # See docs/guides/litellm-fallback.md.
 
 model_list:

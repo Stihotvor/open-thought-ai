@@ -183,7 +183,7 @@ def test_failed_turn_sends_error_code(client: DeviceClient, error: Exception, co
     assert ws.receive_json() == {"type": "error", "turn": turn, "code": code}
 
 
-VOICE_ENV = {**ENDPOINTS, "OTA_MODERATION_MODEL": "mod-m", "OTA_PIPELINE": "voice"}
+VOICE_ENV = {**ENDPOINTS, "OTA_PIPELINE": "voice"}
 
 
 def voice_env(monkeypatch: pytest.MonkeyPatch, **extra: str) -> None:
@@ -195,8 +195,8 @@ def voice_env(monkeypatch: pytest.MonkeyPatch, **extra: str) -> None:
 @pytest.mark.parametrize(
     ("extra", "match"),
     [
-        ({"OTA_MODERATION_MODEL": ""}, "needs these roles: moderation"),
         ({"OTA_TTS_MODEL": ""}, "needs these roles: tts"),
+        ({"OTA_STT_MODEL": ""}, "needs these roles: stt"),
     ],
 )
 def test_voice_pipeline_refuses_to_start(

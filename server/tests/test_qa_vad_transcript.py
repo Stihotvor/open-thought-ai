@@ -159,14 +159,6 @@ def test_qa_023_024_empty_and_blank_stt() -> None:
         assert texts(msgs) == []
 
 
-def test_qa_025_flagged_no_transcript_no_chat() -> None:
-    endpoint = Endpoint(transcript="flagged phrase", flag=lambda t: "flagged" in t or "zabić" in t)
-    msgs = turn_msgs(endpoint, SPEECH)
-    assert codes(msgs) == ["moderated"]
-    assert texts(msgs) == []
-    assert "completions" not in endpoint.calls
-
-
 def test_qa_026_027_039_abort_during_stt_then_new_turn(monkeypatch: pytest.MonkeyPatch) -> None:
     """The late STT of the aborted turn sends nothing; the next turn gets its own transcript."""
 

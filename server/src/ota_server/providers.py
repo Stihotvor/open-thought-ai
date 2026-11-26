@@ -24,16 +24,14 @@ from typing import Any
 
 import httpx
 
-from .endpoints import CHAT, MODERATION, STT, TTS, ConfigError, RoleConfig
-from .moderation_schema import flagged
+from .endpoints import CHAT, STT, TTS, ConfigError, RoleConfig
 from .ratelimit import DeadlineExceeded, Retryable429, TokenBucket, TurnBudget, limited_call
 
 log = logging.getLogger(__name__)
 
 CONNECT_TIMEOUT = 3.0
 MIN_TIMEOUT = 0.01  # seconds; httpx needs a positive timeout
-CALL_CAPS = {CHAT: 4, STT: 2, TTS: 20, MODERATION: 21}  # per turn; one cap per client method
-# MODERATION: the transcript, then one call per TTS chunk.
+CALL_CAPS = {CHAT: 4, STT: 2, TTS: 20}  # per turn; one cap per client method
 MAX_BODY = 8 * 1024 * 1024  # bytes, any response
 MAX_UPLOAD = 4 * 1024 * 1024  # bytes, STT input
 MAX_TTS_TEXT = 1000  # characters per TTS call
@@ -68,14 +66,9 @@ def make_http_client() -> httpx.AsyncClient:
     return httpx.AsyncClient(follow_redirects=False, trust_env=False)
 
 
-# A base URL always has a scheme, so it never equals a bare role name: no collision.
-MODERATION_BUCKET_ID = (MODERATION, "")
-
-
 def bucket_id(cfg: RoleConfig) -> tuple[str, str]:
-    """Roles with the same endpoint and key share one provider quota, so one bucket.
-    Moderation always gets its own reserved bucket, so a TTS burst cannot starve it."""
-    return MODERATION_BUCKET_ID if cfg.role == MODERATION else (cfg.base_url, cfg.key)
+    """Roles with the same endpoint and key share one provider quota, so one bucket."""
+    return (cfg.base_url, cfg.key)
 
 
 def make_buckets(roles: Mapping[str, RoleConfig]) -> dict[str, TokenBucket]:
@@ -403,18 +396,6 @@ class ModelClient:
         if not isinstance(text, str) or len(text) > MAX_TRANSCRIPT:
             raise ProviderError(STT)
         return text
-
-    async def moderate(self, texts: list[str], budget: TurnBudget) -> list[bool]:
-        """One verdict per text, True when flagged. Any failure raises: the caller refuses."""
-        body = {"model": self._role(MODERATION).model, "input": texts}
-        raw = await self._post(MODERATION, "/moderations", budget, json=body)
-        try:
-            results = json.loads(raw)["results"]
-            if not isinstance(results, list) or len(results) != len(texts):
-                raise ValueError("one moderation result per text expected")
-            return [flagged(result) for result in results]
-        except (ValueError, LookupError, TypeError, AttributeError, RecursionError):
-            raise ProviderError(MODERATION) from None
 
     async def speak(self, text: str, voice: str, budget: TurnBudget) -> bytes:
         if len(text) > MAX_TTS_TEXT:

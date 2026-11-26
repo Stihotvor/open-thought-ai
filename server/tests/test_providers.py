@@ -29,11 +29,9 @@ from ota_server.ratelimit import CallCapExceeded, DeadlineExceeded, RateLimited,
 
 BASE = {
     **ENDPOINTS,
-    "OTA_MODERATION_MODEL": "mod-m",
     "OTA_CHAT_RATE": "100",
     "OTA_STT_RATE": "100",
     "OTA_TTS_RATE": "100",
-    "OTA_MODERATION_RATE": "100",
 }
 
 
@@ -66,10 +64,13 @@ def rate_limit_reply() -> httpx.Response:
 # --- wiring ---
 
 
-def test_moderation_gets_own_bucket() -> None:
+def test_roles_share_a_bucket_per_endpoint_and_key() -> None:
     buckets = make_buckets(load_roles(BASE))
+    assert buckets["chat"] is buckets["stt"] is buckets["tts"]
+    own = {**BASE, "OTA_TTS_BASE_URL": "https://tts.example.test/v1", "OTA_TTS_KEY": "tts-key"}
+    buckets = make_buckets(load_roles(own))
     assert buckets["chat"] is buckets["stt"]
-    assert buckets["moderation"] is not buckets["chat"]
+    assert buckets["tts"] is not buckets["chat"]
 
 
 def test_shared_endpoint_needs_same_limits() -> None:

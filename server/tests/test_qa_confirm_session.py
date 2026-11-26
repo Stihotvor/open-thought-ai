@@ -259,16 +259,7 @@ def test_qa_045_bug_in_the_yes_decision_fails_closed(
     assert source.calls == []
 
 
-# ---- QA-046 .. QA-049: the pipeline cuts ----
-
-
-def test_qa_046_moderation_refusal_in_the_confirmation_turn() -> None:
-    rig = device_rig(["badword", "yes"])
-    rig.endpoint.flagged.append("badword")
-    run(rig.turns(3))
-    assert rig.device_calls() == []
-    assert rig.session.hub.gate.holding_turn() is None
-    assert rig.chats() == 2
+# ---- QA-047, QA-049: the pipeline cuts ----
 
 
 def test_qa_047_speech_to_text_failure_in_the_confirmation_turn() -> None:
@@ -276,14 +267,6 @@ def test_qa_047_speech_to_text_failure_in_the_confirmation_turn() -> None:
     run(rig.turns(3))
     assert rig.device_calls() == []
     assert rig.session.hub.gate.holding_turn() is None
-
-
-def test_qa_048_moderation_cut_of_the_question() -> None:
-    rig = device_rig([])
-    rig.endpoint.flagged.append("set_volume")
-    run(rig.turns(1))
-    assert "confirm.request" not in rig.types()
-    assert rig.device_calls() == []
 
 
 def test_qa_049_cap_cut_during_the_question(monkeypatch: pytest.MonkeyPatch) -> None:

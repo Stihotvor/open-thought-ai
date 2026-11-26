@@ -14,12 +14,11 @@ from ota_server.hub.hub import McpHub
 from ota_server.hub.types import CallCtx, ToolCall, ToolOutcome
 from ota_server.mcp.config import McpServerConfig
 from ota_server.mcp.source import McpSource
-from ota_server.pipeline import SELF_TEST, VoicePipeline
+from ota_server.pipeline import VoicePipeline
 from ota_server.protocol import MAX_CREDIT
 from ota_server.session import DeviceSession
 
 PIN = "sha256:" + "0" * 64
-HARMFUL = {harmful for harmful, _ in SELF_TEST.values()}
 MAIL = ("n8n__send_mail", {"to": "a@b.com"})
 LIST: tuple[str, dict[str, Any]] = ("n8n__list_mail", {})
 VOLUME = ("device__set_volume", {"level": 80})
@@ -40,13 +39,8 @@ class ScriptEndpoint(Endpoint):
     calls or a text; a spent script gives "Okay."."""
 
     def __init__(self, transcripts: list[str | None], scripts: list[Any]) -> None:
-        super().__init__(reply="Okay.", tts=tts_wav(0.05), flag=self.harmful)
+        super().__init__(reply="Okay.", tts=tts_wav(0.05))
         self.transcripts, self.scripts = transcripts, scripts
-        self.spoken: list[str] = []
-        self.flagged: list[str] = []
-
-    def harmful(self, text: str) -> bool:
-        return text in HARMFUL or any(f in text for f in self.flagged)
 
     def __call__(self, req: httpx.Request) -> httpx.Response:
         path = req.url.path
@@ -56,8 +50,6 @@ class ScriptEndpoint(Endpoint):
             if text is None:
                 return httpx.Response(500)
             return httpx.Response(200, json={"text": text})
-        if path.endswith("/audio/speech"):
-            self.spoken.append(json.loads(req.content)["input"])
         if not path.endswith("/chat/completions"):
             return super().__call__(req)
         self.calls.append("completions")

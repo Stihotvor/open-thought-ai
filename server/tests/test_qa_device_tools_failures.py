@@ -187,7 +187,7 @@ def test_qa_045_call_frame_size() -> None:
 # ---- history, rounds, budget ----
 
 
-def test_qa_047_tool_messages_out_of_history_and_moderation() -> None:
+def test_qa_047_tool_messages_out_of_history_and_speech() -> None:
     answer = result(result="SECRET-RESULT")
     run = Run([TOOL_ROUND, ("Volume is 30.", []), ("Hello.", [])], answer)
     asyncio.run(run_turn(run.session))
@@ -196,7 +196,7 @@ def test_qa_047_tool_messages_out_of_history_and_moderation() -> None:
     assert not [m for m in second if m["role"] == "tool" or m.get("tool_calls")]
     assert "Volume is 30." in json.dumps(second)
     assert "SECRET-RESULT" not in json.dumps(second)
-    assert not [t for texts in run.endpoint.moderated for t in texts if "SECRET-RESULT" in t]
+    assert not [t for t in run.endpoint.spoken if "SECRET-RESULT" in t]
 
 
 def test_qa_048_tool_round_cap() -> None:

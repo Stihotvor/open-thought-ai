@@ -3,7 +3,7 @@
 import asyncio
 from typing import Any
 
-from fakes import SPEECH, Endpoint, ListSocket, pipeline_for, self_test_only, tts_wav
+from fakes import SPEECH, Endpoint, ListSocket, pipeline_for, tts_wav
 
 from ota_server.protocol import MAX_CREDIT, TRANSCRIPT_MAX_CHARS
 from ota_server.session import DeviceSession
@@ -52,8 +52,8 @@ def test_long_transcript_goes_whole_to_chat_and_cut_to_the_device() -> None:
     assert transcripts(sent) == [text[:TRANSCRIPT_MAX_CHARS]]
 
 
-def test_flagged_transcript_sends_no_transcript() -> None:
-    endpoint = Endpoint(flag=lambda text: self_test_only(text) or "masz" in text)
+def test_failed_stt_sends_no_transcript() -> None:
+    endpoint = Endpoint(fail={"/v1/audio/transcriptions": 500})
     sent = session_turn(endpoint)
-    assert {"type": "error", "turn": 1, "code": "moderated"} in sent
+    assert {"type": "error", "turn": 1, "code": "stt_failed"} in sent
     assert transcripts(sent) == []

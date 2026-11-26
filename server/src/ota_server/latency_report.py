@@ -41,7 +41,6 @@ BUDGET = {
     "vad": f"0.2 s ({UPLOAD_TAIL} + VAD end)",
     "stt": "1.2 s",
     "chat_first_sentence": "2.0 s",
-    "mod_s1": "0.5 s",
     "tts1": "0.8 s",
 }
 NO_BUDGET = "no budget row"
@@ -306,8 +305,8 @@ def render(summaries: Sequence[LanguageSummary]) -> str:
     for summary in summaries:
         lines += language_section(summary)
     lines.append(
-        "¹ The pipeline streams per sentence (docs/architecture.md). mod_s1 and tts1 run "
-        "at the same time, so the first sound waits for the longer of the two, not their sum."
+        "¹ The pipeline streams per sentence (docs/architecture.md), so the first sound "
+        "waits for sentence 1 and its TTS (tts1), not for the whole reply."
     )
     return "\n".join(lines) + "\n"
 

@@ -40,19 +40,15 @@ PHRASES = json.dumps(
 EXPECTED_EN = {
     "vad": (250, 385),
     "stt": (1300, 1570),
-    "mod_transcript": (200, 285),
     "chat_first_sentence": (1500, 1950),
     "chat_full": (2750, 3850),
-    "mod_s1": (550, 685),
     "tts1": (850, 985),
 }
 EXPECTED_PL = {
     "vad": (200, 245),
     "stt": (1200, 1290),
-    "mod_transcript": (200, 245),
     "chat_first_sentence": (2000, 2180),
     "chat_full": (3000, 3360),
-    "mod_s1": (500, 545),
     "tts1": (800, 845),
 }
 
@@ -146,7 +142,6 @@ def test_budget_footnote_notes_and_not_measured() -> None:
         "vad": "0.2 s",
         "stt": "1.2 s",
         "chat_first_sentence": "2.0 s",
-        "mod_s1": "0.5 s",
         "tts1": "0.8 s",
     }
     for stage, budget in budgets.items():

@@ -4,7 +4,7 @@ With a ToolContext, chat runs in rounds. A round that asks for tools runs them i
 (the wait extends the turn budget) and the next round sees their results. After
 MAX_TOOL_ROUNDS a last round gets tool_choice "none". Text of every round is spoken; the
 unfinished tail is flushed at each round end (D11). Tool messages go to a local copy of
-the chat messages only: never to History or moderation. A call held for confirmation
+the chat messages only: never to History. A call held for confirmation
 ends the rounds: its fixed question is the last sentence (confirm-flow D8).
 """
 

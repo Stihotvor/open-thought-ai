@@ -55,12 +55,9 @@ class QAEndpoint(Endpoint):
         super().__init__(tts=tts_wav(0.05))
         self.rounds, self.raw, self.reject_tools = rounds, raw or {}, reject_tools
         self.bodies: list[dict[str, Any]] = []
-        self.spoken: list[str] = []
 
     def __call__(self, req: httpx.Request) -> httpx.Response:
         path = req.url.path
-        if path.endswith("/audio/speech"):
-            self.spoken.append(json.loads(req.content)["input"])
         if not path.endswith("/chat/completions"):
             return super().__call__(req)
         body = json.loads(req.content)

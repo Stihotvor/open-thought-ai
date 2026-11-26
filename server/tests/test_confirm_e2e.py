@@ -1,5 +1,5 @@
 """Confirm flow end to end (T10): DeviceSession + VoicePipeline + McpHub + a real
-DeviceSource and a fake MCP source. A fake endpoint plays STT, chat, moderation and TTS;
+DeviceSource and a fake MCP source. A fake endpoint plays STT, chat and TTS;
 a fake socket plays the device; a fake sleep plays the 10 s clock. No board, no real API."""
 
 import asyncio
@@ -12,14 +12,13 @@ from fake_endpoint import make_client
 from fakes import ENV, SPEECH, Endpoint, ListSocket, sse, tts_wav
 
 from ota_server.hub.types import ToolOutcome, ToolSpec
-from ota_server.pipeline import SELF_TEST, VoicePipeline
+from ota_server.pipeline import VoicePipeline
 from ota_server.protocol import MAX_CREDIT
 from ota_server.session import DeviceSession
 
 VOLUME = ("device__set_volume", '{"level": 30}')
 SWITCH = ("home__switch", '{"room": "kitchen"}')
 CALLS = {"device": VOLUME, "mcp": SWITCH}
-HARMFUL = {harmful for harmful, _ in SELF_TEST.values()}
 
 
 def tool_sse(name: str, arguments: str) -> str:
@@ -33,17 +32,14 @@ class ConfirmEndpoint(Endpoint):
     Every TTS input is kept, so a test reads what the device was told."""
 
     def __init__(self, transcripts: list[str], call: tuple[str, str]) -> None:
-        super().__init__(reply="Okay.", tts=tts_wav(0.05), flag=lambda t: t in HARMFUL)
+        super().__init__(reply="Okay.", tts=tts_wav(0.05))
         self.transcripts, self.call = transcripts, call
-        self.spoken: list[str] = []
 
     def __call__(self, req: httpx.Request) -> httpx.Response:
         path = req.url.path
         if path.endswith("/audio/transcriptions"):
             self.calls.append("transcriptions")
             return httpx.Response(200, json={"text": self.transcripts.pop(0)})
-        if path.endswith("/audio/speech"):
-            self.spoken.append(json.loads(req.content)["input"])
         if not path.endswith("/chat/completions"):
             return super().__call__(req)
         self.calls.append("completions")

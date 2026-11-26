@@ -126,7 +126,3 @@ def test_long_timeout_breaks_the_deadline(config: Config) -> None:
 def test_local_audio_groups_use_speaches(config: Config) -> None:
     for name in ("stt-local", "tts-local"):
         assert params(config, name)["api_base"] == f"{ENV_PREFIX}SPEACHES_API_BASE"
-
-
-def test_no_moderation_group(config: Config) -> None:
-    assert not [name for name in model_names(config) if "moderation" in name]

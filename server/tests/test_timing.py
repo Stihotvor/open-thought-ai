@@ -23,12 +23,9 @@ def test_stages_is_complete() -> None:
     assert STAGES == (
         "vad",
         "stt",
-        "mod_transcript",
         "chat_first_sentence",
         "chat_full",
-        "mod_s1",
         "tts1",
-        "selftest",
     )
 
 

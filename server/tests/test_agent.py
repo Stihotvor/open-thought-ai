@@ -1,5 +1,5 @@
 """The tool loop of a turn (agent.py): a fake chat_turn and a fake ToolContext,
-inside a full pipeline turn with the fake endpoint for STT, moderation and TTS."""
+inside a full pipeline turn with the fake endpoint for STT and TTS."""
 
 import asyncio
 import copy
@@ -7,7 +7,7 @@ from collections.abc import AsyncIterator, Callable
 from typing import Any, cast
 
 import pytest
-from fakes import SPEECH, Endpoint, pipeline_for, self_test_only
+from fakes import SPEECH, Endpoint, pipeline_for
 
 from ota_server import pipeline as pipeline_module
 from ota_server.agent import tool_rounds
@@ -99,13 +99,12 @@ def test_three_tool_rounds_then_a_text_round(monkeypatch: pytest.MonkeyPatch) ->
     ]
 
 
-def test_tool_messages_stay_out_of_history_and_moderation(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_tool_messages_stay_out_of_history_and_speech(monkeypatch: pytest.MonkeyPatch) -> None:
     endpoint = Endpoint()
     chat = FakeChat([VOLUME], [TextDelta("Done.")])
+    # The chunk texts are what the session keeps as History.
     assert tool_turn(monkeypatch, chat, FakeTools("SECRET-RESULT"), endpoint) == ["Done."]
-    assert not [t for texts in endpoint.moderated for t in texts if "SECRET-RESULT" in t]
+    assert not [t for t in endpoint.spoken if "SECRET-RESULT" in t]
 
 
 def test_text_before_tool_calls_is_spoken_first(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -183,20 +182,6 @@ def test_a_confirmation_reply_skips_the_llm(monkeypatch: pytest.MonkeyPatch) -> 
     assert tool_turn(monkeypatch, chat, tools, endpoint) == ["Done."]
     assert not read and not chat.calls and "completions" not in endpoint.calls
     assert tools.confirmed == ["Jak się masz?"]
-
-
-def test_a_confirmation_reply_is_moderated(monkeypatch: pytest.MonkeyPatch) -> None:
-    endpoint = Endpoint(flag=lambda t: self_test_only(t) or "Done." in t)
-    played: list[str] = []
-    pipeline = pipeline_for(endpoint)
-
-    async def turn() -> None:
-        async for chunk in pipeline(SPEECH, (), tools=FakeTools(reply="Done.")):
-            played.append(chunk.text)
-
-    with pytest.raises(TurnError) as err:
-        asyncio.run(turn())
-    assert err.value.code == "moderated" and not played  # TTS may run, its audio is dropped
 
 
 def test_no_confirmation_is_a_normal_turn(monkeypatch: pytest.MonkeyPatch) -> None:
