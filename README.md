@@ -16,6 +16,7 @@ Status: design phase. See [docs/](docs/) and the GitHub Project board.
 - [Requirements](docs/design/mvp/requirements.md)
 - [Architecture](docs/architecture.md)
 - [Local speech server](docs/guides/speech-server.md)
+- [MCP servers (n8n example)](docs/guides/mcp-servers.md)
 - [Protocol v1](docs/protocol.md)
 - [Data model](docs/data-model.md)
 - [Security](docs/security.md)
