@@ -1,0 +1,80 @@
+{
+  "tasks": [
+    {
+      "id": "T1",
+      "title": "Add alembic, sqlalchemy, psycopg deps; db package with schema-name function and settings",
+      "size": "S",
+      "depends_on": [],
+      "done_when": "cd server && pytest tests/test_db_names.py tests/test_db_settings.py passes: DEVICE_ID empty, 41 chars, upper-case and a quote are rejected; 'abc_1' gives the quoted schema \"ota_abc_1\"; OTA_DATABASE_URL is read from env and absent from repr/str of settings; pyproject lists alembic, sqlalchemy, psycopg[binary] (added with uv add); ruff and mypy report 0 errors",
+      "files": [
+        "server/pyproject.toml",
+        "server/uv.lock",
+        "server/src/ota_server/db/__init__.py",
+        "server/src/ota_server/db/names.py",
+        "server/src/ota_server/db/settings.py",
+        "server/tests/test_db_names.py",
+        "server/tests/test_db_settings.py"
+      ],
+      "agent": "python-lead"
+    },
+    {
+      "id": "T2",
+      "title": "Engine (NullPool) and migrate() lock/schema/upgrade flow with Alembic env.py",
+      "size": "M",
+      "depends_on": ["T1"],
+      "done_when": "cd server && pytest tests/test_db_migrate.py passes with a fake connection: the call order is session timeouts, pg_try_advisory_lock(int4, hashtext(:schema)) polled, COMMIT, schema create only when to_regnamespace is null, lock_timeout, upgrade, then rollback, unlock, close in finally; a lock wait past the bound raises and logs without the URL; an unreachable database logs without the URL (no URL in any caplog line); downgrade needs an explicit flag; ruff and mypy report 0 errors",
+      "files": [
+        "server/src/ota_server/db/engine.py",
+        "server/src/ota_server/db/migrate.py",
+        "server/src/ota_server/db/alembic.ini",
+        "server/src/ota_server/db/migrations/env.py",
+        "server/src/ota_server/db/migrations/script.py.mako",
+        "server/tests/test_db_migrate.py"
+      ],
+      "agent": "python-lead"
+    },
+    {
+      "id": "T3",
+      "title": "0001_initial migration DDL and Postgres integration tests",
+      "size": "M",
+      "depends_on": ["T2"],
+      "done_when": "cd server && OTA_TEST_DATABASE_URL=<postgres 16 url> pytest tests/integration/test_migrations_pg.py passes: upgrade head, downgrade -1, upgrade head; a failing migration leaves no tables and no lock; two parallel runners both exit 0 and the version table has one row; a runner that waits over 10 s with statement_timeout 10 s is not cancelled; settings row has defaults en/''/''/50 and mcp_server has one 'device' row; second run changes nothing. Without OTA_TEST_DATABASE_URL, pytest reports these tests as skipped and exits 0",
+      "files": [
+        "server/src/ota_server/db/migrations/versions/0001_initial.py",
+        "server/tests/integration/test_migrations_pg.py",
+        "server/tests/integration/conftest.py"
+      ],
+      "agent": "python-lead"
+    },
+    {
+      "id": "T4",
+      "title": "migrate CLI entry and startup revision check in server lifespan",
+      "size": "M",
+      "depends_on": ["T2"],
+      "done_when": "cd server && pytest tests/test_db_cli.py tests/test_db_startup_check.py passes: the CLI exits 0 on success and non-zero on failure, downgrade needs --allow-downgrade; the server start is refused with a log line holding both revisions and no URL when the revision differs, the schema is missing or alembic_version is missing; the check is off without OTA_DATABASE_URL; the full `cd server && pytest` and gate.sh pass",
+      "files": [
+        "server/src/ota_server/db/cli.py",
+        "server/src/ota_server/db/check.py",
+        "server/src/ota_server/main.py",
+        "server/pyproject.toml",
+        "server/tests/test_db_cli.py",
+        "server/tests/test_db_startup_check.py"
+      ],
+      "agent": "python-lead"
+    },
+    {
+      "id": "T5",
+      "title": "Compose migrate service, postgres test profile, CI Postgres job, docs",
+      "size": "M",
+      "depends_on": ["T3", "T4"],
+      "done_when": "`docker compose config` shows server depends_on migrate with condition service_completed_successfully; `docker compose --profile test up -d postgres-test` starts postgres:16-alpine; the CI workflow has a Postgres 16 job that runs tests/integration and the two-runner test; docs/data-model.md has the two-key lock, lock before schema, CREATE-on-database note, session timeouts, direct connection, settings defaults, and the pg_dump line moved to #34; README or docs name the migrate command; gate.sh stays green without Docker",
+      "files": [
+        "compose.yaml",
+        ".github/workflows/server.yml",
+        "docs/data-model.md",
+        "README.md"
+      ],
+      "agent": "python-lead"
+    }
+  ]
+}
