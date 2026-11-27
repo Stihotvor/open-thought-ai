@@ -313,7 +313,8 @@ class SdkConnection:
 
     async def reconnect(self, seen_generation: int) -> None:
         """Replace the owner once per generation. Shielded: a caller cancel or timeout does
-        not stop it half done. Raises the failure; the next call then tries again."""
+        not stop it half done. Raises the failure; the next call fails fast during
+        RECONNECT_COOLDOWN, then tries again."""
         job = asyncio.create_task(self._reconnect_locked(seen_generation))
         job.add_done_callback(_retrieve)
         await asyncio.shield(job)

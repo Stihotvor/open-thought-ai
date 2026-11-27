@@ -7,7 +7,7 @@ import httpx
 import mcp_fakes
 import pytest
 from mcp.server.fastmcp import FastMCP
-from test_mcp_reconnect import CountingPolicy, _http
+from mcp_fakes import CountingPolicy, http_connection
 
 from ota_server.mcp import adapters
 from ota_server.mcp.config import McpServerConfig
@@ -52,7 +52,7 @@ def test_calls_in_flight_never_exceed_the_cap(monkeypatch: pytest.MonkeyPatch, p
     monkeypatch.setattr(adapters, "MAX_CALLS_IN_FLIGHT", 2)
 
     async def run() -> list[str]:
-        async with _http(CountingPolicy()) as (_, conn):
+        async with http_connection(CountingPolicy()) as (_, conn):
             calls = [conn.call_tool("wait_echo", {"text": str(i)}) for i in range(6)]
             return [r.parts[0][1] for r in await asyncio.gather(*calls)]
 
@@ -64,7 +64,7 @@ def test_cancelled_call_releases_its_slot(monkeypatch: pytest.MonkeyPatch, peak:
     monkeypatch.setattr(adapters, "MAX_CALLS_IN_FLIGHT", 1)
 
     async def run() -> str:
-        async with _http(CountingPolicy()) as (_, conn):
+        async with http_connection(CountingPolicy()) as (_, conn):
             slow = asyncio.create_task(conn.call_tool("wait_echo", {"text": "slow"}))
             await asyncio.sleep(0.05)
             slow.cancel()
@@ -91,7 +91,7 @@ def test_denied_reconnect_starts_the_cool_down() -> None:
     policy = DenyReconnect()
 
     async def run() -> None:
-        async with _http(policy) as (server, conn):
+        async with http_connection(policy) as (server, conn):
             await server.stop()
             with pytest.raises(ConnectionDenied):
                 await conn.call_tool("echo", {"text": "x"})
@@ -106,7 +106,7 @@ def test_call_within_cool_down_fails_fast() -> None:
     policy = CountingPolicy()
 
     async def run() -> int:
-        async with _http(policy) as (server, conn):
+        async with http_connection(policy) as (server, conn):
             await server.stop()
             with REFUSED:
                 await conn.call_tool("echo", {"text": "x"})
@@ -124,7 +124,7 @@ def test_reconnect_works_after_the_cool_down(monkeypatch: pytest.MonkeyPatch) ->
     policy = CountingPolicy()
 
     async def run() -> str:
-        async with _http(policy) as (server, conn):
+        async with http_connection(policy) as (server, conn):
             await server.stop()
             with REFUSED:
                 await conn.call_tool("echo", {"text": "x"})
