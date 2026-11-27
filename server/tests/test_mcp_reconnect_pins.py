@@ -13,6 +13,7 @@ from qa_support import FakeConn
 from starlette.types import ASGIApp
 
 from ota_server.hub.types import ToolOutcome
+from ota_server.mcp import adapters
 from ota_server.mcp.adapters import SdkConnection
 from ota_server.mcp.config import McpServerConfig
 from ota_server.mcp.hooks import ALLOW_ALL, ConnectionDenied, ToolFilter
@@ -93,7 +94,10 @@ def test_reconnect_with_unchanged_tools_retries() -> None:
     assert second == ToolOutcome(True, "again")
 
 
-def test_reconnect_after_description_change_is_denied(caplog: pytest.LogCaptureFixture) -> None:
+def test_reconnect_after_description_change_is_denied(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(adapters, "RECONNECT_COOLDOWN", 0)  # the second call reconnects again
     with caplog.at_level(logging.WARNING):
         first, second = asyncio.run(_call_after_restart(MutableServer(), change=True))
     assert first.ok is False and first.code == "mcp_error"
@@ -105,7 +109,10 @@ def test_reconnect_after_description_change_is_denied(caplog: pytest.LogCaptureF
     assert not [r for r in caplog.records if "failed (ConnectionDenied)" in r.message]
 
 
-def test_reconnect_after_tool_disappears_is_denied(caplog: pytest.LogCaptureFixture) -> None:
+def test_reconnect_after_tool_disappears_is_denied(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(adapters, "RECONNECT_COOLDOWN", 0)  # the second call reconnects again
     with caplog.at_level(logging.WARNING):
         first, second = asyncio.run(_call_after_restart(MutableServer(), drop=True, pinned=False))
     assert first.code == "mcp_error"

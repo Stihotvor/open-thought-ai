@@ -20,7 +20,7 @@ Scope: `main...feat/28-mcp-client`. Verdict: PASS WITH WARNINGS.
 - Medium (style): reconnect tests read private attributes. These are white-box concurrency tests for the lock and generation rules. Behaviour alone cannot show the race windows.
 - Medium (security): tool descriptions and schemas from a server reach the LLM unfiltered. The hub `wrap()` step marks results as untrusted. Description caps and hash re-approval are #31 scope (`docs/security.md`).
 - Low (security): plain `http://` is accepted, and a stdio `env` can hold a key in the servers file. HTTPS rules, redirects and `MCP_SECRET_*` are #31 scope.
-- Low (performance): no cap on calls in flight, and no cool-down after a failed reconnect. Each call has a timeout of at most 60 s, and one device uses the server.
+- Low (performance): no cap on calls in flight, and no cool-down after a failed reconnect. Each call has a timeout of at most 60 s, and one device uses the server. Fixed in #77 (decision D13).
 - Low (style): magic numbers and small duplication in test helpers.
 - Low (structure): the app lifespan passes the default policy and filter. #31 adds the injection point.
 

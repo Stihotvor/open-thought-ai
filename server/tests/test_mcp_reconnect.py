@@ -12,7 +12,7 @@ from dataclasses import replace
 import mcp_fakes
 import pytest
 from mcp.server.fastmcp import FastMCP
-from mcp_fakes import FakeServer, free_port, stdio_config
+from mcp_fakes import CountingPolicy, FakeServer, free_port, http_connection, stdio_config
 
 from ota_server.mcp import adapters
 from ota_server.mcp.adapters import ConnectionClosed, SdkConnection, Streams, sdk_transport
@@ -22,23 +22,6 @@ from ota_server.mcp.source import McpSource
 
 SLACK = 0.5  # seconds a bounded step may run past its deadline
 PIN = "sha256:" + "0" * 64  # T2 pin format; filtering by pin starts in T3
-
-
-class CountingPolicy:
-    """A recording ConnectionPolicy: before_connect calls beyond the first are reconnects."""
-
-    def __init__(self, order: list[str] | None = None) -> None:
-        self.calls = 0
-        self.order = order if order is not None else []
-
-    async def before_connect(self, config: McpServerConfig) -> dict[str, str]:
-        self.calls += 1
-        self.order.append("policy")
-        return {}
-
-    @property
-    def reconnects(self) -> int:
-        return self.calls - 1
 
 
 def _build_extended(name: str = "fake") -> FastMCP:
@@ -75,25 +58,11 @@ def _text(result: RawResult) -> str:
     return result.parts[0][1]
 
 
-@asynccontextmanager
-async def _http(policy: CountingPolicy) -> AsyncIterator[tuple[FakeServer, SdkConnection]]:
-    server = FakeServer("http")
-    await server.start()
-    try:
-        conn = await SdkConnection.open(server.config(), policy)
-        try:
-            yield server, conn
-        finally:
-            await conn.close()
-    finally:
-        await server.stop()
-
-
 def test_http_server_restarts() -> None:
     policy = CountingPolicy()
 
     async def run() -> RawResult:
-        async with _http(policy) as (server, conn):
+        async with http_connection(policy) as (server, conn):
             await server.restart()
             return await conn.call_tool("echo", {"text": "after"})
 
@@ -126,7 +95,7 @@ def test_concurrent_failed_calls_reconnect_once() -> None:
     policy = CountingPolicy()
 
     async def run() -> tuple[int, list[RawResult]]:
-        async with _http(policy) as (server, conn):
+        async with http_connection(policy) as (server, conn):
             before = conn.generation
             await server.restart()
             results = await asyncio.gather(
@@ -140,7 +109,8 @@ def test_concurrent_failed_calls_reconnect_once() -> None:
     assert [_text(r) for r in results] == ["a", "b"]
 
 
-def test_reconnect_fails_then_server_returns() -> None:
+def test_reconnect_fails_then_server_returns(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(adapters, "RECONNECT_COOLDOWN", 0)
     policy = CountingPolicy()
 
     async def session(server: FakeServer, conn: SdkConnection, step: asyncio.Event) -> list[bool]:
@@ -154,7 +124,7 @@ def test_reconnect_fails_then_server_returns() -> None:
         return [first.ok, second.ok]
 
     async def run() -> tuple[list[bool], bool]:
-        async with _http(policy) as (server, conn):
+        async with http_connection(policy) as (server, conn):
             step = asyncio.Event()
             task = asyncio.create_task(session(server, conn, step))
             await step.wait()
@@ -188,6 +158,7 @@ def _switching_factory(urls: list[str]) -> adapters.TransportFactory:
 
 def test_hung_server_during_reconnect(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(adapters, "RECONNECT_TIMEOUT", 0.5)
+    monkeypatch.setattr(adapters, "RECONNECT_COOLDOWN", 0)
 
     async def run() -> tuple[float, bool, RawResult]:
         hung_port = free_port()
@@ -239,7 +210,7 @@ def test_hung_old_owner_during_reconnect(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setattr(adapters, "RECONNECT_TIMEOUT", 0.5)
 
     async def run() -> tuple[float, bool]:
-        async with _http(CountingPolicy()) as (server, _):
+        async with http_connection(CountingPolicy()) as (server, _):
             conn = await SdkConnection.open(
                 server.config(), CountingPolicy(), transport_factory=_blocking_once()
             )
@@ -263,7 +234,7 @@ def test_concurrent_calls_on_one_connection() -> None:
     policy = CountingPolicy()
 
     async def run() -> list[RawResult]:
-        async with _http(policy) as (_, conn):
+        async with http_connection(policy) as (_, conn):
             results = await asyncio.gather(
                 conn.call_tool("wait_echo", {"text": "one"}),
                 conn.call_tool("wait_echo", {"text": "two"}),
@@ -280,7 +251,7 @@ def test_call_after_a_timeout() -> None:
     policy = CountingPolicy()
 
     async def run() -> tuple[float, tuple[bool, str], tuple[bool, str]]:
-        async with _http(policy) as (server, conn):
+        async with http_connection(policy) as (server, conn):
             config = replace(server.config(), timeout=1.0, tools={"slow_once": PIN})
             source = McpSource(config, conn, await conn.list_tools())
             start = time.monotonic()

@@ -8,6 +8,8 @@ import os
 import socket
 import sys
 import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +17,7 @@ import uvicorn
 from mcp.server.fastmcp import FastMCP
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from ota_server.mcp.adapters import SdkConnection
 from ota_server.mcp.config import McpServerConfig
 
 STDIO_SCRIPT = Path(__file__).with_name("mcp_stdio_server.py")
@@ -245,3 +248,37 @@ class HeaderRecordingServer(FakeServer):
             await inner(scope, receive, send)
 
         return app
+
+
+class CountingPolicy:
+    """A recording ConnectionPolicy: before_connect calls beyond the first are reconnects."""
+
+    def __init__(self, order: list[str] | None = None) -> None:
+        self.calls = 0
+        self.order = order if order is not None else []
+
+    async def before_connect(self, config: McpServerConfig) -> dict[str, str]:
+        self.calls += 1
+        self.order.append("policy")
+        return {}
+
+    @property
+    def reconnects(self) -> int:
+        return self.calls - 1
+
+
+@asynccontextmanager
+async def http_connection(
+    policy: CountingPolicy,
+) -> AsyncIterator[tuple[FakeServer, SdkConnection]]:
+    """Start an http FakeServer and open an SdkConnection to it; close both on exit."""
+    server = FakeServer("http")
+    await server.start()
+    try:
+        conn = await SdkConnection.open(server.config(), policy)
+        try:
+            yield server, conn
+        finally:
+            await conn.close()
+    finally:
+        await server.stop()
