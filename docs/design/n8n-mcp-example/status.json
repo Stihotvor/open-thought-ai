@@ -1,0 +1,10 @@
+{
+  "T1": {
+    "state": "done",
+    "note": "guide + README link, gate green"
+  },
+  "T2": {
+    "state": "done",
+    "note": "offline test, gate 934 passed, cov 96.80"
+  }
+}
