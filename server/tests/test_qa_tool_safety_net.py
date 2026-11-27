@@ -32,6 +32,7 @@ from ota_server.hub.hub import McpHub
 from ota_server.hub.pending import PendingCalls
 from ota_server.hub.types import ToolOutcome
 from ota_server.main import start_mcp_sources
+from ota_server.mcp import adapters
 from ota_server.mcp.adapters import RedirectBlocked, SdkConnection, sdk_transport
 from ota_server.mcp.config import McpServerConfig, load_servers
 from ota_server.mcp.hooks import ALLOW_ALL, ConnectionPolicy
@@ -140,7 +141,10 @@ async def _dropped_then_called(policy: Any, caplog_name: str) -> tuple[list[Tool
         await conn.close()
 
 
-def test_qa_028_reconnect_reruns_the_ssrf_check(caplog: pytest.LogCaptureFixture) -> None:
+def test_qa_028_reconnect_reruns_the_ssrf_check(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(adapters, "RECONNECT_COOLDOWN", 0)  # the second call reconnects again
     later = SafeConnectionPolicy(EMPTY, as_resolver(FakeResolver()), lambda: {})
     flip = FlipPolicy(later)
     with caplog.at_level(logging.WARNING):
@@ -150,7 +154,10 @@ def test_qa_028_reconnect_reruns_the_ssrf_check(caplog: pytest.LogCaptureFixture
     assert any("connection denied" in r.getMessage() for r in caplog.records)
 
 
-def test_qa_076_policy_exception_is_a_deny_and_run_does_not_raise() -> None:
+def test_qa_076_policy_exception_is_a_deny_and_run_does_not_raise(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(adapters, "RECONNECT_COOLDOWN", 0)  # the second call reconnects again
     outcomes, closed = asyncio.run(_dropped_then_called(BoomPolicy(), "alpha"))
     assert all(not o.ok and o.code == "mcp_error" for o in outcomes)
     assert not closed

@@ -140,7 +140,8 @@ def test_concurrent_failed_calls_reconnect_once() -> None:
     assert [_text(r) for r in results] == ["a", "b"]
 
 
-def test_reconnect_fails_then_server_returns() -> None:
+def test_reconnect_fails_then_server_returns(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(adapters, "RECONNECT_COOLDOWN", 0)
     policy = CountingPolicy()
 
     async def session(server: FakeServer, conn: SdkConnection, step: asyncio.Event) -> list[bool]:
@@ -188,6 +189,7 @@ def _switching_factory(urls: list[str]) -> adapters.TransportFactory:
 
 def test_hung_server_during_reconnect(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(adapters, "RECONNECT_TIMEOUT", 0.5)
+    monkeypatch.setattr(adapters, "RECONNECT_COOLDOWN", 0)
 
     async def run() -> tuple[float, bool, RawResult]:
         hung_port = free_port()

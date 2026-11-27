@@ -5,13 +5,15 @@ ClientSession, and leaves them in the same task (anyio rule). Calls from other t
 shared ClientSession directly, with no queue (E7). A transport error makes call_tool reconnect
 once under a lock and retry once (D7); a reconnect runs the verifier on the new tool list
 before the session serves a call. Every 3xx on http and sse raises RedirectBlocked
-(tool-safety D6).
+(tool-safety D6). At most MAX_CALLS_IN_FLIGHT calls run at once, and after a failed reconnect
+calls fail fast for RECONNECT_COOLDOWN seconds instead of reconnecting again (#77).
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from typing import Any
@@ -47,6 +49,8 @@ log = logging.getLogger(__name__)
 MAX_TOOL_PAGES = 20  # tools/list pages read at most; a server can page without end
 STOP_TIMEOUT = 5.0  # seconds close() waits for the owner task before it cancels it (D9)
 RECONNECT_TIMEOUT = 5.0  # seconds for one reconnect: old owner stop plus new open (D7)
+MAX_CALLS_IN_FLIGHT = 8  # calls one connection runs at once; the rest wait (#77)
+RECONNECT_COOLDOWN = 5.0  # seconds after a failed reconnect with no new attempt (#77)
 # The SDK streamable http client answers a 404 for an unknown session id with this code.
 SESSION_TERMINATED = 32600
 TRANSPORT_ERRORS = (
@@ -155,6 +159,8 @@ class SdkConnection:
         self._generation = 0
         self._closed = False
         self._verify: Verifier | None = None
+        self._slots = asyncio.Semaphore(MAX_CALLS_IN_FLIGHT)
+        self._retry_at = 0.0  # time.monotonic() before which no reconnect starts
 
     @classmethod
     async def open(
@@ -273,7 +279,12 @@ class SdkConnection:
         return [RawTool(t.name, t.description or "", t.inputSchema) for t in tools]
 
     async def call_tool(self, name: str, args: dict[str, Any]) -> RawResult:
-        """Call once; on a transport error reconnect and retry once (D7)."""
+        """Call once; on a transport error reconnect and retry once (D7). Holds a slot of
+        MAX_CALLS_IN_FLIGHT for the whole call; the caller's timeout covers the wait."""
+        async with self._slots:
+            return await self._call_with_retry(name, args)
+
+    async def _call_with_retry(self, name: str, args: dict[str, Any]) -> RawResult:
         seen = self._generation  # used only when no session is live
         try:
             session, owner, seen = self._live()
@@ -311,14 +322,27 @@ class SdkConnection:
         async with self._lock:
             if self._closed or self._generation > seen_generation:
                 return  # closed, or another caller already reconnected
-            old_task, old_stop = self._task, self._stop
-            self._session = None
-            async with asyncio.timeout(RECONNECT_TIMEOUT):  # covers stop plus open (D7)
-                if old_task is not None:
-                    await _stop_owner(old_task, old_stop, None)
-                session = await self._start(check=True)
-            self._generation += 1  # publish the session and its generation together
-            self._session = session
+            if time.monotonic() < self._retry_at:
+                raise ConnectionError(
+                    f"mcp server {self._config.name!r} is cooling down after a failed reconnect"
+                )
+            try:
+                await self._replace_owner()
+            except Exception:
+                self._retry_at = time.monotonic() + RECONNECT_COOLDOWN
+                raise
+            self._retry_at = 0.0
+
+    async def _replace_owner(self) -> None:
+        """Stop the old owner and start a verified new one. The caller holds the lock."""
+        old_task, old_stop = self._task, self._stop
+        self._session = None
+        async with asyncio.timeout(RECONNECT_TIMEOUT):  # covers stop plus open (D7)
+            if old_task is not None:
+                await _stop_owner(old_task, old_stop, None)
+            session = await self._start(check=True)
+        self._generation += 1  # publish the session and its generation together
+        self._session = session
 
     async def close(self) -> None:
         """Stop the owner task; after STOP_TIMEOUT cancel it (D9). Waits for an in-flight
