@@ -18,3 +18,38 @@ jobs:
           enable-cache: true
       - name: Quality gate (same script as local and pre-push)
         run: server/scripts/gate.sh
+
+  integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      OTA_TEST_DATABASE_URL: postgresql+psycopg://postgres:test@localhost:5432/postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - name: Integration tests (real Postgres)
+        run: cd server && uv run --locked pytest tests/integration --no-cov -p no:cacheprovider
+      - name: Migrate CLI up, up, down, up
+        working-directory: server
+        env:
+          OTA_DEVICE_ID: ci
+          OTA_DATABASE_URL: postgresql+psycopg://postgres:test@localhost:5432/postgres
+        run: |
+          uv run --locked ota-migrate
+          uv run --locked ota-migrate
+          uv run --locked ota-migrate --downgrade --allow-downgrade
+          uv run --locked ota-migrate

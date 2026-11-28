@@ -17,6 +17,9 @@ services:
       OTA_VOLUME: ${OTA_VOLUME:-60}
     ports:
       - "${OTA_PORT:-8000}:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
     restart: unless-stopped
     read_only: true
     cap_drop: [ALL]
@@ -24,3 +27,30 @@ services:
     cpus: ${OTA_SERVER_CPUS:-0.5}
     mem_limit: ${OTA_SERVER_MEM:-256m}
     pids_limit: 128
+
+  # One-shot: applies the database migrations, then exits. Postgres is a host service.
+  # OTA_DATABASE_URL (passed through compose) must point straight at Postgres, never at a pooler.
+  migrate:
+    build: ./server
+    command: ["ota-migrate"]
+    environment:
+      OTA_DEVICE_ID: ${OTA_DEVICE_ID:?set OTA_DEVICE_ID in .env}
+      OTA_DATABASE_URL: ${OTA_DATABASE_URL:?set OTA_DATABASE_URL in .env}
+    restart: "no"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    cpus: 0.2
+    mem_limit: 128m
+    pids_limit: 64
+
+  # Throwaway Postgres for the integration tests. Start with: --profile test.
+  # The password is a test-only literal; the port is bound to localhost.
+  postgres-test:
+    image: postgres:16-alpine
+    profiles: [test]
+    environment:
+      POSTGRES_PASSWORD: test
+    ports:
+      - "127.0.0.1:${OTA_TEST_PG_PORT:-55432}:5432"
+    restart: "no"
