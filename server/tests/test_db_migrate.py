@@ -49,6 +49,7 @@ class FakeConnection:
         for key in (
             "CREATE SCHEMA",
             "lock_timeout",
+            "search_path",
             "statement_timeout",
             "idle_in",
             "pg_advisory_unlock",
@@ -76,6 +77,7 @@ class Harness:
     def __init__(self, conn: FakeConnection, fail: bool = False) -> None:
         self.conn = conn
         self.fail = fail
+        self.revisions: list[str] = []
 
     def connect(self, _settings: DbSettings) -> Connection:
         return self.conn  # type: ignore[return-value]
@@ -88,8 +90,9 @@ class Harness:
         if self.fail:
             raise RuntimeError("boom")
 
-    def downgrade(self, _config: Config, _revision: str) -> None:
+    def downgrade(self, _config: Config, revision: str) -> None:
         self.conn.calls.append("downgrade")
+        self.revisions.append(revision)
 
     def run(self, settings: DbSettings, **kw: Any) -> None:
         migrate(
@@ -115,6 +118,8 @@ def test_call_order_on_fresh_database(settings: DbSettings) -> None:
         "CREATE SCHEMA",
         "COMMIT",
         "lock_timeout",
+        "search_path",
+        "COMMIT",
         "upgrade",
         "rollback",
         "pg_advisory_unlock",
@@ -182,3 +187,15 @@ def test_downgrade_runs_with_flag(settings: DbSettings) -> None:
     conn = FakeConnection()
     Harness(conn).run(settings, downgrade=True, allow_downgrade=True)
     assert "downgrade" in conn.calls
+
+
+def test_downgrade_default_target_is_one_step(settings: DbSettings) -> None:
+    harness = Harness(FakeConnection())
+    harness.run(settings, downgrade=True, allow_downgrade=True)
+    assert harness.revisions == ["-1"]
+
+
+def test_downgrade_target_can_be_set(settings: DbSettings) -> None:
+    harness = Harness(FakeConnection())
+    harness.run(settings, downgrade=True, allow_downgrade=True, downgrade_target="base")
+    assert harness.revisions == ["base"]

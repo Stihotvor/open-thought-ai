@@ -94,6 +94,10 @@ def _run_locked(
         connection.commit()
         _ensure_schema(connection, settings.device_id, schema)
         connection.execute(text(f"SET lock_timeout = '{DDL_LOCK_TIMEOUT}'"))
+        # Migrations hold no schema name: unqualified DDL lands in the device schema.
+        identifier = quoted_schema_name(settings.device_id).as_string()
+        connection.execute(text(f"SET search_path TO {identifier}"))
+        connection.commit()
         run(_config(connection, schema))
     finally:
         _release(connection, schema)
@@ -104,13 +108,14 @@ def migrate(
     *,
     downgrade: bool = False,
     allow_downgrade: bool = False,
+    downgrade_target: str = "-1",
     lock_wait_seconds: float = LOCK_WAIT_SECONDS,
     poll_seconds: float = LOCK_POLL_SECONDS,
     connect: Connect = _connect,
     upgrade_fn: Runner = _upgrade,
     downgrade_fn: Runner = _downgrade,
 ) -> None:
-    """Bring the device schema to head (or to base with downgrade and allow_downgrade)."""
+    """Bring the device schema to head (or down to downgrade_target with allow_downgrade)."""
     if downgrade and not allow_downgrade:
         raise MigrationError("downgrade needs allow_downgrade=True")
     try:
@@ -118,7 +123,7 @@ def migrate(
     except Exception as exc:
         log.error("cannot connect to the database (%s)", type(exc).__name__)
         raise MigrationError("cannot connect to the database") from None
-    revision = "base" if downgrade else "head"
+    revision = downgrade_target if downgrade else "head"
     runner = downgrade_fn if downgrade else upgrade_fn
     try:
         _run_locked(
