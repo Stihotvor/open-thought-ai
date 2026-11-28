@@ -29,13 +29,13 @@ services:
     pids_limit: 128
 
   # One-shot: applies the database migrations, then exits. Postgres is a host service.
-  # OTA_DATABASE_URL (from the env file) must point straight at Postgres, never at a pooler.
+  # OTA_DATABASE_URL (passed through compose) must point straight at Postgres, never at a pooler.
   migrate:
     build: ./server
     command: ["ota-migrate"]
-    env_file: .env
     environment:
       OTA_DEVICE_ID: ${OTA_DEVICE_ID:?set OTA_DEVICE_ID in .env}
+      OTA_DATABASE_URL: ${OTA_DATABASE_URL:?set OTA_DATABASE_URL in .env}
     restart: "no"
     read_only: true
     cap_drop: [ALL]

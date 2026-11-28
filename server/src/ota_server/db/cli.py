@@ -17,7 +17,7 @@ log = logging.getLogger(__name__)
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="ota-migrate", description=__doc__)
-    parser.add_argument("--downgrade", action="store_true", help="downgrade to base")
+    parser.add_argument("--downgrade", action="store_true", help="downgrade one revision")
     parser.add_argument(
         "--allow-downgrade", action="store_true", help="confirm that a downgrade is wanted"
     )

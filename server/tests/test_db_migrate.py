@@ -110,10 +110,10 @@ def test_call_order_on_fresh_database(settings: DbSettings) -> None:
     conn = FakeConnection()
     Harness(conn).run(settings)
     assert conn.calls == [
-        "statement_timeout",
-        "idle_in",
         "pg_try_advisory_lock",
         "COMMIT",
+        "statement_timeout",
+        "idle_in",
         "to_regnamespace",
         "CREATE SCHEMA",
         "COMMIT",
@@ -173,6 +173,22 @@ def test_upgrade_fails_still_releases(settings: DbSettings) -> None:
     with pytest.raises(RuntimeError, match="boom"):
         Harness(conn, fail=True).run(settings)
     assert conn.calls[-3:] == ["rollback", "pg_advisory_unlock", "close"]
+
+
+def test_release_failure_keeps_original_error_and_closes(
+    settings: DbSettings, caplog: pytest.LogCaptureFixture
+) -> None:
+    class BadRelease(FakeConnection):
+        def rollback(self) -> None:
+            super().rollback()
+            raise OSError(URL)
+
+    conn = BadRelease()
+    with caplog.at_level(logging.ERROR), pytest.raises(RuntimeError, match="boom"):
+        Harness(conn, fail=True).run(settings)
+    assert conn.calls[-1] == "close"
+    assert "OSError" in caplog.text
+    assert "s3cretpw" not in caplog.text
 
 
 def test_downgrade_needs_explicit_flag(settings: DbSettings) -> None:

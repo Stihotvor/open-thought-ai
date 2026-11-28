@@ -17,7 +17,7 @@ OPEN: confirm the exact Postgres and Qdrant versions on the home stack.
 - Upgrade runs as a separate one-shot compose service (`migrate`) before `server`.
 - The lock comes before the schema. `migrate` takes a two-key advisory lock `pg_try_advisory_lock(<fixed int4>, hashtext('ota_<device_id>'))` (polled for up to 5 minutes), and only then creates the schema if it is missing.
 - In production #33 creates the schema, so `migrate` needs no CREATE privilege. In dev and CI `migrate` needs CREATE on the database.
-- The migration session sets `statement_timeout=0` and `idle_in_transaction_session_timeout=0`.
+- After it takes the lock, the migration session sets `statement_timeout=30min` and `idle_in_transaction_session_timeout=10min`.
 - `migrate` connects directly to Postgres (one connection, no pooler).
 - Models have no schema names. CI checks `upgrade`, `downgrade` and `upgrade` again.
 - The first migration seeds the built-in device `mcp_server` row (named `device`) and the single `settings` row (`DEFAULT VALUES`).

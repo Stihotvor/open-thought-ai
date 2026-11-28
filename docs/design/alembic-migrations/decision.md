@@ -14,7 +14,7 @@ Path 2, plus a read-only startup check from path 4. The user chose this at G1 (2
 
 Rules the build must follow (from the dba review):
 1. One connection, `NullPool`, direct to Postgres (never through a pooler).
-2. The session sets `statement_timeout=0` and `idle_in_transaction_session_timeout=0`.
+2. After the lock is acquired, the session sets finite backstops: `statement_timeout=30min` and `idle_in_transaction_session_timeout=10min`. The try-lock polling needs no override.
 3. The lock comes first: `pg_try_advisory_lock(<fixed int4>, hashtext(<schema>))`, polled for a bounded time (5 min), with the schema name as a bound parameter. When the wait runs out, `migrate` exits non-zero with a log line that has no URL. Then `COMMIT` (SQLAlchemy 2 autobegin), so Alembic opens its own transaction.
 4. Under the lock: create the schema only if `to_regnamespace` returns null. Commit. In production #33 creates the schema, so `migrate` needs no CREATE privilege there. In dev and CI `migrate` needs CREATE on the database.
 5. Then `lock_timeout` for DDL, then `command.upgrade` with `attributes['connection']`, `version_table_schema=ota_<id>`, `transaction_per_migration=False`.

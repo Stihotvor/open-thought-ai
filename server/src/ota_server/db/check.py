@@ -8,15 +8,15 @@ with no revision matches; any database revision then is a mismatch. Never logs t
 import logging
 from collections.abc import Callable
 
-from alembic.config import Config
 from alembic.script import ScriptDirectory
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy import Connection, text
 
 from ota_server.config import ENV_FILE
-from ota_server.db.engine import make_engine
-from ota_server.db.migrate import PACKAGE_DIR
-from ota_server.db.names import schema_name
+from ota_server.db.engine import base_config
+from ota_server.db.engine import connect as _connect
+from ota_server.db.names import quoted_schema_name
 from ota_server.db.settings import DbSettings
 
 log = logging.getLogger(__name__)
@@ -30,42 +30,34 @@ class RevisionMismatchError(RuntimeError):
 
 class _UrlOnly(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="OTA_", env_file=ENV_FILE, extra="ignore")
-    database_url: str | None = None
-
-
-def _connect(settings: DbSettings) -> Connection:
-    return make_engine(settings).connect()
+    database_url: SecretStr | None = None
 
 
 def code_head() -> str | None:
     """The newest revision in the migrations directory, or None when there is none."""
-    config = Config(str(PACKAGE_DIR / "alembic.ini"))
-    config.set_main_option("script_location", str(PACKAGE_DIR / "migrations"))
-    return ScriptDirectory.from_config(config).get_current_head()
+    return ScriptDirectory.from_config(base_config()).get_current_head()
 
 
-def _database_revision(connection: Connection, schema: str) -> str | None:
+def _database_revision(connection: Connection, device_id: str) -> str | None:
     connection.execute(text("SET TRANSACTION READ ONLY"))
-    found = connection.execute(
-        text("SELECT to_regclass(:name)"), {"name": f"{schema}.alembic_version"}
-    )
+    table = f"{quoted_schema_name(device_id).as_string()}.alembic_version"
+    found = connection.execute(text("SELECT to_regclass(:name)"), {"name": table})
     if found.scalar() is None:
         return None  # schema or table missing
-    # schema matches ^ota_[a-z0-9_]+$ (names.schema_name), so it is safe in the statement
-    row = connection.execute(text(f"SELECT version_num FROM {schema}.alembic_version"))
+    query = text(f"SELECT version_num FROM {table}")  # nosec B608 - quoted, validated identifier
+    row = connection.execute(query)
     value = row.scalar()
     return None if value is None else str(value)
 
 
 def _read_revision(settings: DbSettings, connect: Connect) -> str | None:
-    schema = schema_name(settings.device_id)
     try:
         connection = connect(settings)
     except Exception as exc:
         log.error("cannot connect to the database (%s)", type(exc).__name__)
         raise RevisionMismatchError("cannot connect to the database") from None
     try:
-        return _database_revision(connection, schema)
+        return _database_revision(connection, settings.device_id)
     except Exception as exc:
         log.error("cannot read the database revision (%s)", type(exc).__name__)
         raise RevisionMismatchError("cannot read the database revision") from None

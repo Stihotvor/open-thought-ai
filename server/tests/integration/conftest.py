@@ -9,7 +9,7 @@ from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.pool import NullPool
 
-from ota_server.db.names import schema_name
+from ota_server.db.names import quoted_schema_name
 from ota_server.db.settings import DbSettings
 
 TEST_URL_VAR = "OTA_TEST_DATABASE_URL"
@@ -46,7 +46,7 @@ def device_id(admin_engine: Engine) -> Iterator[str]:
     ident = "t" + uuid.uuid4().hex[:16]
     yield ident
     with admin_engine.connect() as conn:
-        conn.execute(text(f'DROP SCHEMA IF EXISTS "{schema_name(ident)}" CASCADE'))
+        conn.execute(text(f"DROP SCHEMA IF EXISTS {quoted_schema_name(ident).as_string()} CASCADE"))
 
 
 @pytest.fixture

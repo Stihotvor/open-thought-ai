@@ -1,5 +1,6 @@
 """FastAPI app factory. Run: uvicorn ota_server.main:app"""
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
@@ -46,7 +47,7 @@ async def start_mcp_sources(settings: Settings, stack: AsyncExitStack) -> list[M
 @asynccontextmanager
 async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()  # fail at startup on missing or invalid settings
-    check_startup()  # refuse to start when the database revision is not the code head
+    await asyncio.to_thread(check_startup)
     async with AsyncExitStack() as stack:
         application.state.reply_source = await start_reply_source(settings, stack)
         application.state.mcp_sources = await start_mcp_sources(settings, stack)

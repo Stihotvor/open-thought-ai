@@ -15,7 +15,7 @@ from alembic.config import Config
 from sqlalchemy import Engine, text
 from sqlalchemy.exc import IntegrityError
 
-from ota_server.db import migrate as migrate_module
+from ota_server.db.engine import PACKAGE_DIR
 from ota_server.db.migrate import LOCK_APP_KEY, MigrationError, migrate
 from ota_server.db.names import schema_name
 from ota_server.db.settings import DbSettings
@@ -207,7 +207,7 @@ def test_long_wait_is_not_cancelled(
 
 
 def failing_scripts(target: Path) -> Path:
-    source = Path(migrate_module.PACKAGE_DIR) / "migrations"
+    source = Path(PACKAGE_DIR) / "migrations"
     shutil.copy(source / "env.py", target / "env.py")
     shutil.copy(source / "script.py.mako", target / "script.py.mako")
     versions = target / "versions"

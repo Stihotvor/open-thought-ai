@@ -6,13 +6,13 @@ Never logs the database URL.
 import logging
 import time
 from collections.abc import Callable
-from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import Connection, text
 
-from ota_server.db.engine import make_engine
+from ota_server.db.engine import base_config
+from ota_server.db.engine import connect as _connect
 from ota_server.db.names import quoted_schema_name, schema_name
 from ota_server.db.settings import DbSettings
 
@@ -20,7 +20,8 @@ LOCK_APP_KEY = 0x4F544149  # ASCII "OTAI"
 LOCK_WAIT_SECONDS = 300.0
 LOCK_POLL_SECONDS = 1.0
 DDL_LOCK_TIMEOUT = "30s"
-PACKAGE_DIR = Path(__file__).resolve().parent
+RUN_STATEMENT_TIMEOUT = "30min"
+RUN_IDLE_IN_TRANSACTION_TIMEOUT = "10min"
 
 log = logging.getLogger(__name__)
 
@@ -32,10 +33,6 @@ class MigrationError(RuntimeError):
     """A migration could not run. The message never holds the database URL."""
 
 
-def _connect(settings: DbSettings) -> Connection:
-    return make_engine(settings).connect()
-
-
 def _upgrade(config: Config, revision: str) -> None:
     command.upgrade(config, revision)
 
@@ -45,8 +42,7 @@ def _downgrade(config: Config, revision: str) -> None:
 
 
 def _config(connection: Connection, schema: str) -> Config:
-    config = Config(str(PACKAGE_DIR / "alembic.ini"))
-    config.set_main_option("script_location", str(PACKAGE_DIR / "migrations"))
+    config = base_config()
     config.set_main_option("version_table_schema", schema)
     config.attributes["connection"] = connection
     return config
@@ -73,11 +69,15 @@ def _ensure_schema(connection: Connection, device_id: str, schema: str) -> None:
 
 
 def _release(connection: Connection, schema: str) -> None:
-    connection.rollback()
-    connection.execute(
-        text("SELECT pg_advisory_unlock(:app, hashtext(:schema))"),
-        {"app": LOCK_APP_KEY, "schema": schema},
-    )
+    """Roll back and unlock. A failure here is logged (class name only), never raised."""
+    try:
+        connection.rollback()
+        connection.execute(
+            text("SELECT pg_advisory_unlock(:app, hashtext(:schema))"),
+            {"app": LOCK_APP_KEY, "schema": schema},
+        )
+    except Exception as exc:
+        log.error("cannot release the migration lock (%s)", type(exc).__name__)
 
 
 def _run_locked(
@@ -87,11 +87,14 @@ def _run_locked(
     waits: tuple[float, float],
 ) -> None:
     schema = schema_name(settings.device_id)
-    connection.execute(text("SET statement_timeout = 0"))
-    connection.execute(text("SET idle_in_transaction_session_timeout = 0"))
     _acquire_lock(connection, schema, *waits)
     try:
         connection.commit()
+        # Finite backstops for the run itself; the try-lock polling needs no override.
+        connection.execute(text(f"SET statement_timeout = '{RUN_STATEMENT_TIMEOUT}'"))
+        connection.execute(
+            text(f"SET idle_in_transaction_session_timeout = '{RUN_IDLE_IN_TRANSACTION_TIMEOUT}'")
+        )
         _ensure_schema(connection, settings.device_id, schema)
         connection.execute(text(f"SET lock_timeout = '{DDL_LOCK_TIMEOUT}'"))
         # Migrations hold no schema name: unqualified DDL lands in the device schema.
