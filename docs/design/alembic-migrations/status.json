@@ -2,5 +2,9 @@
   "T1": {
     "state": "done",
     "note": "gate green, 959 passed"
+  },
+  "T2": {
+    "state": "done",
+    "note": "8 tests; env.py not run vs real PG yet"
   }
 }
