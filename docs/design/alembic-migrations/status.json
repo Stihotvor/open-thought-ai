@@ -6,5 +6,13 @@
   "T2": {
     "state": "done",
     "note": "8 tests; env.py not run vs real PG yet"
+  },
+  "T3": {
+    "state": "done",
+    "note": "10 integration tests pass on PG16"
+  },
+  "T4": {
+    "state": "done",
+    "note": "gate green 984 passed"
   }
 }
