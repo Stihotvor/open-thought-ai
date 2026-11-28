@@ -10,6 +10,22 @@ A pocket device (ESP32-C3) records your voice. Your own server answers.
 - Tools through MCP: device tools (volume, face, LED) and your own MCP servers (for example n8n workflows).
 - English, Polish, Ukrainian.
 
+## Database migrations
+The schema is applied by a one-shot compose service, and `server` waits for it:
+
+```
+docker compose run --rm migrate      # runs `ota-migrate` (upgrade to head)
+```
+
+`OTA_DATABASE_URL` must point straight at Postgres, not at a pooler.
+For the integration tests, start a throwaway Postgres with the `test` profile:
+
+```
+docker compose --profile test up -d postgres-test
+cd server && OTA_TEST_DATABASE_URL=postgresql+psycopg://postgres:test@127.0.0.1:55432/postgres \
+  uv run pytest tests/integration --no-cov
+```
+
 Status: design phase. See [docs/](docs/) and the GitHub Project board.
 
 ## Docs

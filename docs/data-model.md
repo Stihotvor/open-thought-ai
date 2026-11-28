@@ -13,10 +13,15 @@ OPEN: confirm the exact Postgres and Qdrant versions on the home stack.
 - Qdrant: collection `ota_<device_id>_mem_<model_tag>`. Per-instance API key if the Qdrant version supports JWT RBAC; otherwise one shared key (accepted risk, documented).
 
 ## Migrations
-- Alembic with `version_table_schema=ota_<device_id>`. `CREATE SCHEMA IF NOT EXISTS` first.
-- Upgrade runs as a separate one-shot compose service (`migrate`) before `server`, inside `pg_advisory_lock(hashtext('ota_<device_id>'))`.
-- Models have no schema names. CI checks `upgrade` and `downgrade -1`.
-- The first migration seeds the built-in device `mcp_server` row and the single `settings` row.
+- Alembic with `version_table_schema=ota_<device_id>`. The migration files hold no schema name. `migrate` sets `search_path` for its own session.
+- Upgrade runs as a separate one-shot compose service (`migrate`) before `server`.
+- The lock comes before the schema. `migrate` takes a two-key advisory lock `pg_try_advisory_lock(<fixed int4>, hashtext('ota_<device_id>'))` (polled for up to 5 minutes), and only then creates the schema if it is missing.
+- In production #33 creates the schema, so `migrate` needs no CREATE privilege. In dev and CI `migrate` needs CREATE on the database.
+- The migration session sets `statement_timeout=0` and `idle_in_transaction_session_timeout=0`.
+- `migrate` connects directly to Postgres (one connection, no pooler).
+- Models have no schema names. CI checks `upgrade`, `downgrade` and `upgrade` again.
+- The first migration seeds the built-in device `mcp_server` row (named `device`) and the single `settings` row (`DEFAULT VALUES`).
+- `settings` defaults: `language 'en'`, `voice ''`, `system_prompt ''`, `volume 50` (all NOT NULL).
 
 ## Tables
 ```mermaid
@@ -93,5 +98,5 @@ Not used in the MVP. Pending "continue" text and confirm state live in server me
 
 ## Backup
 - Nightly `pg_dump -n ota_<device_id> -Fc`, then a Qdrant snapshot of the collection. RPO 24 h. RTO target 1 h.
-- `pg_dump -n` before each migration.
+- `pg_dump -n` before each migration (#34, not part of #32). Safe to defer: migration 0001 runs on an empty schema. The image must carry `pg_dump` before this is built.
 - Monthly restore test into a scratch schema and collection.

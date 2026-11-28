@@ -14,5 +14,9 @@
   "T4": {
     "state": "done",
     "note": "gate green 984 passed"
+  },
+  "T5": {
+    "state": "done",
+    "note": "image runs ota-migrate on PG16; compose config ok"
   }
 }
